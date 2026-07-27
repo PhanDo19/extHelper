@@ -60,5 +60,5 @@ const residualBalanced = solver.solveQuantities([
   { code: "A", price: 1555000, qty: 0, maxQty: 1 }
 ], 1548909, { maxQty: 20, tolerance: 0, preTaxTarget: 2160909, currentHour: 612000, hourStep: 6000 });
 assert.strictEqual(residualBalanced.hourActual, 606000, "singing fee must stay on a valid time-derived step");
-assert.strictEqual(residualBalanced.hourDiscount, 91, "small residual must be identified for direct singing-fee adjustment");
-assert.strictEqual(residualBalanced.actual + residualBalanced.hourActual - residualBalanced.hourDiscount, 2160909, "direct singing-fee adjustment must make pre-tax total exact");
+assert.strictEqual(residualBalanced.hourDiscount, 0, "hour discount must always be 0; fractional remainder goes to VAT recalculation");
+assert.strictEqual(residualBalanced.preTaxDifference, 91, "small residual (91) will be handled by VAT adjustment on website");

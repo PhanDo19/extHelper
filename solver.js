@@ -112,19 +112,15 @@
       const hourStep = Math.max(0, Math.round(Number(opts.hourStep) || 0));
       const preTaxTarget = Math.max(0, Math.round(Number(opts.preTaxTarget) || 0));
       const requiredHour = hourStep && preTaxTarget ? preTaxTarget - actual : 0;
-      // Time changes only produce quantized singing fees. Round upward so the
-      // remaining few dong can be entered as a non-negative hourly discount.
       const hourActual = hourStep && requiredHour >= 0 ? Math.max(0, Math.ceil(requiredHour / hourStep) * hourStep) : null;
       const preTaxDifference = hourActual == null ? null : actual + hourActual - preTaxTarget;
-      const hourDiscount = preTaxDifference == null ? 0 : Math.max(0, preTaxDifference);
-      const finalAbs = preTaxDifference == null ? Math.abs(difference) : Math.abs(actual + hourActual - hourDiscount - preTaxTarget);
+      const finalAbs = preTaxDifference == null ? Math.abs(difference) : Math.abs(preTaxDifference);
       const hourDeviation = hourActual == null ? 0 : Math.abs(hourActual - Number(opts.currentHour || 0));
       const quantityScore = scoreQuantities(quantities, current);
       const better = !best || finalAbs < best.finalAbs ||
-        (finalAbs === best.finalAbs && hourDiscount < best.hourDiscount) ||
-        (finalAbs === best.finalAbs && hourDiscount === best.hourDiscount && hourDeviation < best.hourDeviation) ||
-        (finalAbs === best.finalAbs && hourDiscount === best.hourDiscount && hourDeviation === best.hourDeviation && quantityScore < best.quantityScore);
-      if (better) best = { actual, difference, quantities, finalAbs, hourDeviation, quantityScore, hourActual, hourDiscount, preTaxDifference };
+        (finalAbs === best.finalAbs && hourDeviation < best.hourDeviation) ||
+        (finalAbs === best.finalAbs && hourDeviation === best.hourDeviation && quantityScore < best.quantityScore);
+      if (better) best = { actual, difference, quantities, finalAbs, hourDeviation, quantityScore, hourActual, hourDiscount: 0, preTaxDifference };
     }
     if (!best) return { ok: false, reason: "Không tìm được phương án." };
 

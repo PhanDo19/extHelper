@@ -868,7 +868,7 @@
     const hourTarget = solution.hourActual == null
       ? Math.round(targets.preTaxTarget - solution.actual)
       : solution.hourActual;
-    const finalHourAmount = hourTarget - Math.max(0, Math.round(Number(solution.hourDiscount) || 0));
+    const finalHourAmount = hourTarget;
     const predictedGrand = solution.actual + finalHourAmount + targets.vatTarget;
     const difference = predictedGrand - targetGrand;
     if (!selected.length || difference !== 0) {
@@ -1133,8 +1133,7 @@
     const hourTarget = solution.hourActual == null ? Math.round(targets.preTaxTarget - solution.actual) : solution.hourActual;
     if (hourTarget < 0) return setStatus("Tiền hàng phương án vượt tổng trước VAT; không thể bù bằng tiền giờ.", "error");
     const hourDifference = hourTarget - Number(latestScan.currentHour || 0);
-    const hourDiscount = Math.max(0, Math.round(Number(solution.hourDiscount) || 0));
-    const finalHourAmount = hourTarget - hourDiscount;
+    const finalHourAmount = hourTarget;
     const predictedGrand = solution.actual + finalHourAmount + targets.vatTarget;
     const proposedCheckOut = recommendCheckOut(latestScan, hourTarget, hourPricing.hourlyRate);
     const totalDifference = predictedGrand - targetGrand;

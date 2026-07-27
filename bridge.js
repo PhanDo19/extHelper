@@ -11,7 +11,8 @@
   }
 
   function suffixInput(prefix) {
-    const candidates = Array.from(document.querySelectorAll(`[id^="${prefix}"]`));
+    const pattern = new RegExp(`^${prefix}\\d+$`);
+    const candidates = Array.from(document.querySelectorAll(`[id^="${prefix}"]`)).filter(el => pattern.test(el.id));
     return candidates.find(isVisible) || candidates.reverse().find(input => input.isConnected) || null;
   }
 
@@ -117,6 +118,8 @@
     const input = suffixInput(prefix);
     if (!input) throw new Error(`Khong tim thay o ${prefix}.`);
     const amount = Math.round(Number(value) || 0);
+    const wasReadOnly = input.readOnly;
+    input.readOnly = false;
     const jq = window.jQuery || window.$;
     const widget = jq ? jq(input).data("kendoNumericTextBox") : null;
     if (widget?.value) {
@@ -125,6 +128,7 @@
     }
     setNativeValue(input, String(amount));
     input.dispatchEvent(new Event("blur", { bubbles: true }));
+    input.readOnly = wasReadOnly;
     return money(input.value);
   }
 
@@ -199,8 +203,16 @@
     restoreInvoiceFormState(preservedFormState);
     const hour = applyHourAmount(detail.finalHourAmount);
     const totals = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);
-    await wait(400);
-    if (!suffixInput("numTONGCONG")?.value) {
+    const deadline = Date.now() + 2000;
+    let totalPresent = false;
+    while (Date.now() < deadline) {
+      await wait(200);
+      if (suffixInput("numTONGCONG")?.value) {
+        totalPresent = true;
+        break;
+      }
+    }
+    if (!totalPresent) {
       throw new Error("Website da reset phan thong tin phieu; chua duoc bam Luu HD.");
     }
     return {
@@ -441,8 +453,6 @@
     const row = found.grid.tbody?.find?.(`tr[data-uid='${item.uid}']`);
     if (!row?.length) throw new Error(`Khong tim thay dong giao dien cua ma ${code}.`);
     if (typeof found.grid.select === "function") found.grid.select(row);
-    // This form adds a chosen catalog row through its SL box and Them button.
-    // Double-clicking adds exactly one unit; it does not open a quantity dialog.
     const productScope = document;
     const productQtyInput = productScope.querySelector("[id^='numSoLuong']");
     const productAddButton = productScope.querySelector("[id^='btnThem']");
@@ -452,28 +462,6 @@
     setNativeValue(productQtyInput, String(Math.max(1, Math.round(Number(qty) || 1))));
     productAddButton.click();
     await wait(350);
-    return;
-
-    const invoked = invokeRunnerHandler([
-      /^grMatHang_MouseDoubleClick$/i,
-      /grMatHang.*MouseDoubleClick/i,
-      /MatHang.*MouseDoubleClick/i
-    ]);
-    if (!invoked) row.trigger("dblclick");
-    await wait(250);
-    const execute = visibleActionButton("Thực hiện");
-    if (!execute) throw new Error(`Website khong mo hop nhap so luong cho ma ${code}.`);
-    const dialog = execute.closest(".k-window, [role='dialog']") || execute.parentElement;
-    const quantityInput = Array.from(dialog.querySelectorAll("input")).find(input => isVisible(input) && !parseDateTime(input.value));
-    if (!quantityInput) throw new Error(`Khong tim thay o so luong cho ma ${code}.`);
-    setNativeValue(quantityInput, String(Math.max(1, Math.round(Number(qty) || 1))));
-    const executed = invokeRunnerHandler([
-      /^btnThucHien_Click$/i,
-      /ThucHien.*Click/i,
-      /Accept.*Click/i
-    ]);
-    if (!executed) execute.click();
-    await wait(250);
   }
 
   async function replaceInvoiceItems(items) {
@@ -484,14 +472,19 @@
     const requested = (items || []).filter(item => Number(item.newQty) > 0);
     if (!requested.length) throw new Error("Phuong an khong co mat hang nao de ap dung.");
 
-    const expected = new Map(requested.map(item => [String(item.code), {
-      qty: Math.round(Number(item.newQty)),
-      price: Math.round(Number(item.price) || 0)
-    }]));
     const allInvoiceRows = () => {
       const data = invoice.grid.dataSource.data();
       return Array.from(data || []);
     };
+    const initialSnapshot = allInvoiceRows().map(row => {
+      const raw = typeof row.toJSON === "function" ? row.toJSON() : { ...row };
+      return raw;
+    });
+
+    const expected = new Map(requested.map(item => [String(item.code), {
+      qty: Math.round(Number(item.newQty)),
+      price: Math.round(Number(item.price) || 0)
+    }]));
     const rowCode = row => String(objectValue(row, invoice.fields.code) || "").trim();
     const setModelValue = (row, field, value) => {
       if (!field) return;
@@ -531,47 +524,62 @@
       return invoice.grid.dataSource.add(base);
     };
 
-    // Preserve matching existing rows. This keeps the website's full detail
-    // model (IDs, warehouse and accounting fields) instead of recreating it.
-    for (const item of requested) {
-      const code = String(item.code);
-      let row = allInvoiceRows().find(candidate => rowCode(candidate) === code);
-      if (!row) {
-        const product = await filterProduct(products, code);
-        row = createDetailFromProduct(product, item);
+    try {
+      // Preserve matching existing rows. This keeps the website's full detail
+      // model (IDs, warehouse and accounting fields) instead of recreating it.
+      for (const item of requested) {
+        const code = String(item.code);
+        let row = allInvoiceRows().find(candidate => rowCode(candidate) === code);
+        if (!row) {
+          const product = await filterProduct(products, code);
+          row = createDetailFromProduct(product, item);
+        }
+        if (!row) throw new Error(`Website khong tao duoc dong hang ${code}.`);
+        setModelValue(row, invoice.fields.qty, Math.round(Number(item.newQty)));
+        if (Number(item.price) > 0) setModelValue(row, invoice.fields.price, Math.round(Number(item.price)));
+        setModelValue(row, "SLXUAT", Math.round(Number(item.newQty)));
+        setModelValue(row, "SLTHUCXUAT", Math.round(Number(item.newQty)));
+        setModelValue(row, "THANHTIEN", Math.round(Number(item.newQty) * Number(item.price)));
+        setModelValue(row, "DONGIABAOCAO", Math.round(Number(item.price) * 1.1));
+        setModelValue(row, "THANHTIENBAOCAO", Math.round(Number(item.newQty) * Number(item.price) * 1.1));
       }
-      if (!row) throw new Error(`Website khong tao duoc dong hang ${code}.`);
-      setModelValue(row, invoice.fields.qty, Math.round(Number(item.newQty)));
-      if (Number(item.price) > 0) setModelValue(row, invoice.fields.price, Math.round(Number(item.price)));
-      setModelValue(row, "SLXUAT", Math.round(Number(item.newQty)));
-      setModelValue(row, "SLTHUCXUAT", Math.round(Number(item.newQty)));
-      setModelValue(row, "THANHTIEN", Math.round(Number(item.newQty) * Number(item.price)));
-      setModelValue(row, "DONGIABAOCAO", Math.round(Number(item.price) * 1.1));
-      setModelValue(row, "THANHTIENBAOCAO", Math.round(Number(item.newQty) * Number(item.price) * 1.1));
-    }
 
-    // Remove old, blank and duplicate rows after every requested row exists.
-    const seen = new Set();
-    allInvoiceRows().slice().forEach(row => {
-      const code = rowCode(row);
-      if (!expected.has(code) || seen.has(code)) invoice.grid.dataSource.remove(row);
-      else seen.add(code);
-    });
-    // Re-apply final values after add/remove because the website's grid change
-    // callback can restore catalog prices while rebinding.
-    allInvoiceRows().forEach(row => {
-      const target = expected.get(rowCode(row));
-      if (!target) return;
-      setModelValue(row, invoice.fields.qty, target.qty);
-      setModelValue(row, invoice.fields.price, target.price);
-      setModelValue(row, "SLXUAT", target.qty);
-      setModelValue(row, "SLTHUCXUAT", target.qty);
-      setModelValue(row, "THANHTIEN", target.qty * target.price);
-      setModelValue(row, "DONGIABAOCAO", Math.round(target.price * 1.1));
-      setModelValue(row, "THANHTIENBAOCAO", Math.round(target.qty * target.price * 1.1));
-    });
-    clearProductSearch(products);
-    await wait(300);
+      // Remove old, blank and duplicate rows after every requested row exists.
+      const seen = new Set();
+      allInvoiceRows().slice().forEach(row => {
+        const code = rowCode(row);
+        if (!expected.has(code) || seen.has(code)) invoice.grid.dataSource.remove(row);
+        else seen.add(code);
+      });
+      // Re-apply final values after add/remove because the website's grid change
+      // callback can restore catalog prices while rebinding.
+      allInvoiceRows().forEach(row => {
+        const target = expected.get(rowCode(row));
+        if (!target) return;
+        setModelValue(row, invoice.fields.qty, target.qty);
+        setModelValue(row, invoice.fields.price, target.price);
+        setModelValue(row, "SLXUAT", target.qty);
+        setModelValue(row, "SLTHUCXUAT", target.qty);
+        setModelValue(row, "THANHTIEN", target.qty * target.price);
+        setModelValue(row, "DONGIABAOCAO", Math.round(target.price * 1.1));
+        setModelValue(row, "THANHTIENBAOCAO", Math.round(target.qty * target.price * 1.1));
+      });
+      clearProductSearch(products);
+      await wait(300);
+    } catch (error) {
+      initialSnapshot.forEach((rowData, index) => {
+        const current = allInvoiceRows();
+        if (index < current.length) {
+          const row = current[index];
+          Object.keys(rowData).forEach(key => {
+            setModelValue(row, key, rowData[key]);
+          });
+        }
+      });
+      const toRemove = allInvoiceRows().slice(initialSnapshot.length);
+      toRemove.forEach(row => invoice.grid.dataSource.remove(row));
+      throw error;
+    }
 
     // Verify against the exact DataSource we just mutated. During a Kendo
     // rebind the form's total inputs can temporarily disappear, which makes
