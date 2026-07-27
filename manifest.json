@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Khớp tổng tiền hóa đơn - MVP",
+  "version": "1.3.2",
+  "description": "Lập phương án hóa đơn từ các mặt hàng kho đã ánh xạ và xác nhận. Không tự lưu hoặc phát hành hóa đơn.",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://banhang.thuanvietsoft.com/*",
+        "https://banhang.thuanvietsoft.com/*"
+      ],
+      "js": ["bridge.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "http://banhang.thuanvietsoft.com/*",
+        "https://banhang.thuanvietsoft.com/*"
+      ],
+      "js": ["web-catalog.js", "inventory-data.js", "xlsx-reader.js", "mapping-store.js", "mapping-engine.js", "solver.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
