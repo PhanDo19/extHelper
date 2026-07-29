@@ -4,10 +4,24 @@ Extension chỉ dành cho `banhang.thuanvietsoft.com`. Mã nguồn được phá
 
 ## Dữ liệu đang có
 
-- `web-catalog.js`: 143 sản phẩm từ `data.xlsx`, gồm mã, tên, đơn vị, giá, loại và nhóm web.
-- `inventory-data.js`: 53 dòng từ `KhoT5.xlsx`, gồm tồn quy đổi và kết quả ánh xạ ban đầu.
-- Trạng thái ban đầu: 24 `confirmed`, 23 `review`, 6 `unmatched`; một dòng confirmed có tồn bằng 0 nên không vào bộ giải.
-- Dữ liệu người dùng xác nhận được lưu bằng `chrome.storage.local` và ghi đè dữ liệu nhúng khi extension khởi động.
+Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
+
+- `web-catalog.js`: 156 sản phẩm, gồm mã, tên, đơn vị, giá, loại và nhóm web.
+- `inventory-data.js`: 53 dòng từ `KhoT5.xlsx`, toàn bộ ở trạng thái `confirmed`.
+- Ánh xạ kho ↔ web được đối chiếu thủ công theo tên hàng (mã kho và mã web thuộc hai hệ khác nhau); kết quả lưu tại `DoiChieu_Kho_Web_FINAL.xlsx`.
+- Bộ giải nhận 49 mã web (53 dòng kho, trong đó 3 mã web nhận tồn từ nhiều dòng).
+- Nguyên tắc giá: mặt hàng đã có trên web giữ nguyên giá web để không ảnh hưởng dữ liệu và hóa đơn cũ.
+- Dữ liệu người dùng xác nhận được lưu bằng `chrome.storage.local` và ghi đè dữ liệu nhúng khi extension khởi động. Sau khi thay dữ liệu nhúng, cần xóa key `invoiceTargetMappingDataset` và `invoiceTargetWebCatalog` để bản mới có hiệu lực.
+
+### Mã web nhận tồn từ nhiều dòng kho
+
+| Mã web | Tên | Dòng kho gộp | Tồn cộng dồn |
+| --- | --- | --- | --- |
+| 1000010 | HẠT DẺ | `DECUOI70`, `DECUOI60`, `HATDECUOIRM` | 319 |
+| 1000025 | Bánh quy que | `QUYTRAXANH`, `QUYVIETQUAT` | 216 |
+| 1000034 | Bánh xốp classic 45g | `BANHPEANUT45G`, `BANH XOP` | 1.097 |
+
+`buildInventory` chỉ cộng dồn khi giá web trùng nhau; ba nhóm trên đều cùng giá.
 
 ## Luồng sử dụng
 
