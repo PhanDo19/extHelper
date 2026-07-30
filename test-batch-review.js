@@ -398,7 +398,9 @@ const baseTransaction = {
   }
   if (!source.includes('class="it-verify-batch"') || !source.includes("verifyBatchSavedInvoice") ||
       !source.includes('await request("openInvoiceCandidate"') ||
-      !source.includes("await verifySavedInvoice()")) {
+      !source.includes("await verifySavedInvoice()") ||
+      !source.includes('if (currentBankTransaction?.status === "done")') ||
+      !source.includes('await request("closeInvoiceDetail")')) {
     throw new Error("Batch Review phải có đối soát sau lưu bằng cách mở lại phiếu từ website.");
   }
   if (!source.includes('["batch_ready", "planned"].includes(entry.status)') ||

@@ -2047,6 +2047,16 @@
 
       if (button?.isConnected) button.textContent = "Đang ghi sổ tồn…";
       await verifySavedInvoice();
+      if (currentBankTransaction?.status === "done") {
+        if (button?.isConnected) button.textContent = "Đang trở về danh sách…";
+        const closed = await request("closeInvoiceDetail");
+        if (!closed?.closed) {
+          setStatus(
+            `Đã đối soát phiếu ${plan.invoiceNo}, nhưng website chưa đóng được form. Hãy bấm Thoát để trở về danh sách phiếu.`,
+            "warn"
+          );
+        }
+      }
     } catch (error) {
       setStatus(`Đối soát từ Batch Review thất bại: ${error.message} Chưa thay đổi tồn kho hoặc sao kê.`, "error");
     } finally {

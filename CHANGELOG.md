@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.2 (2026-07-30)
+
+- Sau khi `Đối soát sau lưu` thành công từ Batch Review, extension tự gọi nút `Thoát` của website để trở về màn hình danh sách phiếu.
+- Chỉ tự thoát khi giao dịch đã được ghi nhận `Đã xử lý`; nếu đối soát sai dữ liệu, giữ nguyên form hóa đơn để người dùng kiểm tra.
+- Nếu website không đóng được form, hiển thị cảnh báo rõ ràng nhưng không hoàn tác kết quả đối soát đã ghi thành công.
+
 ## 1.7.1 (2026-07-30)
 
 - Khi tạo Batch Review, trừ trước tồn đang được giữ bởi mọi phương án `Đã Accept` hoặc `Chờ lưu/đối soát`, kể cả giao dịch nằm ngoài khoảng ngày hoặc giới hạn số dòng đang xem.
