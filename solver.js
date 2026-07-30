@@ -92,17 +92,20 @@
     let totalUnits = 0;
     let activeLines = 0;
     let concentrationPenalty = 0;
+    let selectionPenalty = 0;
     for (let i = 0; i < qty.length; i += 1) {
       if (qty[i] !== current[i]) changedLines += 1;
       changedUnits += Math.abs(qty[i] - current[i]);
       totalUnits += qty[i];
       if (qty[i] > 0) activeLines += 1;
       concentrationPenalty += Math.max(0, qty[i] - 1) ** 2;
+      if (qty[i] > 0) selectionPenalty += Math.max(0, Number(items[i]?.selectionPenalty) || 0);
     }
     const preferredLineCount = Math.max(1, Math.round(Number(opts.preferredLineCount) || 4));
     const lineCountPenalty = Math.abs(activeLines - preferredLineCount);
     return lineCountPenalty * 100000 +
       concentrationPenalty * 10000 +
+      selectionPenalty * 100 +
       changedLines * 1000 +
       changedUnits * 10 +
       totalUnits;

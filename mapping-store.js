@@ -9,9 +9,20 @@
   const STOCK_STATE_META_KEY = "invoiceTargetStockStateMeta";
   const STOCK_STATE_BACKUP_KEY = "invoiceTargetStockStateBackup";
   const DEFAULT_PRIORITY_RULES = [
-    { id: "rule-tcto", code: "TCTO", webCode: "1500007", minTotal: 1000000, priority: 1, enabled: true },
-    { id: "rule-wine", code: "RUOUVANGDO", webCode: "1300013", minTotal: 1000000, priority: 2, enabled: true }
+    { id: "rule-tcto", code: "TCTO", webCode: "1500007", minTotal: 1000000, priority: 1, mode: "rotate", minQty: 1, maxQty: 1, enabled: true },
+    { id: "rule-wine", code: "RUOUVANGDO", webCode: "1300013", minTotal: 1000000, priority: 2, mode: "rotate", minQty: 1, maxQty: 1, enabled: true }
   ];
+
+  function normalizePriorityRule(rule) {
+    const minQty = Math.max(1, Math.floor(Number(rule?.minQty) || 1));
+    const maxQty = Math.max(minQty, Math.floor(Number(rule?.maxQty) || minQty));
+    return {
+      ...rule,
+      mode: rule?.mode === "required" ? "required" : "rotate",
+      minQty,
+      maxQty
+    };
+  }
 
   async function load(fallback) {
     if (!globalThis.chrome?.storage?.local) return structuredClone(fallback);
@@ -52,9 +63,9 @@
   }
 
   async function loadPriorityRules() {
-    if (!globalThis.chrome?.storage?.local) return structuredClone(DEFAULT_PRIORITY_RULES);
+    if (!globalThis.chrome?.storage?.local) return structuredClone(DEFAULT_PRIORITY_RULES).map(normalizePriorityRule);
     const stored = await chrome.storage.local.get(PRIORITY_RULES_KEY);
-    return stored[PRIORITY_RULES_KEY] || structuredClone(DEFAULT_PRIORITY_RULES);
+    return (stored[PRIORITY_RULES_KEY] || structuredClone(DEFAULT_PRIORITY_RULES)).map(normalizePriorityRule);
   }
 
   async function savePriorityRules(rules) {

@@ -26,6 +26,17 @@ const changed = solver.solveQuantities([
 ], 235000, { maxQty: 10, tolerance: 0 });
 assert.strictEqual(changed.actual, 235000);
 
+const rotated = solver.solveQuantities([
+  { code: "A", name: "A", price: 50000, qty: 0, maxQty: 1, selectionPenalty: 18 },
+  { code: "B", name: "B", price: 50000, qty: 0, maxQty: 1, selectionPenalty: 2 },
+  { code: "C", name: "C", price: 50000, qty: 0, maxQty: 1, selectionPenalty: 9 }
+], 50000, { maxQty: 1, tolerance: 0, preferredLineCount: 1, maxActiveLines: 1 });
+assert.strictEqual(
+  rotated.items.find(item => item.newQty > 0).code,
+  "B",
+  "controlled diversity must prefer the lower per-transaction selection penalty"
+);
+
 console.log("solver tests: OK");
 
 const bounded = solver.solveQuantities([

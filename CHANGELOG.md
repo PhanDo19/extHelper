@@ -1,5 +1,101 @@
 # Changelog
 
+## 1.7.1 (2026-07-30)
+
+- Khi tạo Batch Review, trừ trước tồn đang được giữ bởi mọi phương án `Đã Accept` hoặc `Chờ lưu/đối soát`, kể cả giao dịch nằm ngoài khoảng ngày hoặc giới hạn số dòng đang xem.
+- Sửa bảng chi tiết phương án: cột `Tồn trước` hiển thị tồn thực tế trước khi cấp cho dòng hiện tại; cột `Giới hạn/HĐ` hiển thị giới hạn cuối cùng sau định mức và rule.
+- Ngăn nhiều Batch Review khác nhau cùng phân bổ lại phần tồn đã được một phương án chưa đối soát giữ trước đó.
+
+## 1.7.0 (2026-07-30)
+
+- Thêm màn hình `Quản lý tồn kho` riêng, có tìm kiếm và lọc các mã đang giữ, sắp hết, đã hết hoặc quản lý theo định mức mỗi hóa đơn.
+- Hiển thị riêng `Tồn ghi nhận`, `Đang giữ` bởi các phương án Batch chưa đối soát và `Có thể phân bổ` cho hóa đơn tiếp theo.
+- Chuyển các nút `Nhập KhoT5.xlsx`, `Nhập trạng thái tồn` và `Xuất trạng thái tồn` vào màn hình quản lý tồn kho.
+- Giữ `Nhập data.xlsx` ở thanh công cụ chính vì đây là danh mục mặt hàng web, không phải dữ liệu tồn kho.
+
+## 1.6.7 (2026-07-30)
+
+- Cho phép `Tính toán lại` cả phương án đang `Chờ lưu/đối soát`; nếu đúng phiếu đang mở, extension đóng form chưa lưu trước khi lập phương án mới.
+- Giữ reservation tồn kho cho cả phương án đã áp dụng nhưng chưa đối soát.
+- Thu gọn cột `Giao dịch` trong Batch Review; diễn giải dài hiển thị một dòng có dấu `…` và xem đầy đủ bằng tooltip.
+
+## 1.6.6 (2026-07-30)
+
+- Thêm nút `Tính toán lại` cho từng phương án đã Accept nhưng chưa áp dụng.
+- Khi tính lại, hoàn reservation tồn kho của phương án cũ trước khi chạy solver.
+- Đổi seed và tăng điểm phạt các mã vừa bị từ chối để ưu tiên sinh tổ hợp khác; vẫn cho phép dùng lại nếu không có phương án khớp hợp lệ nào khác.
+
+## 1.6.5 (2026-07-30)
+
+- Đóng toàn bộ các hộp chọn/nhập số lượng bị website xếp chồng sau khi áp dụng phương án, thay vì chỉ đóng hộp trên cùng.
+- Ưu tiên đóng đúng Kendo dialog sở hữu hộp nhập để không gọi nhầm CodeRunner của một hộp khác.
+
+## 1.6.4 (2026-07-30)
+
+- Tìm mã hàng qua toàn bộ các trang danh mục khi handler tìm kiếm F3 không khả dụng do website đang mở bàn phím số.
+- Không còn báo thiếu nhầm mã hợp lệ chỉ vì mã đó nằm ngoài trang đầu danh mục.
+- Luôn đóng hộp chọn sản phẩm/số lượng nếu áp dụng phương án lỗi giữa chừng.
+
+## 1.6.3 (2026-07-30)
+
+- Không còn dựa vào `aria-hidden` vì website gắn thuộc tính này cả lên bàn phím số đang hiển thị.
+- Đóng bàn phím hiện tại bằng handler `ButtonJs/CodeRunner` của website, dự phòng bằng Kendo widget chính thức.
+- Nhận đúng Kendo widget tại `.k-content[data-role="dialog"]` và chỉ đóng dialog có `z-index` cao nhất một lần.
+
+## 1.6.2 (2026-07-30)
+
+- Sửa đóng nhầm bàn phím số cũ do Kendo giữ nhiều dialog đã ẩn trong DOM với cùng kích thước.
+- Chỉ nhận dialog đang hoạt động, ưu tiên dialog có `z-index` cao nhất và nút `Hủy bỏ` thực sự hiển thị.
+- Bổ sung đóng dự phòng qua cả `kendoDialog` và `kendoWindow`.
+
+## 1.6.1 (2026-07-30)
+
+- Thêm nút `Đối soát sau lưu` ngay tại từng dòng `Chờ lưu/đối soát` trong Batch Review.
+- Nút luôn mở lại đúng phiếu từ danh sách website trước khi ghi sổ, tránh đối soát nhầm dữ liệu chỉ đang thay đổi tạm trên form.
+- Chỉ khi hàng hóa, tiền giờ, VAT và tổng cộng khớp phương án đã Accept thì sao kê mới thành `Đã xử lý` và tồn kho mới bị trừ.
+
+## 1.6.0 (2026-07-30)
+
+- Nâng rule mặt hàng thành hai loại: `Luân phiên` và `Bắt buộc`.
+- Cho phép cấu hình số lượng tối thiểu/tối đa của từng mặt hàng trên một phiếu.
+- Batch Review áp dụng đồng thời mọi rule bắt buộc và một rule luân phiên có ưu tiên cao nhất.
+- Báo lỗi rõ ràng nếu mặt hàng bắt buộc không đủ tồn, không âm thầm tạo phương án thiếu hàng.
+- Rule cũ được tự chuẩn hóa thành `Luân phiên`, số lượng 1–1 nên không mất cấu hình hiện có.
+- Có thể cấu hình bia `Bắt buộc`, số lượng 1–4 để tổ hợp hóa đơn thực tế hơn.
+
+## 1.5.3 (2026-07-30)
+
+- Cho phép mở và áp dụng lại phương án với phiếu ở trạng thái `Chờ lưu/đối soát`.
+- Khắc phục trường hợp reload làm mất thay đổi tạm trên form nhưng Batch Review không còn nút mở lại.
+- Ưu tiên khôi phục phương án đang chờ lưu, dự phòng bằng phương án Batch đã Accept.
+
+## 1.5.2 (2026-07-30)
+
+- Tự nhận diện và đóng hộp chọn số lượng mặt hàng sau khi áp dụng phương án.
+- Hỗ trợ cả nút HTML thường và `input` của bàn phím số trên website.
+- Chờ hộp nhập xuất hiện trễ hoặc render lại; chỉ đóng đúng hộp có bàn phím số, `Hủy bỏ` và `Chấp nhận`.
+- Giữ nguyên form hóa đơn phía sau để người dùng kiểm tra và bấm `Lưu HĐ`.
+
+## 1.5.1 (2026-07-30)
+
+- Thêm nút `Mở và áp dụng phương án` cho phiếu đã tồn tại ở trạng thái `Đã Accept`.
+- Tự mở đúng phiếu đã gắn, áp dụng chính xác phương án đã khóa và kiểm tra lại hàng, giờ, VAT, tổng tiền.
+- Sau khi áp dụng thành công, tự thu gọn extension để người dùng kiểm tra form và chỉ bấm `Lưu HĐ`.
+- Chưa trừ tồn kho khi áp dụng; tồn chỉ được ghi sau bước `Đối soát sau lưu`.
+
+## 1.5.0 (2026-07-30)
+
+- Đa dạng hóa mặt hàng trong Batch Review bằng thứ tự xoay vòng ổn định theo từng giao dịch.
+- Phạt nhẹ các mã đã xuất hiện ở phương án trước trong cùng batch để hạn chế lặp lại một bộ sản phẩm.
+- Giữ nguyên các ràng buộc ưu tiên, số lượng thực tế, tồn kho, VAT và tổng tiền khớp tuyệt đối.
+- Chạy lại cùng dữ liệu vẫn cho kết quả ổn định để người dùng có thể kiểm tra và đối soát.
+
+## 1.4.9 (2026-07-30)
+
+- Thêm bộ lọc `Từ ngày` và `Đến ngày` cho Batch Review; khoảng ngày được giữ khi tải lại hoặc chuyển tab.
+- Hiển thị cả giao dịch đã xử lý trong Batch Review để trạng thái khớp với màn hình Giao dịch ngân hàng.
+- Giao dịch đã xử lý chỉ được đọc để hiển thị, không dò lại hóa đơn và không trừ tồn kho lần nữa.
+
 ## 1.4.5 (2026-07-29)
 
 - Batch Review tự chọn phiếu chưa xuất có tổng hiện tại gần tiền sao kê nhất khi cùng ngày có nhiều phiếu.

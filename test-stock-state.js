@@ -1,4 +1,5 @@
 const assert = require("assert");
+const fs = require("fs");
 const StockState = require("./stock-state.js");
 
 function mappings(qty) {
@@ -61,5 +62,18 @@ corrupted.inventory.rows[0].availableQty = -1;
 const corruptValidation = StockState.validate(corrupted);
 assert.strictEqual(corruptValidation.valid, false);
 assert.match(corruptValidation.errors.join(" "), /không hợp lệ/);
+
+const contentSource = fs.readFileSync("content.js", "utf8");
+const cssSource = fs.readFileSync("content.css", "utf8");
+const stockAdminIndex = contentSource.indexOf('id="it-stock-admin"');
+assert(stockAdminIndex >= 0, "Missing stock administration section");
+assert(contentSource.indexOf('id="it-import-stock"', stockAdminIndex) > stockAdminIndex);
+assert(contentSource.indexOf('id="it-import-state"', stockAdminIndex) > stockAdminIndex);
+assert(contentSource.indexOf('id="it-export-state"', stockAdminIndex) > stockAdminIndex);
+assert.match(contentSource, /function stockReservationByCode\(\)/);
+assert.match(contentSource, /function renderStockAdmin\(\)/);
+assert.match(contentSource, /function renderStockRows\(\)/);
+assert.match(cssSource, /#it-panel\.stock-mode/);
+assert.match(cssSource, /\.it-stock-table/);
 
 console.log("Inventory-only state package: OK");

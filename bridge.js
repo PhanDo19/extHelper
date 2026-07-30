@@ -28,6 +28,19 @@
     return !windowNode.hidden && windowNode.getAttribute("aria-hidden") !== "true" && windowStyle.display !== "none" && windowStyle.visibility !== "hidden" && windowRect.width > 0 && windowRect.height > 0;
   }
 
+  function isLayoutVisible(element) {
+    if (!element || !element.isConnected) return false;
+    const view = element.ownerDocument?.defaultView || window;
+    const style = view.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return !element.hidden &&
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      Number(style.opacity) !== 0 &&
+      rect.width > 0 &&
+      rect.height > 0;
+  }
+
   function valueOf(prefix) {
     const input = suffixInput(prefix);
     return input ? money(input.value) : 0;
@@ -223,63 +236,173 @@
     return { goods, hour, tax, grand: valueOf("numTONGCONG") };
   }
 
+  function dialogControlText(control) {
+    return String(
+      control?.innerText ||
+      control?.textContent ||
+      control?.value ||
+      control?.getAttribute?.("value") ||
+      ""
+    ).replace(/\s+/g, " ").trim();
+  }
+
+  function dialogControls(node) {
+    if (!node) return [];
+    return Array.from(node.querySelectorAll("button,input[type='button'],input[type='submit'],a"));
+  }
+
   function isTransientQuantityDialog(node) {
     if (!node) return false;
-    const buttons = Array.from(node.querySelectorAll("button"));
-    const labels = buttons.map(button => (button.innerText || button.textContent || "").replace(/\s+/g, " ").trim());
-    return buttons.length >= 20 &&
+    const controls = dialogControls(node);
+    const labels = controls.map(dialogControlText);
+    const digitCount = new Set(labels.filter(label => /^\d$/.test(label))).size;
+    return digitCount >= 10 &&
       labels.includes("H\u1ee7y b\u1ecf") &&
       labels.includes("Ch\u1ea5p nh\u1eadn");
   }
 
-  async function closeTransientQuantityDialogs() {
+  function dialogZIndex(node) {
+    if (!node) return 0;
+    const view = node.ownerDocument?.defaultView || window;
+    const parsed = Number.parseInt(view.getComputedStyle(node).zIndex, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function transientQuantityDialogs() {
+    const roots = Array.from(document.querySelectorAll(
+      ".k-window,.k-dialog,[role='dialog'],.ui-dialog,.modal,.RadWindow,.rwWindow"
+    ));
+    const controls = Array.from(document.querySelectorAll(
+      "button,input[type='button'],input[type='submit'],a"
+    )).filter(control => ["H\u1ee7y b\u1ecf", "Ch\u1ea5p nh\u1eadn"].includes(dialogControlText(control)));
+
+    controls.forEach(control => {
+      let ancestor = control.parentElement;
+      for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
+        if (isTransientQuantityDialog(ancestor)) {
+          roots.push(ancestor);
+          break;
+        }
+      }
+    });
+
+    return [...new Set(roots)]
+      .filter(node => isLayoutVisible(node) && isTransientQuantityDialog(node))
+      // This website incorrectly leaves aria-hidden="true" on the keyboard
+      // that is still painted. Kendo also keeps older copies at full size, so
+      // the most recently opened/highest z-index dialog is the active one.
+      .sort((left, right) =>
+        dialogZIndex(right) - dialogZIndex(left) ||
+        dialogControls(left).length - dialogControls(right).length
+      );
+  }
+
+  async function closeTransientQuantityDialogs(maxWaitMs = 1800) {
+    const deadline = Date.now() + maxWaitMs;
     let closed = 0;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const dialog = Array.from(document.querySelectorAll(".k-window,[role='dialog']"))
-        .find(node => isVisible(node) && isTransientQuantityDialog(node));
-      if (!dialog) break;
-      const cancelButton = Array.from(dialog.querySelectorAll("button"))
-        .find(button => (button.innerText || button.textContent || "").replace(/\s+/g, " ").trim() === "H\u1ee7y b\u1ecf");
-      if (!cancelButton) break;
+    while (Date.now() < deadline) {
+      const dialog = transientQuantityDialogs()[0];
+      if (!dialog) {
+        if (closed > 0) return closed;
+        await wait(100);
+        continue;
+      }
+      const cancelButton = dialogControls(dialog)
+        .find(control =>
+          isLayoutVisible(control) &&
+          dialogControlText(control) === "H\u1ee7y b\u1ecf"
+        );
+      if (!cancelButton) {
+        await wait(100);
+        continue;
+      }
+
+      // ButtonJs.click() does not consistently call its generated handler.
+      // Close the exact Kendo widget that owns this keyboard first. Calling the
+      // global CodeRunner can target a newer/older nested dialog instead.
+      const dialogWindow = dialog.ownerDocument?.defaultView || window;
+      const jq = dialogWindow.jQuery || dialogWindow.$;
+      const widgetNodes = [
+        dialog,
+        ...Array.from(dialog.querySelectorAll?.(
+          "[data-role='dialog'],.k-window-content,.k-content"
+        ) || [])
+      ];
+      const widget = jq
+        ? widgetNodes.map(node =>
+            jq(node).data("kendoDialog") ||
+            jq(node).data("kendoWindow")
+          ).find(Boolean)
+        : null;
+      if (widget && typeof widget.close === "function") {
+        widget.close();
+      } else {
+        const invoked = invokeRunnerHandler([
+          /^btnCancel_Click$/i,
+          /btnCancel.*Click/i,
+          /Cancel.*Click/i
+        ]);
+        if (!invoked) cancelButton.click();
+      }
+
+      await wait(150);
+      if (!dialog.isConnected || !isLayoutVisible(dialog)) {
+        closed += 1;
+        // Multiple keyboard dialogs can remain painted on top of one another
+        // after adding several products. Close every copy, newest first.
+        continue;
+      }
+
+      // Last-resort DOM click if the Kendo close event was prevented.
       cancelButton.click();
-      closed += 1;
-      await wait(80);
+      await wait(150);
+      if (!dialog.isConnected || !isLayoutVisible(dialog)) {
+        closed += 1;
+        continue;
+      }
+      break;
     }
     return closed;
   }
 
   async function applyInvoicePlan(detail) {
-    const preservedFormState = captureInvoiceFormState();
-    const replaced = await replaceInvoiceItems(detail.items || []);
-    restoreInvoiceFormState(preservedFormState);
-    const hour = applyHourAmount(detail.finalHourAmount);
-    const totals = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);
-    const deadline = Date.now() + 2000;
-    let totalPresent = false;
-    while (Date.now() < deadline) {
-      await wait(200);
-      if (suffixInput("numTONGCONG")?.value) {
-        totalPresent = true;
-        break;
+    await closeTransientQuantityDialogs(500);
+    try {
+      const preservedFormState = captureInvoiceFormState();
+      const replaced = await replaceInvoiceItems(detail.items || []);
+      restoreInvoiceFormState(preservedFormState);
+      const hour = applyHourAmount(detail.finalHourAmount);
+      const totals = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);
+      const deadline = Date.now() + 2000;
+      let totalPresent = false;
+      while (Date.now() < deadline) {
+        await wait(200);
+        if (suffixInput("numTONGCONG")?.value) {
+          totalPresent = true;
+          break;
+        }
       }
+      if (!totalPresent) {
+        throw new Error("Website da reset phan thong tin phieu; chua duoc bam Luu HD.");
+      }
+      const closedInputDialogs = await closeTransientQuantityDialogs();
+      return {
+        ready: true,
+        mode: "kendo-atomic",
+        closedInputDialogs,
+        items: replaced.snapshot.items,
+        currentGoods: totals.goods,
+        currentHour: hour.hourAmount,
+        currentTax: totals.tax,
+        taxRate: valueOf("numTILETHUE"),
+        currentGrand: totals.grand,
+        checkIn: detail.checkIn || "",
+        checkOut: detail.checkOut || ""
+      };
+    } catch (error) {
+      await closeTransientQuantityDialogs();
+      throw error;
     }
-    if (!totalPresent) {
-      throw new Error("Website da reset phan thong tin phieu; chua duoc bam Luu HD.");
-    }
-    const closedInputDialogs = await closeTransientQuantityDialogs();
-    return {
-      ready: true,
-      mode: "kendo-atomic",
-      closedInputDialogs,
-      items: replaced.snapshot.items,
-      currentGoods: totals.goods,
-      currentHour: hour.hourAmount,
-      currentTax: totals.tax,
-      taxRate: valueOf("numTILETHUE"),
-      currentGrand: totals.grand,
-      checkIn: detail.checkIn || "",
-      checkOut: detail.checkOut || ""
-    };
   }
 
   function findInvoiceDate() {
@@ -464,7 +587,7 @@
       // Keep polling below: the generated handler may already own the request.
     }
 
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 2500;
     while (Date.now() < deadline) {
       await wait(180);
       item = exact();
@@ -475,6 +598,35 @@
       if (domMatch) {
         item = exact();
         if (item) return item;
+      }
+    }
+
+    // If the quantity keyboard is the latest dialog, dialogInfo no longer
+    // points to the invoice form and its generated F3 handler is unavailable.
+    // Traverse the remote catalog pages so valid products outside page 1 are
+    // still resolved without depending on that handler.
+    setNativeValue(actualSearchInput, "");
+    try {
+      const resetRequest = dataSource.read();
+      if (resetRequest && typeof resetRequest.then === "function") await resetRequest;
+    } catch (_error) {
+      // Page traversal below has its own bounded polling.
+    }
+    const total = typeof dataSource.total === "function" ? Number(dataSource.total()) : 0;
+    const pageSize = typeof dataSource.pageSize === "function" ? Number(dataSource.pageSize()) : 20;
+    const totalPages = Math.min(20, Math.max(1, Math.ceil(total / Math.max(1, pageSize))));
+    for (let page = 1; page <= totalPages; page += 1) {
+      try {
+        const pageRequest = dataSource.page(page);
+        if (pageRequest && typeof pageRequest.then === "function") await pageRequest;
+      } catch (_error) {
+        continue;
+      }
+      const pageDeadline = Date.now() + 1500;
+      while (Date.now() < pageDeadline) {
+        item = exact();
+        if (item) return item;
+        await wait(120);
       }
     }
     if (!item) throw new Error(`Khong tim thay ma hang ${code} tren danh muc web.`);
