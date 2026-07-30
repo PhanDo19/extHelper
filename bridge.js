@@ -3,12 +3,127 @@
 
   const REQUEST = "invoice-target-mvp:request";
   const RESPONSE = "invoice-target-mvp:response";
+  const SAVE_CAPTURED = "invoice-target-mvp:save-request-captured";
+  let saveCaptureArmedUntil = 0;
 
   function money(value) {
     if (typeof value === "number") return value;
     const text = String(value == null ? "" : value).replace(/[^0-9-]/g, "");
     return Number(text || 0);
   }
+
+  function safeRequestHeaders(headers) {
+    const blocked = /^(authorization|cookie|proxy-authorization)$/i;
+    return Object.fromEntries(Object.entries(headers || {})
+      .filter(([name]) => !blocked.test(name)));
+  }
+
+  function serializeRequestBody(body) {
+    if (body == null) return { bodyType: "none", body: "" };
+    if (typeof body === "string") return { bodyType: "text", body };
+    if (body instanceof URLSearchParams) return { bodyType: "urlencoded", body: body.toString() };
+    if (body instanceof FormData) {
+      const entries = [];
+      body.forEach((value, key) => {
+        entries.push([key, typeof value === "string"
+          ? value
+          : { name: value?.name || "", type: value?.type || "", size: Number(value?.size || 0) }]);
+      });
+      return { bodyType: "formdata", body: entries };
+    }
+    return { bodyType: "unsupported", body: "" };
+  }
+
+  function shouldCaptureSaveRequest(method, url) {
+    if (Date.now() > saveCaptureArmedUntil) return false;
+    if (!/^(POST|PUT|PATCH)$/i.test(String(method || ""))) return false;
+    try {
+      const target = new URL(url, location.href);
+      return target.origin === location.origin && /AddEdit/i.test(target.pathname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function xhrResponseText(xhr) {
+    try { return String(xhr.responseText || "").slice(0, 8000); } catch (_) { return ""; }
+  }
+
+  function emitSaveCapture(record) {
+    window.dispatchEvent(new CustomEvent(SAVE_CAPTURED, {
+      detail: {
+        ...record,
+        url: new URL(record.url, location.href).href,
+        capturedAt: new Date().toISOString()
+      }
+    }));
+    saveCaptureArmedUntil = 0;
+  }
+
+  function installSaveRequestCapture() {
+    if (window.__invoiceTargetSaveCaptureInstalled) return;
+    window.__invoiceTargetSaveCaptureInstalled = true;
+
+    const nativeOpen = XMLHttpRequest.prototype.open;
+    const nativeSend = XMLHttpRequest.prototype.send;
+    const nativeSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this.__invoiceTargetRequest = { method: String(method || "GET"), url: String(url || ""), headers: {} };
+      return nativeOpen.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+      if (this.__invoiceTargetRequest) this.__invoiceTargetRequest.headers[String(name)] = String(value);
+      return nativeSetHeader.call(this, name, value);
+    };
+    XMLHttpRequest.prototype.send = function (body) {
+      const meta = this.__invoiceTargetRequest;
+      if (meta && shouldCaptureSaveRequest(meta.method, meta.url)) {
+        const serialized = serializeRequestBody(body);
+        this.addEventListener("loadend", () => {
+          emitSaveCapture({
+            transport: "xhr",
+            method: meta.method,
+            url: meta.url,
+            headers: safeRequestHeaders(meta.headers),
+            ...serialized,
+            status: Number(this.status || 0),
+            responseText: xhrResponseText(this)
+          });
+        }, { once: true });
+      }
+      return nativeSend.call(this, body);
+    };
+
+    const nativeFetch = window.fetch;
+    if (typeof nativeFetch === "function") {
+      window.fetch = async function (input, init) {
+        const request = input instanceof Request ? input : null;
+        const method = String(init?.method || request?.method || "GET");
+        const url = String(request?.url || input || "");
+        const headers = {};
+        new Headers(init?.headers || request?.headers || {}).forEach((value, name) => { headers[name] = value; });
+        const capture = shouldCaptureSaveRequest(method, url);
+        const serialized = capture ? serializeRequestBody(init?.body) : null;
+        const response = await nativeFetch.apply(this, arguments);
+        if (capture) {
+          let responseText = "";
+          try { responseText = (await response.clone().text()).slice(0, 8000); } catch (_) {}
+          emitSaveCapture({
+            transport: "fetch",
+            method,
+            url,
+            headers: safeRequestHeaders(headers),
+            ...serialized,
+            status: Number(response.status || 0),
+            responseText
+          });
+        }
+        return response;
+      };
+    }
+  }
+
+  installSaveRequestCapture();
 
   function suffixInput(prefix) {
     const pattern = new RegExp(`^${prefix}\\d+$`);
@@ -365,6 +480,115 @@
     return closed;
   }
 
+  function visiblePaymentDialog() {
+    const dialogs = Array.from(document.querySelectorAll(
+      ".k-window,.k-dialog,[role='dialog'],.ui-dialog,.modal"
+    )).filter(isLayoutVisible);
+    return dialogs
+      .filter(dialog => {
+        const text = String(dialog.innerText || "").replace(/\s+/g, " ");
+        return /LƯU HÓA ĐƠN/i.test(text) &&
+          /TỔNG TIỀN/i.test(text) &&
+          /TIỀN MẶT/i.test(text) &&
+          /Tiền thanh toán/i.test(text) &&
+          dialogControls(dialog).some(control =>
+            ["Lưu in", "Lưu thoát"].includes(dialogControlText(control))
+          );
+      })
+      .sort((left, right) => dialogZIndex(right) - dialogZIndex(left))[0] || null;
+  }
+
+  function paymentDialogInputs(dialog) {
+    return Array.from(dialog?.querySelectorAll("input") || [])
+      .filter(input => input.type !== "hidden" && isLayoutVisible(input));
+  }
+
+  function setPaymentInput(input, amount) {
+    if (!input) return;
+    const wasDisabled = input.disabled;
+    const wasReadOnly = input.readOnly;
+    input.disabled = false;
+    input.readOnly = false;
+    const jq = window.jQuery || window.$;
+    const numeric = jq ? jq(input).data("kendoNumericTextBox") : null;
+    if (numeric?.value) {
+      numeric.value(amount);
+      if (typeof numeric.trigger === "function") numeric.trigger("change");
+    }
+    setNativeValue(input, String(amount));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    input.dispatchEvent(new Event("blur", { bubbles: true }));
+    input.readOnly = wasReadOnly;
+    input.disabled = wasDisabled;
+  }
+
+  function normalizePaymentDialog() {
+    const dialog = visiblePaymentDialog();
+    if (!dialog) return { ready: false, reason: "payment-dialog-not-open" };
+    saveCaptureArmedUntil = Date.now() + 2 * 60 * 1000;
+    const inputs = paymentDialogInputs(dialog);
+    if (inputs.length < 5) {
+      return { ready: false, reason: "payment-dialog-fields-missing", fieldCount: inputs.length };
+    }
+
+    // Website order: Tổng tiền, Tiền mặt, Khách đưa, Tiền thanh toán, Trả lại.
+    const [grandInput, cashInput, customerInput, paidInput, changeInput] = inputs;
+    const grand = money(grandInput.value);
+    if (grand <= 0) return { ready: false, reason: "payment-grand-invalid", grand };
+
+    // TIỀN MẶT is the editable source field on this website. Dispatch its
+    // native/Kendo events first so website formulas can update dependent fields.
+    setPaymentInput(cashInput, grand);
+    if (money(customerInput.value) !== grand) setPaymentInput(customerInput, grand);
+    if (money(paidInput.value) !== grand) setPaymentInput(paidInput, grand);
+    if (money(changeInput.value) !== 0) setPaymentInput(changeInput, 0);
+
+    const result = {
+      ready: true,
+      grand,
+      cash: money(cashInput.value),
+      customer: money(customerInput.value),
+      paid: money(paidInput.value),
+      change: money(changeInput.value)
+    };
+    result.ready = result.cash === grand &&
+      result.customer === grand &&
+      result.paid === grand &&
+      result.change === 0;
+    if (!result.ready) result.reason = "payment-values-not-equal";
+    return result;
+  }
+
+  let paymentDialogSyncTimer = 0;
+  function schedulePaymentDialogSync() {
+    clearTimeout(paymentDialogSyncTimer);
+    paymentDialogSyncTimer = window.setTimeout(() => {
+      try {
+        normalizePaymentDialog();
+      } catch (error) {
+        console.error("[InvoiceTarget payment]", error);
+      }
+    }, 50);
+  }
+
+  // Normalize immediately when the website opens its save dialog. Recheck in
+  // capture phase before either official save button can submit the request.
+  new MutationObserver(schedulePaymentDialogSync).observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
+  document.addEventListener("click", event => {
+    const button = event.target?.closest?.("button,input[type='button'],input[type='submit']");
+    if (!button || !["Lưu in", "Lưu thoát"].includes(dialogControlText(button))) return;
+    const result = normalizePaymentDialog();
+    if (!result.ready) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      window.alert("Tiền mặt chưa khớp Tổng tiền. Extension đã chặn lưu để tránh sai hóa đơn.");
+    }
+  }, true);
+
   async function applyInvoicePlan(detail) {
     await closeTransientQuantityDialogs(500);
     try {
@@ -556,65 +780,38 @@
     let item = exact();
     if (item) return item;
 
-    // Direct DataSource filtering is not supported by this remote source and
-    // produces an empty grid. Use the website's F3 search control instead.
+    // Do not click the website's F3/search button here. On the touch sales
+    // screen it opens a full-screen product/keyboard dialog. Repeating that
+    // action while assembling an invoice stacks dialogs and interrupts the
+    // atomic replace before the old rows are removed.
+    //
+    // The catalog is small, so resolve the item deterministically by paging the
+    // existing remote Kendo DataSource.
     const scope = document;
     const searchInput = Array.from(scope.querySelectorAll("input")).find(input =>
       isVisible(input) && /Tìm kiếm\s*\(F3\)/i.test(input.placeholder || "")
     );
-    const searchButton = Array.from(scope.querySelectorAll("button")).find(button =>
-      isVisible(button) && /^btnSearch/i.test(button.id || "")
-    );
     const actualSearchInput = searchInput || scope.querySelector("[id^='txtSearch'][placeholder*='F3']") ||
       scope.querySelector("[placeholder*='F3']");
-    const actualSearchButton = searchButton || scope.querySelector("[id^='btnSearch']");
-    if (!actualSearchInput || !actualSearchButton) throw new Error("Khong tim thay o Tim kiem F3 cua danh muc web.");
-    setNativeValue(actualSearchInput, String(code));
-    const invoked = invokeRunnerHandler([
-      /^btnSearch_Click$/i,
-      /btnSearch.*Click/i,
-      /Search.*Click/i
-    ]);
-    if (!invoked) actualSearchButton.click();
-    // On this form the search button is a generated ButtonJs control. Calling
-    // HTMLElement.click() from the page bridge does not always reach its
-    // generated handler. The grid transport reads txtSearch when it reloads,
-    // so explicitly reload the same Kendo DataSource as a reliable fallback.
+    if (!actualSearchInput) throw new Error("Khong tim thay o Tim kiem F3 cua danh muc web.");
+    setNativeValue(actualSearchInput, "");
     try {
       const request = dataSource.read();
       if (request && typeof request.then === "function") await request;
     } catch (_error) {
-      // Keep polling below: the generated handler may already own the request.
+      // Page traversal below has its own bounded polling.
     }
 
-    const deadline = Date.now() + 2500;
+    const deadline = Date.now() + 1800;
     while (Date.now() < deadline) {
       await wait(180);
       item = exact();
       if (item) return item;
-      const domMatch = Array.from(found.element.querySelectorAll("tbody tr[data-uid]")).some(row =>
-        String(row.cells[1]?.innerText || "").trim() === String(code).trim()
-      );
-      if (domMatch) {
-        item = exact();
-        if (item) return item;
-      }
     }
 
-    // If the quantity keyboard is the latest dialog, dialogInfo no longer
-    // points to the invoice form and its generated F3 handler is unavailable.
-    // Traverse the remote catalog pages so valid products outside page 1 are
-    // still resolved without depending on that handler.
-    setNativeValue(actualSearchInput, "");
-    try {
-      const resetRequest = dataSource.read();
-      if (resetRequest && typeof resetRequest.then === "function") await resetRequest;
-    } catch (_error) {
-      // Page traversal below has its own bounded polling.
-    }
     const total = typeof dataSource.total === "function" ? Number(dataSource.total()) : 0;
     const pageSize = typeof dataSource.pageSize === "function" ? Number(dataSource.pageSize()) : 20;
-    const totalPages = Math.min(20, Math.max(1, Math.ceil(total / Math.max(1, pageSize))));
+    const totalPages = Math.min(50, Math.max(1, Math.ceil(total / Math.max(1, pageSize))));
     for (let page = 1; page <= totalPages; page += 1) {
       try {
         const pageRequest = dataSource.page(page);
@@ -1106,6 +1303,231 @@
     return { changed, snapshot: scan() };
   }
 
+  const SALES_TABLE_ID = "d56b4b85-68c8-44c1-947d-9f3899e55a7c";
+
+  function extractJsonObject(source, startAt) {
+    const start = source.indexOf("{", startAt);
+    if (start < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < source.length; index += 1) {
+      const character = source[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+        continue;
+      }
+      if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) {
+        try { return JSON.parse(source.slice(start, index + 1)); } catch (_) { return null; }
+      }
+    }
+    return null;
+  }
+
+  function currentFormData() {
+    const scripts = Array.from(document.scripts)
+      .map(script => script.textContent || "")
+      .filter(source => source.includes("new AddEdit_JsClient") && source.includes("new DataTransferJs("))
+      .reverse();
+    const visibleInvoiceNo = String(suffixInput("txtNAME")?.value || "").trim();
+    let fallback = null;
+    for (const source of scripts) {
+      const marker = source.indexOf("var formData = new DataTransferJs(");
+      if (marker < 0) continue;
+      const formData = extractJsonObject(source, marker);
+      if (!formData || String(formData._AddEditTableID || "") !== SALES_TABLE_ID) continue;
+      fallback ||= formData;
+      const nameMap = (formData.mapper?.Maps || []).find(map => String(map.Field).toUpperCase() === "NAME");
+      if (!visibleInvoiceNo || String(nameMap?.Value || "").trim() === visibleInvoiceNo) return formData;
+    }
+    if (fallback) return fallback;
+    throw new Error("Khong doc duoc formData cua phieu dang mo.");
+  }
+
+  function localServerDateTime(date) {
+    const pad = value => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+      `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function liveDetailRows() {
+    const found = invoiceGrid();
+    if (!found?.grid?.dataSource) throw new Error("Khong truy cap duoc luoi detail cua phieu.");
+    return Array.from(found.grid.dataSource.data() || []).map((row, index) => {
+      const raw = typeof row.toJSON === "function" ? row.toJSON() : { ...row };
+      const plain = JSON.parse(JSON.stringify(raw));
+      plain.THUTU = index + 1;
+      return plain;
+    });
+  }
+
+  function mapObject(maps) {
+    return Object.fromEntries((maps || []).map(map => [
+      String(map.Field || "").toUpperCase(),
+      map.Value
+    ]));
+  }
+
+  function expectedItemMap(items) {
+    return new Map((items || []).map(item => [String(item.code), {
+      qty: Math.round(Number(item.qty ?? item.newQty) || 0),
+      price: Math.round(Number(item.price) || 0)
+    }]));
+  }
+
+  function validateSavePayload(payload, expected) {
+    if (String(payload?.TableID || "") !== SALES_TABLE_ID ||
+        String(payload?.clientMap?.TableID || "") !== SALES_TABLE_ID) {
+      throw new Error("TableID cua request khong dung bang hoa don.");
+    }
+    const recordId = String(payload?.ID || "");
+    if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(recordId) ||
+        recordId !== String(payload?.clientMap?.ID || "")) {
+      throw new Error("ID phieu trong request khong hop le.");
+    }
+    const fields = mapObject(payload.clientMap.Maps);
+    const expectedGrand = Math.round(Number(expected?.targetGrand) || 0);
+    const expectedGoods = Math.round(Number(expected?.targetGoods) || 0);
+    const expectedHour = Math.round(Number(expected?.targetHour) || 0);
+    if (String(fields.SOHD || "").trim()) throw new Error("Phieu da co so hoa don; Batch API bi chan.");
+    if (expected?.invoiceNo && String(fields.NAME || "") !== String(expected.invoiceNo)) {
+      throw new Error(`Request dang tro toi ${fields.NAME || "phieu khac"}, khong phai ${expected.invoiceNo}.`);
+    }
+    if (money(fields.TONGCONG) !== expectedGrand ||
+        money(fields.TIENHANG) !== expectedGoods ||
+        money(fields.TIENGIO) !== expectedHour) {
+      throw new Error("Tong tien, tien hang hoac tien gio trong request chua khop phuong an.");
+    }
+    ["TILEGIAMGIA", "TIENGIAMGIA", "TILEGIAMGIAGIO", "TIENGIAMGIAGIO"].forEach(field => {
+      if (money(fields[field]) !== 0) throw new Error("Ke toan khong dung giam gia; request da bi chan.");
+    });
+    if (["TIENMAT", "KHACHDUA", "TIENTHANHTOAN"].some(field => money(fields[field]) !== expectedGrand) ||
+        money(fields.TRALAI) !== 0) {
+      throw new Error("Tien mat/khach dua/tien thanh toan chua bang tong cong.");
+    }
+
+    const rows = payload.clientMap.Grids?.find(grid => String(grid.Name).toLowerCase() === "detail")?.Data || [];
+    if (!rows.length) throw new Error("Request khong co dong hang.");
+    const expectedItems = expectedItemMap(expected?.items);
+    const actualItems = new Map();
+    let goods = 0;
+    rows.forEach(row => {
+      const code = String(row.DMATHANG_CODE || row.MAHANG || "").trim();
+      const qty = Math.round(Number(row.SLXUATCHUAQUYDOI ?? row.SLXUAT ?? row.SOLUONG) || 0);
+      const price = Math.round(Number(row.DONGIA) || 0);
+      if (!code || qty <= 0 || price <= 0 || actualItems.has(code)) {
+        throw new Error("Dong hang trong request bi trong, trung ma hoac sai so luong/gia.");
+      }
+      actualItems.set(code, { qty, price });
+      goods += qty * price;
+    });
+    if (goods !== expectedGoods || actualItems.size !== expectedItems.size) {
+      throw new Error("Chi tiet hang trong request khong khop tong tien hang.");
+    }
+    for (const [code, item] of expectedItems) {
+      const actual = actualItems.get(code);
+      if (!actual || actual.qty !== item.qty || actual.price !== item.price) {
+        throw new Error(`Chi tiet ma ${code} chua khop phuong an.`);
+      }
+    }
+    return { invoiceNo: String(fields.NAME || ""), recordId, rowCount: rows.length };
+  }
+
+  function buildCurrentSavePayload(expected) {
+    const formData = currentFormData();
+    const recordId = String(formData._RecordID || formData.mapper?.ID || "");
+    const grand = Math.round(Number(expected?.targetGrand) || valueOf("numTONGCONG"));
+    const goods = Math.round(Number(expected?.targetGoods) || valueOf("numTIENHANG"));
+    const hour = Math.round(Number(expected?.targetHour) || valueOf("numTIENGIO"));
+    const tax = Math.round(Number(expected?.targetTax) || valueOf("numTIENTHUE"));
+    const overrides = {
+      TIENHANG: goods,
+      TIENGIO: hour,
+      TIENTHUE: tax,
+      TILETHUE: 10,
+      TILEGIAMGIA: 0,
+      TIENGIAMGIA: 0,
+      TILEGIAMGIAGIO: 0,
+      TIENGIAMGIAGIO: 0,
+      TONGCONG: grand,
+      TIENMAT: grand,
+      KHACHDUA: grand,
+      TIENTHANHTOAN: grand,
+      TRALAI: 0
+    };
+    const maps = (formData.mapper?.Maps || []).map(map => {
+      const field = String(map.Field || "").toUpperCase();
+      return {
+        Field: map.Field,
+        Value: Object.prototype.hasOwnProperty.call(overrides, field) ? overrides[field] : map.Value
+      };
+    });
+    const payload = {
+      mode: 2,
+      clientMap: {
+        TableID: SALES_TABLE_ID,
+        ID: recordId,
+        Maps: maps,
+        Grids: [{ Name: "detail", Data: liveDetailRows() }],
+        CustomPostTable: [{
+          Name: "LoaiQuy",
+          Data: [
+            { truong: "TRALAI", value: 0 },
+            { truong: "TIENTHANHTOAN", value: grand },
+            { truong: "KHACHDUA", value: grand },
+            { truong: "TIENMAT", value: grand }
+          ]
+        }],
+        CustomPost: {
+          MODEQUANLY: Number(formData.ModeQuanLy) || 30,
+          GioClient: localServerDateTime(new Date())
+        }
+      },
+      TableID: SALES_TABLE_ID,
+      ID: recordId,
+      Loai: Number(formData.Loai) || 0
+    };
+    const verified = validateSavePayload(payload, {
+      ...expected,
+      targetGrand: grand,
+      targetGoods: goods,
+      targetHour: hour
+    });
+    return { payload, verified };
+  }
+
+  async function saveCurrentInvoiceViaApi(expected) {
+    const { payload, verified } = buildCurrentSavePayload(expected);
+    const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+    const endpoint = `${location.origin}/${base}/AddEdit/DoSave?is_ajax=1`;
+    const response = await window.fetch(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json;utf-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify(payload)
+    });
+    let responseText = "";
+    try { responseText = (await response.text()).slice(0, 4000); } catch (_) {}
+    if (!response.ok) throw new Error(`Website tu choi luu API (HTTP ${response.status}).`);
+    return {
+      saved: true,
+      httpStatus: response.status,
+      endpoint: new URL(endpoint).pathname,
+      responseText,
+      ...verified
+    };
+  }
+
   window.addEventListener(REQUEST, async event => {
     const detail = event.detail || {};
     let result;
@@ -1121,7 +1543,9 @@
       else if (detail.action === "applyHourAmount") result = applyHourAmount(detail.value);
       else if (detail.action === "closeInvoiceDetail") result = await closeInvoiceDetail();
       else if (detail.action === "applyInvoiceTotals") result = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);
+      else if (detail.action === "normalizePaymentDialog") result = normalizePaymentDialog();
       else if (detail.action === "applyInvoicePlan") result = await applyInvoicePlan(detail);
+      else if (detail.action === "saveCurrentInvoiceViaApi") result = await saveCurrentInvoiceViaApi(detail);
       else throw new Error("Thao tác không được hỗ trợ.");
       window.dispatchEvent(new CustomEvent(RESPONSE, { detail: { id: detail.id, ok: true, result } }));
     } catch (error) {

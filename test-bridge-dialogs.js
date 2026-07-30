@@ -73,8 +73,40 @@ if (!source.includes("/^btnCancel_Click$/i")) {
 if (!source.includes("dataSource.page(page)")) {
   throw new Error("Remote catalog page traversal fallback is missing.");
 }
+const filterProductSource = extractFunction("filterProduct");
+if (/actualSearchButton\.click|btnSearch_Click/.test(filterProductSource)) {
+  throw new Error("Product resolution must not open the website's F3 keyboard dialog.");
+}
 if (!source.includes("await closeTransientQuantityDialogs();\n      throw error;")) {
   throw new Error("Failed apply must close the transient keyboard.");
+}
+const normalizePaymentSource = extractFunction("normalizePaymentDialog");
+for (const invariant of [
+  "result.cash === grand",
+  "result.customer === grand",
+  "result.paid === grand",
+  "result.change === 0"
+]) {
+  if (!normalizePaymentSource.includes(invariant)) {
+    throw new Error(`Missing payment invariant: ${invariant}`);
+  }
+}
+if (!source.includes('["Lưu in", "Lưu thoát"].includes(dialogControlText(button))')) {
+  throw new Error("Official save controls must run the payment guard.");
+}
+if (!source.includes("event.stopImmediatePropagation()")) {
+  throw new Error("Invalid payment values must block the official save action.");
+}
+for (const requiredCapture of [
+  "function installSaveRequestCapture()",
+  "function shouldCaptureSaveRequest(method, url)",
+  "/AddEdit/i.test(target.pathname)",
+  "invoice-target-mvp:save-request-captured",
+  "/^(authorization|cookie|proxy-authorization)$/i"
+]) {
+  if (!source.includes(requiredCapture)) {
+    throw new Error(`Missing API capture guard: ${requiredCapture}`);
+  }
 }
 
 console.log("bridge transient quantity dialogs: OK");

@@ -8,6 +8,7 @@
   const UI_SESSION_KEY = "invoiceTargetUiSession";
   const STOCK_STATE_META_KEY = "invoiceTargetStockStateMeta";
   const STOCK_STATE_BACKUP_KEY = "invoiceTargetStockStateBackup";
+  const API_TEMPLATE_KEY = "invoiceTargetApiTemplate";
   const DEFAULT_PRIORITY_RULES = [
     { id: "rule-tcto", code: "TCTO", webCode: "1500007", minTotal: 1000000, priority: 1, mode: "rotate", minQty: 1, maxQty: 1, enabled: true },
     { id: "rule-wine", code: "RUOUVANGDO", webCode: "1300013", minTotal: 1000000, priority: 2, mode: "rotate", minQty: 1, maxQty: 1, enabled: true }
@@ -122,6 +123,21 @@
     return stored[STOCK_STATE_BACKUP_KEY] || null;
   }
 
+  async function loadApiTemplate() {
+    if (!globalThis.chrome?.storage?.local) return null;
+    const stored = await chrome.storage.local.get(API_TEMPLATE_KEY);
+    return stored[API_TEMPLATE_KEY] || null;
+  }
+
+  async function saveApiTemplate(template) {
+    if (globalThis.chrome?.storage?.local) await chrome.storage.local.set({ [API_TEMPLATE_KEY]: template });
+    return template;
+  }
+
+  async function clearApiTemplate() {
+    if (globalThis.chrome?.storage?.local) await chrome.storage.local.remove(API_TEMPLATE_KEY);
+  }
+
   async function commitVerifiedInvoice(dataset, statement, ledger) {
     if (globalThis.chrome?.storage?.local) {
       await chrome.storage.local.set({
@@ -137,6 +153,6 @@
     load, save, reset, loadCatalog, saveCatalog, loadStatement, saveStatement,
     loadPriorityRules, savePriorityRules, loadLedger, loadUiSession, saveUiSession,
     clearUiSession, commitVerifiedInvoice, loadStockStateMeta, saveStockStateMeta,
-    importStockState, loadStockStateBackup
+    importStockState, loadStockStateBackup, loadApiTemplate, saveApiTemplate, clearApiTemplate
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

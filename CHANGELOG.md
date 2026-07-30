@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.9.0 (2026-07-30)
+
+- Thêm `Lưu API & đối soát` cho từng phương án đã Accept và nút chạy toàn bộ hàng đợi đã Accept.
+- Dựng payload từ đúng `RecordID`, 93 trường mapper và Kendo detail của phiếu đang mở; không tái sử dụng ID/cookie từ cURL mẫu.
+- Ép `Tiền mặt = Khách đưa = Tiền thanh toán = Tổng cộng`, `Trả lại = 0`, VAT 10% và toàn bộ giảm giá bằng 0 trước khi gửi.
+- Gọi endpoint chính thức `AddEdit/DoSave?is_ajax=1` bằng phiên đăng nhập hiện tại của website.
+- Chạy tuần tự một phiếu mỗi lần và dừng ngay ở lỗi đầu tiên.
+- Sau HTTP thành công, đóng form, mở lại phiếu từ danh sách và đối soát hàng/giờ/VAT/tổng; chỉ khi khớp mới cập nhật sao kê và tồn kho.
+- Không tự phát hành hóa đơn điện tử.
+
+## 1.8.0 (2026-07-30)
+
+- Tự bắt request `Lưu HĐ` thật từ `AddEdit_JsClient` sau khi hộp thanh toán xuất hiện; hỗ trợ XHR và Fetch.
+- Lưu cục bộ method, endpoint, payload, response và header không nhạy cảm để xây Batch API từ dữ liệu thật.
+- Không lưu `Authorization`, `Cookie` hoặc `Proxy-Authorization`; phiên đăng nhập tiếp tục do website quản lý.
+- Hiển thị trạng thái sẵn sàng của mẫu API ngay trong Batch Review.
+- Chưa chạy hàng loạt và chưa ghi tồn/sao kê cho tới khi payload được kiểm tra và đọc lại server thành công.
+
+## 1.7.4 (2026-07-30)
+
+- Đồng bộ bắt buộc `Tiền mặt = Khách đưa = Tiền thanh toán = Tổng tiền` và `Trả lại = 0` khi website mở hộp Lưu hóa đơn.
+- Kiểm tra lại ở capture phase trước nút `Lưu in`/`Lưu thoát`; chặn lệnh lưu nếu các giá trị thanh toán vẫn chưa khớp.
+- Bổ sung bridge action `normalizePaymentDialog` để flow batch API và flow UI dùng chung một quy tắc thanh toán.
+
+## 1.7.3 (2026-07-30)
+
+- Khi áp dụng Batch Review, extension không còn nhấn nút tìm kiếm F3 của website làm mở/chồng nhiều bàn phím chọn hàng.
+- Mặt hàng được tra cứu tuần tự qua các trang của Kendo DataSource trước khi thay thế nguyên tử toàn bộ dòng hóa đơn.
+- Thêm kiểm thử hồi quy để chặn việc gọi lại handler `btnSearch_Click` trong luồng áp dụng phương án.
+
 ## 1.7.2 (2026-07-30)
 
 - Sau khi `Đối soát sau lưu` thành công từ Batch Review, extension tự gọi nút `Thoát` của website để trở về màn hình danh sách phiếu.

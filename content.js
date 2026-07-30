@@ -3,6 +3,7 @@
 
   const REQUEST = "invoice-target-mvp:request";
   const RESPONSE = "invoice-target-mvp:response";
+  const SAVE_CAPTURED = "invoice-target-mvp:save-request-captured";
   const embeddedDataset = globalThis.InvoiceInventoryData || { mappings: [] };
   const embeddedCatalog = globalThis.InvoiceWebCatalog || { source: "data.xlsx", items: [] };
   const extensionVersion = typeof chrome !== "undefined" && chrome.runtime?.getManifest
@@ -26,6 +27,52 @@
   let uiSession = null;
   let sequence = 0;
   let latestScan = null;
+  let apiTemplate = null;
+
+  function apiCaptureSummary(template) {
+    if (!template) return "API: chưa có mẫu Lưu HĐ";
+    let path = "";
+    try { path = new URL(template.url).pathname; } catch (_) { path = template.url || ""; }
+    const state = template.analysis?.ready ? "sẵn sàng" : "cần kiểm tra";
+    return `API: ${template.method || "POST"} ${path} · HTTP ${template.status || 0} · ${state}`;
+  }
+
+  async function receiveSaveRequestCapture(event) {
+    const captured = event.detail || {};
+    if (!captured.url || !captured.method ||
+        !["text", "urlencoded", "formdata"].includes(captured.bodyType)) return;
+    apiTemplate = {
+      schemaVersion: 1,
+      transport: captured.transport || "",
+      method: captured.method,
+      url: captured.url,
+      headers: captured.headers || {},
+      bodyType: captured.bodyType,
+      body: structuredClone(captured.body),
+      status: Number(captured.status || 0),
+      responseText: String(captured.responseText || "").slice(0, 8000),
+      capturedAt: captured.capturedAt || new Date().toISOString()
+    };
+    apiTemplate.analysis = InvoiceApiTemplate.analyze(apiTemplate);
+    await InvoiceMappingStore.saveApiTemplate(apiTemplate);
+    const status = document.getElementById("it-api-capture-status");
+    if (status) {
+      status.textContent = apiCaptureSummary(apiTemplate);
+      status.classList.toggle("ready", Boolean(apiTemplate.analysis?.ready));
+    }
+    setStatus(
+      apiTemplate.analysis?.ready
+        ? "Đã bắt và xác thực request Lưu HĐ: endpoint, chi tiết hàng và tiền mặt đều hợp lệ."
+        : `Đã bắt request nhưng chưa đủ điều kiện Batch API: ${(apiTemplate.analysis?.reasons || []).join(", ")}.`,
+      apiTemplate.analysis?.ready ? "ok" : "error"
+    );
+  }
+
+  window.addEventListener(SAVE_CAPTURED, event => {
+    receiveSaveRequestCapture(event).catch(error =>
+      setStatus(`Không lưu được mẫu API: ${error.message}`, "error")
+    );
+  });
 
   function serializeBatchPlans(plans) {
     return structuredClone((plans || []).map(entry => {
@@ -1089,6 +1136,15 @@
       <label>Số giao dịch tối đa<input id="it-batch-limit" type="number" min="1" max="50" value="${batchLimit}"></label>
       <button id="it-build-batch" type="button" class="primary">Tạo Batch Review</button>
     </div>
+    <div class="it-api-capture-bar">
+      <b>Batch API</b>
+      <span id="it-api-capture-status" class="${apiTemplate?.analysis?.ready ? "ready" : ""}">${escapeHtml(apiCaptureSummary(apiTemplate))}</span>
+      <small>${apiTemplate
+        ? (apiTemplate.analysis?.ready
+          ? "Mẫu đã qua kiểm tra; sẵn sàng nối vào hàng đợi tuần tự."
+          : `Thiếu: ${(apiTemplate.analysis?.reasons || []).join(", ")}`)
+        : "Lưu một phiếu thử bằng nút chính thức của website để tự bắt mẫu."}</small>
+    </div>
     ${pendingNewInvoiceContextHtml()}
     <div id="it-batch-summary"></div>
     <div id="it-batch-table"></div>`;
@@ -1918,6 +1974,7 @@
     if (!summary || !table) return;
     const ready = batchPlans.filter(item => item.status === "ready");
     const planned = batchPlans.filter(item => ["planned", "batch_ready"].includes(item.status));
+    const apiQueue = batchPlans.filter(item => item.status === "batch_ready" && !item.plan?.requiresNewInvoice);
     const alreadyIssued = batchPlans.filter(item => item.status === "already_issued");
     const needNew = batchPlans.filter(item => item.status === "needs_new_invoice");
     const done = batchPlans.filter(item => item.status === "done");
@@ -1969,6 +2026,9 @@
           ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<br><button class="it-confirm-issued" type="button" data-index="${index}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
           ${entry.status === "needs_new_invoice" ? `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>` : ""}
           ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu từ phương án đã Accept</button>` : ""}
+          ${entry.status === "batch_ready" && !plan.requiresNewInvoice
+            ? `<br><button class="it-save-api" type="button" data-index="${index}">Lưu API & đối soát</button>`
+            : ""}
           ${["batch_ready", "planned"].includes(entry.status) && !plan.requiresNewInvoice
             ? `<br><button class="it-apply-accepted" type="button" data-index="${index}">${entry.status === "planned" ? "Mở và áp dụng lại phương án" : "Mở và áp dụng phương án"}</button>`
             : ""}
@@ -1986,17 +2046,20 @@
     table.innerHTML = `<div class="it-batch-actions">
       <label><input id="it-batch-select-all" type="checkbox" checked> Chọn tất cả phương án sẵn sàng</label>
       <button id="it-approve-batch" type="button" class="primary" ${ready.length ? "" : "disabled"}>Accept các phương án đã chọn</button>
+      <button id="it-run-batch-api" type="button" class="primary" ${apiQueue.length ? "" : "disabled"}>Lưu API ${apiQueue.length} phiếu đã Accept</button>
     </div>
     <div class="it-table-wrap"><table class="it-batch-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     table.querySelector("#it-batch-select-all")?.addEventListener("change", event => {
       table.querySelectorAll(".it-batch-select:not(:disabled)").forEach(input => { input.checked = event.target.checked; });
     });
     table.querySelector("#it-approve-batch")?.addEventListener("click", approveBatchPlans);
+    table.querySelector("#it-run-batch-api")?.addEventListener("click", runAcceptedBatchApi);
     table.querySelectorAll(".it-unissued-choice").forEach(select => select.addEventListener("change", chooseUnissuedInvoice));
     table.querySelectorAll(".it-issued-choice").forEach(select => select.addEventListener("change", chooseIssuedInvoice));
     table.querySelectorAll(".it-confirm-issued").forEach(button => button.addEventListener("click", confirmAlreadyIssued));
     table.querySelectorAll(".it-open-pos").forEach(button => button.addEventListener("click", openPosForNewInvoice));
     table.querySelectorAll(".it-apply-accepted").forEach(button => button.addEventListener("click", applyAcceptedBatchPlan));
+    table.querySelectorAll(".it-save-api").forEach(button => button.addEventListener("click", saveAcceptedBatchPlanViaApi));
     table.querySelectorAll(".it-recalculate-accepted").forEach(button => button.addEventListener("click", recalculateAcceptedBatchPlan));
     table.querySelectorAll(".it-verify-batch").forEach(button => button.addEventListener("click", verifyBatchSavedInvoice));
     table.querySelectorAll(".it-retry-batch").forEach(button => button.addEventListener("click", buildBatchReview));
@@ -2262,6 +2325,110 @@
         button.textContent = "Thử mở và áp dụng lại";
       }
       setStatus(`${error.message} Không bấm Lưu HĐ nếu form chưa khớp.`, "error");
+    }
+  }
+
+  function batchButtonProxy(index, button) {
+    if (button) return button;
+    return {
+      dataset: { index: String(index) },
+      disabled: false,
+      textContent: "",
+      isConnected: false,
+      closest: () => null
+    };
+  }
+
+  async function saveBatchEntryViaApi(index, button) {
+    let entry = batchPlans[index];
+    if (!entry || entry.status !== "batch_ready" || entry.plan?.requiresNewInvoice) {
+      throw new Error("Dòng này chưa ở trạng thái Đã Accept hoặc cần tạo phiếu mới.");
+    }
+    const transaction = (statementDataset.transactions || []).find(item =>
+      String(item.id) === String(entry.transactionId || "")
+    );
+    if (!transaction) throw new Error("Không tìm thấy giao dịch sao kê của dòng đã chọn.");
+
+    const proxy = batchButtonProxy(index, button);
+    await applyAcceptedBatchPlan({ target: { closest: () => proxy } });
+    entry = batchPlans[index];
+    if (!entry || entry.status !== "planned" || transaction.status !== "planned") {
+      throw new Error("Không áp dụng được phương án vào form; chưa gửi request lưu.");
+    }
+    const plan = transaction.pendingPlan || entry.plan;
+    const panel = document.getElementById("it-panel");
+    if (panel) panel.hidden = false;
+    await saveBatchUiSession({ panelOpen: true });
+    setStatus(`Đang lưu ${plan.invoiceNo} qua API chính thức của website…`, "warn");
+    const saved = await request("saveCurrentInvoiceViaApi", {
+      invoiceNo: plan.invoiceNo,
+      items: plan.items,
+      targetGrand: plan.grand ?? plan.targetGrand ?? transaction.credit,
+      targetGoods: plan.goods,
+      targetHour: plan.hour,
+      targetTax: plan.tax
+    });
+    if (!saved?.saved) throw new Error(`Website chưa xác nhận lưu ${plan.invoiceNo}.`);
+
+    setStatus(`API đã nhận ${plan.invoiceNo}; đang đóng form và đọc lại từ server…`, "warn");
+    await request("closeInvoiceDetail");
+    await new Promise(resolve => setTimeout(resolve, 450));
+    const verifyProxy = batchButtonProxy(index);
+    await verifyBatchSavedInvoice({ target: { closest: () => verifyProxy } });
+    if (transaction.status !== "done") {
+      throw new Error(`Đã gửi API nhưng chưa đối soát được ${plan.invoiceNo}; tồn kho và sao kê chưa bị thay đổi.`);
+    }
+    return { invoiceNo: plan.invoiceNo, httpStatus: saved.httpStatus };
+  }
+
+  async function saveAcceptedBatchPlanViaApi(event) {
+    const button = event.target.closest("button");
+    const index = Number(button?.dataset.index);
+    try {
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Đang lưu API…";
+      }
+      const result = await saveBatchEntryViaApi(index, button);
+      renderBatchPlans();
+      renderStatementAdmin();
+      setStatus(`Đã lưu và đối soát ${result.invoiceNo}. Sao kê và tồn kho đã được cập nhật.`, "ok");
+    } catch (error) {
+      renderBatchPlans();
+      renderStatementAdmin();
+      setStatus(`Batch API dừng: ${error.message}`, "error");
+    }
+  }
+
+  async function runAcceptedBatchApi(event) {
+    const button = event.target.closest("button");
+    const indexes = batchPlans
+      .map((entry, index) => ({ entry, index }))
+      .filter(item => item.entry.status === "batch_ready" && !item.entry.plan?.requiresNewInvoice)
+      .map(item => item.index);
+    if (!indexes.length) return setStatus("Không có phương án đã Accept nào đủ điều kiện lưu API.", "error");
+    if (button) {
+      button.disabled = true;
+      button.textContent = `Đang xử lý 0/${indexes.length}…`;
+    }
+    let completed = 0;
+    try {
+      for (const index of indexes) {
+        if (button?.isConnected) button.textContent = `Đang xử lý ${completed + 1}/${indexes.length}…`;
+        await saveBatchEntryViaApi(index);
+        completed += 1;
+      }
+      renderBatchPlans();
+      renderStatementAdmin();
+      setStatus(`Đã lưu API và đối soát thành công ${completed}/${indexes.length} phiếu.`, "ok");
+    } catch (error) {
+      renderBatchPlans();
+      renderStatementAdmin();
+      setStatus(
+        `Batch API đã dừng sau ${completed}/${indexes.length} phiếu: ${error.message} ` +
+        "Các phiếu phía sau chưa được gửi; tồn kho chỉ ghi cho phiếu đã đối soát thành công.",
+        "error"
+      );
     }
   }
 
@@ -2563,6 +2730,11 @@
     verificationLedger = await InvoiceMappingStore.loadLedger();
     stockStateMeta = await InvoiceMappingStore.loadStockStateMeta();
     priorityRules = await InvoiceMappingStore.loadPriorityRules();
+    apiTemplate = await InvoiceMappingStore.loadApiTemplate();
+    if (apiTemplate) {
+      apiTemplate.analysis = InvoiceApiTemplate.analyze(apiTemplate);
+      await InvoiceMappingStore.saveApiTemplate(apiTemplate);
+    }
     InvoiceMappingEngine.reconcileCatalog(mappingDataset, webCatalog);
     await InvoiceMappingStore.save(mappingDataset);
     refreshMappingState();
