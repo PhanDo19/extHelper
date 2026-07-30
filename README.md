@@ -1,5 +1,22 @@
 # Khớp tổng tiền hóa đơn — stock-first MVP
 
+## Quy tắc ghép phiếu trong Batch Review
+
+Khi một ngày có nhiều phiếu chưa xuất, extension tự chọn phiếu có `Tổng cộng` hiện tại gần số tiền sao kê nhất. Một phiếu chỉ được gán cho một giao dịch trong cùng lượt Batch Review. Kết quả tự chọn và mức chênh lệch được hiển thị để người dùng kiểm tra trước khi Accept.
+
+## Bàn giao trạng thái tồn không cần backend
+
+Phiên bản 1.4.2 có hai nút `Nhập trạng thái tồn` và `Xuất trạng thái tồn`.
+
+- Cuối ca, bấm `Xuất trạng thái tồn` để tải file JSON chỉ chứa mã kho, thông tin nhận diện và số lượng khả dụng.
+- Đầu ca hoặc trên máy khác, bấm `Nhập trạng thái tồn`, xem bảng so sánh rồi mới xác nhận.
+- Import chỉ merge `availableQty` theo đúng `stockCode`; không ghi đè danh mục web, ánh xạ, sao kê, rule ưu tiên, sổ đối soát hoặc phiên Batch Review.
+- Mã mới trong file chưa có ánh xạ sẽ được cảnh báo và chưa thêm tự động; mã hiện tại bị thiếu trong file sẽ được giữ nguyên.
+- Extension cảnh báo file cũ, file trùng hoặc file thuộc nhánh bàn giao khác.
+- Ngay trước khi nhập, trạng thái hiện tại được sao lưu trong `chrome.storage.local`.
+
+Mô hình này phù hợp khi một người xử lý tuần tự. Chưa dùng cùng một file cho nhiều người/máy làm song song; trường hợp đó cần backend/DB để khóa và đồng bộ tồn.
+
 Extension chỉ dành cho `banhang.thuanvietsoft.com`. Mã nguồn được phát triển trực tiếp trong thư mục này; không tạo thư mục phiên bản mới.
 
 ## Dữ liệu đang có
@@ -32,8 +49,9 @@ Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
 5. Bấm **Nhập sao kê.xlsx**, sau đó mở **Batch Review** để lập trước tối đa 50 phương án.
 6. Kiểm tra tổng tiền, phiếu, tiền hàng, tiền giờ, VAT và chi tiết mã hàng; chỉ **Accept** các dòng hợp lệ.
 7. Các phương án đã Accept đi vào hàng đợi `batch_ready` và được giữ nguyên, chưa sửa hoặc lưu hóa đơn.
-8. Xử lý tuần tự từng dòng đã Accept: extension mở đúng phiếu, áp dụng phương án; người dùng kiểm tra rồi bấm **Lưu HĐ**.
-9. Mở lại phiếu và đối soát sau lưu để trừ tồn kho chính thức.
+8. Với dòng `needs_new_invoice`, bấm **Mở tab Bán hàng mới để tạo phiếu**. Tab danh sách được giữ nguyên; tab mới tự khôi phục ngày, tổng mục tiêu, diễn giải giao dịch và Batch Review.
+9. Xử lý tuần tự từng dòng đã Accept: extension mở đúng phiếu, áp dụng phương án; người dùng kiểm tra rồi bấm **Lưu HĐ**.
+10. Mở lại phiếu và đối soát sau lưu để trừ tồn kho chính thức.
 
 ## Quy tắc dữ liệu
 
@@ -43,6 +61,9 @@ Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
 - Khi nhập snapshot mới, ánh xạ confirmed được giữ theo `stockCode`; ánh xạ mới chỉ được đề xuất ở trạng thái review.
 - Khi nhập danh mục web mới, tên/đơn vị/giá được cập nhật theo `webCode`; mã đã biến mất chuyển về review.
 - Bộ giải bắt đầu mọi số lượng từ 0; hàng cũ trên hóa đơn không phải nguồn tồn.
+- Bộ giải ưu tiên 3–6 mã hàng khác nhau, phạt lặp nhiều cùng một sản phẩm và luôn lấy giới hạn thấp hơn giữa tồn kho với trần thực tế/phiếu.
+- Trần mặc định: hoa quả 1, rượu vang 1, thuốc lá 2, đồ khô 2–4, nước 6, bia 12; riêng Mắc Ca tối đa 2 hộp.
+- Accept chỉ cập nhật form website, chưa thay đổi tồn. Nếu sửa lại phiếu đã ghi sổ, lần Đối soát sau lưu kế tiếp sẽ hoàn phương án cũ rồi trừ phương án mới trong cùng một giao dịch lưu.
 
 ## Cấu trúc mã
 
@@ -66,6 +87,7 @@ node test-solver.js
 node test-bank-statement.js
 node test-post-save.js
 node test-batch-review.js
+node test-ui-session.js
 ```
 
 Chi tiết Batch Review xem tại `BATCH_REVIEW.md`.
@@ -94,5 +116,7 @@ Triển khai thao tác an toàn trên Kendo Grid: tạo bản sao trạng thái,
 - Tách tiền sao kê thành tổng trước VAT và VAT theo công thức website: `trước VAT = tổng / 1,1`.
 - Tiền hàng mục tiêu ban đầu bằng tổng trước VAT trừ tiền giờ hiện tại.
 - Nếu tổ hợp hàng không khớp hoàn toàn, phần chênh được chuyển sang tiền giờ để tổng sau VAT vẫn khớp sao kê.
+- Phần tiền giờ suy ra từ thời gian vẫn làm tròn theo bước `0,01 giờ`; chênh lệch lẻ còn lại (ví dụ 91 đồng) được ghi trực tiếp vào Tiền giờ, không dùng giảm giá và không bẻ VAT.
 - Hiển thị tiền giờ mới và giờ ra đề xuất; người dùng có thể bấm **Áp dụng giờ ra đề xuất** để website tính lại tiền giờ. Extension vẫn không tự bấm Lưu HĐ.
 - Tiền giờ được mô hình hóa theo website: làm tròn thời lượng đến `0,01 giờ`, sau đó nhân đơn giá giờ suy ra từ phiếu. Với phiếu đã kiểm tra, đơn giá là 600.000/giờ và bước tiền là 6.000.
+- Giá ưu tiên hiện hành: `TC` 350.000 và `TCTO` 400.000 theo danh mục web.

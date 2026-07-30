@@ -85,6 +85,32 @@
     return { checkOut: checkOutInput.value };
   }
 
+  function applyInvoiceTimes(checkInValue, checkOutValue) {
+    const checkInDate = parseDateTime(checkInValue);
+    const checkOutDate = parseDateTime(checkOutValue);
+    if (!checkInDate || !checkOutDate || checkOutDate < checkInDate) {
+      throw new Error("Khoang gio vao/ra cua phuong an phieu moi khong hop le.");
+    }
+    const inputs = Array.from(document.querySelectorAll("input")).filter(input => isVisible(input) && parseDateTime(input.value));
+    if (inputs.length < 2) throw new Error("Khong tim thay o gio vao/ra dang hien thi.");
+    const checkInInput = inputs.find(input => /GIOVAO|NGAYVAO|CHECKIN|START/i.test(`${input.id} ${input.name}`)) || inputs[0];
+    const remaining = inputs.filter(input => input !== checkInInput);
+    const checkOutInput = remaining.find(input => /GIORA|NGAYRA|CHECKOUT|END/i.test(`${input.id} ${input.name}`)) || remaining[0];
+    const jq = window.jQuery || window.$;
+    const applyValue = (input, date, text) => {
+      const picker = jq ? jq(input).data("kendoDateTimePicker") : null;
+      if (picker?.value) {
+        picker.value(date);
+        if (typeof picker.trigger === "function") picker.trigger("change");
+      }
+      setNativeValue(input, text);
+      input.dispatchEvent(new Event("blur", { bubbles: true }));
+    };
+    applyValue(checkInInput, checkInDate, checkInValue);
+    applyValue(checkOutInput, checkOutDate, checkOutValue);
+    return { checkIn: checkInInput.value, checkOut: checkOutInput.value };
+  }
+
   function applyHourAmount(value) {
     const amount = Math.max(0, Math.round(Number(value) || 0));
     const input = suffixInput("numTIENGIO");
@@ -197,6 +223,31 @@
     return { goods, hour, tax, grand: valueOf("numTONGCONG") };
   }
 
+  function isTransientQuantityDialog(node) {
+    if (!node) return false;
+    const buttons = Array.from(node.querySelectorAll("button"));
+    const labels = buttons.map(button => (button.innerText || button.textContent || "").replace(/\s+/g, " ").trim());
+    return buttons.length >= 20 &&
+      labels.includes("H\u1ee7y b\u1ecf") &&
+      labels.includes("Ch\u1ea5p nh\u1eadn");
+  }
+
+  async function closeTransientQuantityDialogs() {
+    let closed = 0;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const dialog = Array.from(document.querySelectorAll(".k-window,[role='dialog']"))
+        .find(node => isVisible(node) && isTransientQuantityDialog(node));
+      if (!dialog) break;
+      const cancelButton = Array.from(dialog.querySelectorAll("button"))
+        .find(button => (button.innerText || button.textContent || "").replace(/\s+/g, " ").trim() === "H\u1ee7y b\u1ecf");
+      if (!cancelButton) break;
+      cancelButton.click();
+      closed += 1;
+      await wait(80);
+    }
+    return closed;
+  }
+
   async function applyInvoicePlan(detail) {
     const preservedFormState = captureInvoiceFormState();
     const replaced = await replaceInvoiceItems(detail.items || []);
@@ -215,9 +266,11 @@
     if (!totalPresent) {
       throw new Error("Website da reset phan thong tin phieu; chua duoc bam Luu HD.");
     }
+    const closedInputDialogs = await closeTransientQuantityDialogs();
     return {
       ready: true,
       mode: "kendo-atomic",
+      closedInputDialogs,
       items: replaced.snapshot.items,
       currentGoods: totals.goods,
       currentHour: hour.hourAmount,
@@ -491,8 +544,14 @@
       if (typeof row.set === "function") row.set(field, value);
       else row[field] = value;
     };
-    const originalTemplate = allInvoiceRows()[0];
-    if (!originalTemplate) throw new Error("Hoa don khong co dong mau de tao chi tiet hang.");
+    let originalTemplate = allInvoiceRows()[0];
+    if (!originalTemplate) {
+      await addProductThroughWebsite(products, requested[0].code, 1);
+      await wait(500);
+      invoice = invoiceGrid();
+      originalTemplate = allInvoiceRows()[0];
+    }
+    if (!originalTemplate) throw new Error("Website khong tao duoc dong hang mau cho phieu moi.");
     const rawValue = (raw, names) => {
       const keys = Object.keys(raw || {});
       const key = keys.find(candidate => names.some(name => candidate.toUpperCase() === name));
@@ -709,6 +768,59 @@
     }
   }
 
+  async function findIssuedInvoiceByAmount(dateKey, amount) {
+    const expected = dateDisplay(dateKey);
+    if (!expected) throw new Error("Ngày giao dịch không hợp lệ.");
+    if (!invoiceListElement()) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
+    rememberInvoiceListDialog();
+
+    const dateInputs = Array.from(document.querySelectorAll('input[type="text"]')).filter(input => normalizeDateKey(input.value));
+    if (dateInputs.length < 2) throw new Error("Không tìm thấy bộ lọc Từ ngày/Đến ngày.");
+    const jq = window.jQuery || window.$;
+    dateInputs.slice(0, 2).forEach(input => {
+      const picker = jq ? jq(input).data("kendoDatePicker") : null;
+      if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
+      setNativeValue(input, expected);
+    });
+
+    // Radio "Đã xuất hóa đơn" là _1 (đối ứng "Chưa xuất" _2); dự phòng theo nhãn.
+    const issuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_1"]') ||
+      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Đã xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
+    if (!issuedRadio) throw new Error('Không tìm thấy bộ lọc "Đã xuất hóa đơn".');
+    if (!issuedRadio.checked) issuedRadio.click();
+    if (!issuedRadio.checked) {
+      issuedRadio.checked = true;
+      issuedRadio.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    const refresh = document.querySelector('[id^="btnRefresh"]') ||
+      Array.from(document.querySelectorAll("button")).find(button => (button.innerText || "").trim() === "Refresh");
+    if (!refresh) throw new Error("Không tìm thấy nút Refresh của danh sách phiếu.");
+    const originalAlert = window.alert;
+    const suppressedAlerts = [];
+    window.alert = message => { suppressedAlerts.push(String(message || "")); };
+    const target = Math.round(Number(amount) || 0);
+    try {
+      refresh.click();
+      const startedAt = Date.now();
+      const deadline = startedAt + 22000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 180));
+        const rows = invoiceListRows();
+        if (rows.length && rows.every(row => row.dateKey === dateKey)) {
+          const matches = rows.filter(row => Math.round(Number(row.grandTotal) || 0) === target);
+          return { dateKey, invoiceStatus: "issued", suppressedAlerts, target, matches, rows };
+        }
+        if (Date.now() - startedAt > 2500 && !document.querySelector(".k-loading-mask") && !rows.length) {
+          return { dateKey, invoiceStatus: "issued", suppressedAlerts, target, matches: [], rows: [] };
+        }
+      }
+      throw new Error("Danh sách phiếu chưa tải xong. Hãy thử lại.");
+    } finally {
+      window.alert = originalAlert;
+    }
+  }
+
   async function openInvoiceCandidate(uid, invoiceNo) {
     const grid = invoiceListElement();
     if (!grid) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
@@ -850,8 +962,10 @@
       else if (detail.action === "apply") result = apply(detail.changes);
       else if (detail.action === "replaceInvoiceItems") result = await replaceInvoiceItems(detail.items);
       else if (detail.action === "findInvoiceCandidates") result = await findInvoiceCandidates(detail.dateKey, detail.usedInvoiceNos);
+      else if (detail.action === "findIssuedInvoiceByAmount") result = await findIssuedInvoiceByAmount(detail.dateKey, detail.amount);
       else if (detail.action === "openInvoiceCandidate") result = await openInvoiceCandidate(detail.uid, detail.invoiceNo);
       else if (detail.action === "applyCheckOut") result = applyCheckOut(detail.value);
+      else if (detail.action === "applyInvoiceTimes") result = applyInvoiceTimes(detail.checkIn, detail.checkOut);
       else if (detail.action === "applyHourAmount") result = applyHourAmount(detail.value);
       else if (detail.action === "closeInvoiceDetail") result = await closeInvoiceDetail();
       else if (detail.action === "applyInvoiceTotals") result = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);

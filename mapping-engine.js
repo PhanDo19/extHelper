@@ -86,7 +86,7 @@
   function applyBusinessRules(dataset) {
     const rules = {
       TC: { webCode: "1500006", webName: "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", webUnit: "đĩa", webPrice: 350000 },
-      TCTO: { webCode: "1500007", webName: "HOA QUẢ THẬP CẨM (ĐĨA TO)", webUnit: "đĩa", webPrice: 450000 }
+      TCTO: { webCode: "1500007", webName: "HOA QUẢ THẬP CẨM (ĐĨA TO)", webUnit: "đĩa", webPrice: 400000 }
     };
     for (const row of dataset?.mappings || []) {
       const rule = rules[String(row.stockCode)];

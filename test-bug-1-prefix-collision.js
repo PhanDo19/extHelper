@@ -1,54 +1,28 @@
-// Test BUG-1: suffixInput should match exact id patterns to avoid prefix collision
-// Example: "numTILEGIAMGIA123" vs "numTILEGIAMGIAGIO456"
+const assert = require("assert");
+const fs = require("fs");
 
-(function () {
-  "use strict";
+const source = fs.readFileSync("bridge.js", "utf8");
+const match = source.match(/function suffixInput\(prefix\)\s*\{([\s\S]*?)\n\s*\}/);
 
-  // Simulate the fixed suffixInput function
-  function suffixInput(prefix) {
-    const pattern = new RegExp(`^${prefix}\\d+$`);
-    const candidates = Array.from(document.querySelectorAll(`[id^="${prefix}"]`)).filter(el => pattern.test(el.id));
-    return candidates.find(isVisible) || candidates.reverse().find(input => input.isConnected) || null;
-  }
+assert.ok(match, "bridge.js must define suffixInput(prefix)");
+assert.ok(
+  match[1].includes("new RegExp(`^${prefix}\\\\d+$`)"),
+  "suffixInput must match the exact prefix followed only by a numeric suffix"
+);
 
-  function isVisible(element) {
-    if (!element || !element.isConnected) return false;
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) return false;
-    return true;
-  }
+function matchingIds(prefix, ids) {
+  const pattern = new RegExp(`^${prefix}\\d+$`);
+  return ids.filter(id => pattern.test(id));
+}
 
-  // Create mock DOM with colliding prefixes
-  const testDiv = document.createElement("div");
-  const input1 = document.createElement("input");
-  input1.id = "numTILEGIAMGIA355";
-  input1.value = "100";
-  input1.style.display = "block";
+assert.deepStrictEqual(
+  matchingIds("numTILEGIAMGIA", [
+    "numTILEGIAMGIA355",
+    "numTILEGIAMGIAGIO355",
+    "numTILEGIAMGIA",
+    "numTILEGIAMGIAABC"
+  ]),
+  ["numTILEGIAMGIA355"]
+);
 
-  const input2 = document.createElement("input");
-  input2.id = "numTILEGIAMGIAGIO355";
-  input2.value = "200";
-  input2.style.display = "block";
-
-  testDiv.appendChild(input1);
-  testDiv.appendChild(input2);
-  document.body.appendChild(testDiv);
-
-  try {
-    // Test: suffixInput("numTILEGIAMGIA") should find input1, NOT input2
-    const result = suffixInput("numTILEGIAMGIA");
-    const pass = result === input1;
-
-    console.log(`BUG-1 test: ${pass ? "OK" : "FAIL"}`);
-    if (!pass) {
-      console.error(`  Expected id="numTILEGIAMGIA355", got id="${result?.id || 'null'}"`);
-    }
-
-    // Cleanup
-    document.body.removeChild(testDiv);
-  } catch (error) {
-    console.error("BUG-1 test: ERROR -", error.message);
-    if (testDiv.parentElement) document.body.removeChild(testDiv);
-  }
-})();
+console.log("BUG-1 prefix collision: OK");

@@ -37,20 +37,84 @@
     };
   }
 
-  function scoreQuantities(qty, current) {
+  function reconcileHourAmount(goodsAmount, preTaxTarget, roundedHourAmount) {
+    const goods = Math.round(Number(goodsAmount) || 0);
+    const preTax = Math.round(Number(preTaxTarget) || 0);
+    const finalHourAmount = preTax - goods;
+    const hourFromTime = roundedHourAmount == null
+      ? finalHourAmount
+      : Math.round(Number(roundedHourAmount) || 0);
+    return {
+      finalHourAmount,
+      hourFromTime,
+      hourAdjustment: finalHourAmount - hourFromTime
+    };
+  }
+
+  const REALISTIC_MAX_BY_WEB_CODE = Object.freeze({
+    "1000064": 2 // Hạt Mắc Ca hộp 500g
+  });
+
+  function normalizeSearchText(value) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[đĐ]/g, "d")
+      .toUpperCase();
+  }
+
+  function recommendInvoiceLimit(stock) {
+    const code = String(stock?.webCode || stock?.code || "");
+    const explicit = Number(REALISTIC_MAX_BY_WEB_CODE[code]);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    if (stock?.availabilityMode === "per_invoice") {
+      return Math.max(1, Math.floor(Number(stock.availableQty) || 1));
+    }
+
+    const name = normalizeSearchText(stock?.webName || stock?.name);
+    const unit = normalizeSearchText(stock?.webUnit || stock?.unit);
+    if (code.startsWith("15")) return 1;
+    if (code.startsWith("13")) return 1;
+    if (code.startsWith("14")) return 2;
+    if (code.startsWith("11")) return name.includes("BIA") ? 12 : 6;
+    if (code.startsWith("10")) {
+      if (unit.includes("HOP")) return 2;
+      if (unit.includes("GOI")) return 3;
+      return 4;
+    }
+    return 4;
+  }
+
+  function scoreQuantities(qty, current, items, options) {
+    const opts = options || {};
     let changedLines = 0;
     let changedUnits = 0;
     let totalUnits = 0;
+    let activeLines = 0;
+    let concentrationPenalty = 0;
     for (let i = 0; i < qty.length; i += 1) {
       if (qty[i] !== current[i]) changedLines += 1;
       changedUnits += Math.abs(qty[i] - current[i]);
       totalUnits += qty[i];
+      if (qty[i] > 0) activeLines += 1;
+      concentrationPenalty += Math.max(0, qty[i] - 1) ** 2;
     }
-    return changedLines * 1000000 + changedUnits * 1000 + totalUnits;
+    const preferredLineCount = Math.max(1, Math.round(Number(opts.preferredLineCount) || 4));
+    const lineCountPenalty = Math.abs(activeLines - preferredLineCount);
+    return lineCountPenalty * 100000 +
+      concentrationPenalty * 10000 +
+      changedLines * 1000 +
+      changedUnits * 10 +
+      totalUnits;
   }
 
   function solveQuantities(items, targetAmount, options) {
-    const opts = Object.assign({ maxQty: 99, tolerance: 5000, maxStates: 120000 }, options || {});
+    const opts = Object.assign({
+      maxQty: 99,
+      tolerance: 5000,
+      maxStates: 120000,
+      maxActiveLines: Number.POSITIVE_INFINITY
+    }, options || {});
     const usable = items.filter(item => Number(item.price) > 0);
     if (!usable.length) return { ok: false, reason: "Không có dòng hàng có đơn giá hợp lệ." };
 
@@ -72,6 +136,7 @@
       const price = scaledPrices[index];
       for (const [amount, quantities] of states) {
         const itemLimit = Number.isFinite(Number(usable[index].maxQty)) ? Math.max(0, Math.floor(Number(usable[index].maxQty))) : opts.maxQty;
+        const activeLinesUsed = quantities.reduce((sum, value) => sum + (Number(value) > 0 ? 1 : 0), 0);
         let groupRemaining = Number.POSITIVE_INFINITY;
         const group = usable[index].constraintGroup;
         const groupMax = Number(usable[index].constraintGroupMax);
@@ -85,10 +150,12 @@
         const lower = Math.max(0, Math.floor(Number(usable[index].minQty) || 0));
         const upper = Math.min(opts.maxQty, itemLimit, groupRemaining, Math.floor((maxAmount - amount) / price));
         for (let qty = lower; qty <= upper; qty += 1) {
+          if (qty > 0 && activeLinesUsed >= Number(opts.maxActiveLines)) continue;
           const newAmount = amount + qty * price;
           const candidate = quantities.concat(qty);
           const existing = next.get(newAmount);
-          if (!existing || scoreQuantities(candidate, current.slice(0, candidate.length)) < scoreQuantities(existing, current.slice(0, existing.length))) {
+          if (!existing || scoreQuantities(candidate, current.slice(0, candidate.length), usable.slice(0, candidate.length), opts) <
+            scoreQuantities(existing, current.slice(0, existing.length), usable.slice(0, existing.length), opts)) {
             next.set(newAmount, candidate);
           }
         }
@@ -97,7 +164,9 @@
         const ranked = [...next.entries()].sort((a, b) => {
           const da = Math.abs(a[0] - scaledTarget);
           const db = Math.abs(b[0] - scaledTarget);
-          return da - db || scoreQuantities(a[1], current.slice(0, a[1].length)) - scoreQuantities(b[1], current.slice(0, b[1].length));
+          return da - db ||
+            scoreQuantities(a[1], current.slice(0, a[1].length), usable.slice(0, a[1].length), opts) -
+            scoreQuantities(b[1], current.slice(0, b[1].length), usable.slice(0, b[1].length), opts);
         });
         states = new Map(ranked.slice(0, opts.maxStates));
       } else {
@@ -116,7 +185,7 @@
       const preTaxDifference = hourActual == null ? null : actual + hourActual - preTaxTarget;
       const finalAbs = preTaxDifference == null ? Math.abs(difference) : Math.abs(preTaxDifference);
       const hourDeviation = hourActual == null ? 0 : Math.abs(hourActual - Number(opts.currentHour || 0));
-      const quantityScore = scoreQuantities(quantities, current);
+      const quantityScore = scoreQuantities(quantities, current, usable, opts);
       const better = !best || finalAbs < best.finalAbs ||
         (finalAbs === best.finalAbs && hourDeviation < best.hourDeviation) ||
         (finalAbs === best.finalAbs && hourDeviation === best.hourDeviation && quantityScore < best.quantityScore);
@@ -138,5 +207,14 @@
     };
   }
 
-  return { gcd, gcdAll, derivePreTax, deriveInvoiceTargets, deriveGoodsTarget, solveQuantities };
+  return {
+    gcd,
+    gcdAll,
+    derivePreTax,
+    deriveInvoiceTargets,
+    deriveGoodsTarget,
+    reconcileHourAmount,
+    recommendInvoiceLimit,
+    solveQuantities
+  };
 });

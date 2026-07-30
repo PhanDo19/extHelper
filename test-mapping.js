@@ -40,4 +40,7 @@ assert.equal(report.updated, 1);
 assert.equal(report.missing, 1);
 assert.equal(reconcileData.mappings[0].webPrice, 15000);
 assert.equal(reconcileData.mappings[1].status, "review");
+const fruitRules = engine.applyBusinessRules({ mappings: [{ stockCode: "TCTO" }] });
+assert.equal(fruitRules.mappings[0].webPrice, 400000);
+assert.equal(fruitRules.mappings[0].perInvoiceMax, 1);
 console.log("mapping-engine: OK");

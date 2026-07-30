@@ -5,6 +5,9 @@
   const RESPONSE = "invoice-target-mvp:response";
   const embeddedDataset = globalThis.InvoiceInventoryData || { mappings: [] };
   const embeddedCatalog = globalThis.InvoiceWebCatalog || { source: "data.xlsx", items: [] };
+  const extensionVersion = typeof chrome !== "undefined" && chrome.runtime?.getManifest
+    ? chrome.runtime.getManifest().version
+    : "";
   let catalogDataset = embeddedCatalog;
   let webCatalog = embeddedCatalog.items || [];
   let mappingDataset = embeddedDataset;
@@ -17,13 +20,244 @@
   let lastPriorityTarget = null;
   let currentBankTransaction = null;
   let batchPlans = [];
+  let pendingStockStateImport = null;
+  let stockStateMeta = null;
+  let pendingNewInvoice = null;
+  let uiSession = null;
   let sequence = 0;
   let latestScan = null;
+
+  function serializeBatchPlans(plans) {
+    return structuredClone((plans || []).map(entry => {
+      const copy = { ...entry, transactionId: String(entry.transactionId || entry.transaction?.id || "") };
+      delete copy.transaction;
+      return copy;
+    }));
+  }
+
+  function reconcileBatchPlanStatus(entryStatus, transactionStatus) {
+    return ["done", "planned", "batch_ready"].includes(transactionStatus)
+      ? transactionStatus
+      : entryStatus;
+  }
+
+  function hydrateBatchPlans(plans, transactions) {
+    const byId = new Map((transactions || []).map(transaction => [String(transaction.id), transaction]));
+    return structuredClone(plans || []).map(entry => {
+      const transaction = byId.get(String(entry.transactionId || ""));
+      return transaction
+        ? {
+            ...entry,
+            status: reconcileBatchPlanStatus(entry.status, transaction.status),
+            transaction
+          }
+        : null;
+    }).filter(Boolean);
+  }
+
+  function syncBatchPlanTransaction(transaction) {
+    const transactionId = String(transaction?.id || "");
+    if (!transactionId) return false;
+    const entry = batchPlans.find(item => String(item.transactionId) === transactionId);
+    if (!entry) return false;
+    entry.status = reconcileBatchPlanStatus(entry.status, transaction.status);
+    entry.transaction = transaction;
+    return true;
+  }
+
+  async function saveBatchUiSession(overrides) {
+    const panel = document.getElementById("it-panel");
+    const limit = Number(document.getElementById("it-batch-limit")?.value) || Number(uiSession?.batchLimit) || 10;
+    uiSession = {
+      schemaVersion: 1,
+      mode: "batch",
+      panelOpen: panel ? !panel.hidden : Boolean(uiSession?.panelOpen),
+      batchLimit: Math.max(1, Math.min(50, limit)),
+      batchPlans: serializeBatchPlans(batchPlans),
+      pendingNewInvoice: pendingNewInvoice ? structuredClone(pendingNewInvoice) : null,
+      updatedAt: new Date().toISOString(),
+      ...(overrides || {})
+    };
+    await InvoiceMappingStore.saveUiSession(uiSession);
+    return uiSession;
+  }
+
+  function isRendered(element) {
+    if (!element || !element.getClientRects().length) return false;
+    const style = getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden";
+  }
+
+  function isSalesWorkspacePage() {
+    const salesLink = Array.from(document.querySelectorAll("a"))
+      .find(anchor => (anchor.innerText || "").trim() === "Bán hàng" && anchor.href);
+    if (!salesLink) return false;
+    const current = new URL(location.href);
+    const sales = new URL(salesLink.href, location.href);
+    return current.pathname === sales.pathname &&
+      current.searchParams.get("ID") === sales.searchParams.get("ID") &&
+      current.searchParams.get("MenuID") === sales.searchParams.get("MenuID");
+  }
+
+  function normalizeRoomText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
+  function isIdleRoomLabel(label, visibleText) {
+    const roomName = normalizeRoomText(label);
+    return Boolean(roomName) &&
+      roomName.toLocaleUpperCase("vi-VN") !== "BÁN LẺ" &&
+      normalizeRoomText(visibleText) === roomName;
+  }
+
+  async function autoOpenIdleRoomInvoiceForm() {
+    if (!pendingNewInvoice || !isSalesWorkspacePage()) return { opened: false, roomName: "" };
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const saveButton = Array.from(document.querySelectorAll("button"))
+        .find(button => (button.innerText || "").trim() === "Lưu HĐ" && isRendered(button));
+      if (saveButton) return { opened: true, roomName: pendingNewInvoice.roomName || "" };
+      const idleRoom = Array.from(document.querySelectorAll(".table.context"))
+        .find(room => {
+          const image = room.querySelector("img[alt]");
+          return isRendered(room) && isRendered(image) &&
+            isIdleRoomLabel(image?.getAttribute("alt"), room.innerText);
+        });
+      if (idleRoom) {
+        const roomName = normalizeRoomText(idleRoom.querySelector("img[alt]")?.getAttribute("alt"));
+        idleRoom.querySelector("img[alt]")?.click();
+        for (let wait = 0; wait < 30; wait += 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          const openedSaveButton = Array.from(document.querySelectorAll("button"))
+            .find(button => (button.innerText || "").trim() === "Lưu HĐ" && isRendered(button));
+          if (openedSaveButton) return { opened: true, roomName };
+        }
+        return { opened: false, roomName };
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return { opened: false, roomName: "" };
+  }
+
+  async function applyPendingNewInvoicePlan(transaction) {
+    const plan = pendingNewInvoice?.plan || transaction?.batchApprovedPlan;
+    if (!transaction || !plan?.requiresNewInvoice || !Array.isArray(plan.items) || !plan.items.length) return false;
+    if (pendingNewInvoice?.appliedAt) return false;
+    currentBankTransaction = transaction;
+    document.getElementById("it-target").value = formatMoney(plan.targetGrand || transaction.credit);
+    setStatus("Đang áp dụng phương án đã Accept từ Batch Review vào phiếu mới…", "warn");
+    if (plan.checkIn && plan.checkOut) {
+      await request("applyInvoiceTimes", { checkIn: plan.checkIn, checkOut: plan.checkOut });
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    const applied = await request("applyInvoicePlan", {
+      items: plan.items.map(item => ({
+        code: item.code,
+        newQty: item.qty,
+        maxQty: item.maxQty,
+        price: item.price
+      })),
+      finalHourAmount: plan.hour,
+      targetGrand: plan.targetGrand,
+      targetGoods: plan.goods,
+      checkIn: plan.checkIn || "",
+      checkOut: plan.checkOut || ""
+    });
+    latestScan = await request("scan");
+    const actualGrand = Math.round(Number(latestScan.currentGrand || applied.currentGrand || 0));
+    if (actualGrand !== Math.round(Number(plan.targetGrand || 0))) {
+      throw new Error(`Form mới đang có tổng ${formatMoney(actualGrand)}, chưa khớp ${formatMoney(plan.targetGrand)}.`);
+    }
+    transaction.status = "planned";
+    transaction.invoiceNo = latestScan.invoiceNo || transaction.invoiceNo || "";
+    transaction.pendingPlan = {
+      ...structuredClone(plan),
+      invoiceNo: transaction.invoiceNo,
+      invoiceDateKey: transaction.transactionDate,
+      createdAt: new Date().toISOString()
+    };
+    transaction.verifiedAt = "";
+    transaction.ledgerId = "";
+    await InvoiceMappingStore.saveStatement(statementDataset);
+    syncBatchPlanTransaction(transaction);
+    pendingNewInvoice.appliedAt = new Date().toISOString();
+    pendingNewInvoice.invoiceNo = transaction.invoiceNo;
+    await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: structuredClone(pendingNewInvoice) });
+    renderBatchPlans();
+    setStatus(
+      `Đã thêm ${plan.items.length} mã từ phương án Batch Review vào phiếu mới, tổng ${formatMoney(actualGrand)}đ. ` +
+      "Hãy kiểm tra ngày, giờ và mặt hàng rồi bấm Lưu HĐ; extension chưa tự lưu.",
+      "ok"
+    );
+    return true;
+  }
+
+  async function restoreUiSession() {
+    const stored = await InvoiceMappingStore.loadUiSession();
+    if (!stored || stored.schemaVersion !== 1 || stored.mode !== "batch") return;
+    const savedAt = Date.parse(stored.updatedAt || "");
+    if (!Number.isFinite(savedAt) || Date.now() - savedAt > 7 * 24 * 60 * 60 * 1000) {
+      await InvoiceMappingStore.clearUiSession();
+      return;
+    }
+    uiSession = stored;
+    pendingNewInvoice = stored.pendingNewInvoice || null;
+    batchPlans = hydrateBatchPlans(stored.batchPlans, statementDataset.transactions || []);
+    showBatchReviewMode(true, Boolean(stored.panelOpen));
+    const limitInput = document.getElementById("it-batch-limit");
+    if (limitInput) limitInput.value = String(Math.max(1, Math.min(50, Number(stored.batchLimit) || 10)));
+    if (pendingNewInvoice) {
+      const transaction = (statementDataset.transactions || []).find(item => String(item.id) === String(pendingNewInvoice.transactionId));
+      const date = transaction?.transactionDate || pendingNewInvoice.transactionDate || "";
+      const credit = Number(transaction?.credit || pendingNewInvoice.credit || 0);
+      setStatus(
+        `Đang tiếp tục tạo phiếu cho ngày ${date}, tổng mục tiêu ${formatMoney(credit)}đ. ` +
+        "Sau khi tự lưu phiếu trên website, quay lại tab danh sách và bấm Tạo Batch Review để dò lại.",
+        "warn"
+      );
+      if (isSalesWorkspacePage() && !pendingNewInvoice.formAutoOpenedAt) {
+        let pendingApplyError = "";
+        const opened = await autoOpenIdleRoomInvoiceForm();
+        if (opened.opened && opened.roomName) {
+          pendingNewInvoice.roomName = opened.roomName;
+          pendingNewInvoice.formAutoOpenedAt = new Date().toISOString();
+          const roomNode = document.getElementById("it-pending-room");
+          if (roomNode) roomNode.textContent = opened.roomName;
+          await saveBatchUiSession({ panelOpen: true });
+          if (transaction && pendingNewInvoice.plan?.requiresNewInvoice) {
+            try {
+              await applyPendingNewInvoicePlan(transaction);
+            } catch (error) {
+              pendingApplyError = error.message;
+            }
+          }
+        }
+        if (pendingNewInvoice.appliedAt) return;
+        if (pendingApplyError) {
+          setStatus(`Đã mở form nhưng chưa áp dụng được phương án Batch Review: ${pendingApplyError}`, "error");
+          return;
+        }
+        setStatus(
+          opened.opened
+            ? `Đã mở form trên phòng rảnh ${opened.roomName || pendingNewInvoice.roomName || ""} cho ngày ${date}, tổng mục tiêu ${formatMoney(credit)}đ. Chưa lưu hóa đơn.`
+            : "Không tìm thấy phòng rảnh để mở form. Extension không chọn BÁN LẺ hoặc phòng đang hoạt động.",
+          opened.opened ? "ok" : "error"
+        );
+      } else if (isSalesWorkspacePage() && pendingNewInvoice.formAutoOpenedAt) {
+        setStatus(
+          `Phiên này đã mở form phòng ${pendingNewInvoice.roomName || "rảnh"} trước đó. ` +
+          "Extension không tự mở lại sau khi bạn thoát hoặc tải lại trang.",
+          "warn"
+        );
+      }
+    } else {
+      setStatus("Đã khôi phục phiên Batch Review trước khi chuyển trang.", "ok");
+    }
+  }
 
   function request(action, payload) {
     return new Promise((resolve, reject) => {
       const id = `it-${Date.now()}-${sequence += 1}`;
-      const timeoutMs = ["replaceInvoiceItems", "applyInvoicePlan"].includes(action) ? 90000 : action === "findInvoiceCandidates" ? 28000 : 5000;
+      const timeoutMs = ["replaceInvoiceItems", "applyInvoicePlan"].includes(action) ? 90000 : ["findInvoiceCandidates", "findIssuedInvoiceByAmount"].includes(action) ? 28000 : 5000;
       const timeout = setTimeout(() => reject(new Error("Trang không phản hồi.")), timeoutMs);
       const listener = event => {
         if (!event.detail || event.detail.id !== id) return;
@@ -61,20 +295,24 @@
     return `
       <button id="it-toggle" type="button" title="Lập phương án theo tồn kho">Σ</button>
       <section id="it-panel" hidden>
-        <header><span id="it-resize-handle" title="Giữ và kéo để thay đổi kích thước">↖</span><strong>Khớp tổng tiền — stock-first</strong><button id="it-close" type="button">×</button></header>
+        <header><span id="it-resize-handle" title="Giữ và kéo để thay đổi kích thước">↖</span><strong>Khớp tổng tiền — stock-first${extensionVersion ? ` <small>v${escapeHtml(extensionVersion)}</small>` : ""}</strong><button id="it-close" type="button">×</button></header>
         <div id="it-status" class="it-status">Hãy mở một phiếu hóa đơn.</div>
         <div id="it-stock-source" class="it-stock-source">${stockSummaryHtml()}</div>
         <div class="it-actions">
           <button id="it-import-web" type="button">Nhập data.xlsx</button>
           <button id="it-import-stock" type="button">Nhập KhoT5.xlsx</button>
           <button id="it-import-statement" type="button">Nhập sao kê.xlsx</button>
+          <button id="it-import-state" type="button">Nhập trạng thái tồn</button>
+          <button id="it-export-state" type="button">Xuất trạng thái tồn</button>
           <button id="it-manage-mapping" type="button">Duyệt ánh xạ</button>
           <button id="it-manage-statement" type="button">Giao dịch ngân hàng</button>
           <button id="it-manage-batch" type="button">Batch Review</button>
           <input id="it-web-file" type="file" accept=".xlsx" hidden>
           <input id="it-stock-file" type="file" accept=".xlsx" hidden>
           <input id="it-statement-file" type="file" accept=".xlsx" hidden>
+          <input id="it-state-file" type="file" accept=".json,application/json" hidden>
         </div>
+        <section id="it-state-preview" class="it-state-preview" hidden></section>
         <div id="it-bank-selection" class="it-bank-selection it-calc-only" hidden></div>
         <section id="it-priority-rules" class="it-priority-rules it-calc-only">
           <div class="it-priority-header"><b>Mặt hàng ưu tiên</b><button id="it-manage-priority" type="button">Quản lý rule</button></div>
@@ -116,9 +354,18 @@
     enablePanelResize(root.querySelector("#it-panel"), root.querySelector("#it-resize-handle"));
     root.querySelector("#it-toggle").addEventListener("click", () => {
       root.querySelector("#it-panel").hidden = false;
-      scanInvoice();
+      if (root.querySelector("#it-panel").classList.contains("batch-mode")) {
+        saveBatchUiSession({ panelOpen: true }).catch(error => console.error("Không lưu được phiên Batch Review", error));
+      } else {
+        scanInvoice();
+      }
     });
-    root.querySelector("#it-close").addEventListener("click", () => { root.querySelector("#it-panel").hidden = true; });
+    root.querySelector("#it-close").addEventListener("click", () => {
+      root.querySelector("#it-panel").hidden = true;
+      if (root.querySelector("#it-panel").classList.contains("batch-mode")) {
+        saveBatchUiSession({ panelOpen: false }).catch(error => console.error("Không lưu được phiên Batch Review", error));
+      }
+    });
     root.querySelector("#it-scan").addEventListener("click", scanInvoice);
     root.querySelector("#it-solve").addEventListener("click", solveInvoice);
     root.querySelector("#it-import-stock").addEventListener("click", () => root.querySelector("#it-stock-file").click());
@@ -127,6 +374,9 @@
     root.querySelector("#it-stock-file").addEventListener("change", importStockFile);
     root.querySelector("#it-import-statement").addEventListener("click", () => root.querySelector("#it-statement-file").click());
     root.querySelector("#it-statement-file").addEventListener("change", importStatementFile);
+    root.querySelector("#it-import-state").addEventListener("click", () => root.querySelector("#it-state-file").click());
+    root.querySelector("#it-state-file").addEventListener("change", previewStockStateFile);
+    root.querySelector("#it-export-state").addEventListener("click", exportStockState);
     root.querySelector("#it-manage-batch").addEventListener("click", toggleBatchReview);
     root.querySelector("#it-manage-mapping").addEventListener("click", toggleMappingAdmin);
     root.querySelector("#it-manage-statement").addEventListener("click", toggleStatementAdmin);
@@ -318,6 +568,161 @@
     });
   }
 
+  function localTimestamp(value) {
+    const date = value ? new Date(value) : new Date();
+    const part = number => String(number).padStart(2, "0");
+    return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}_${part(date.getHours())}${part(date.getMinutes())}${part(date.getSeconds())}`;
+  }
+
+  async function downloadJson(payload, filename) {
+    const response = await chrome.runtime.sendMessage({
+      type: "invoiceTarget.downloadStockState",
+      filename,
+      content: JSON.stringify(payload, null, 2)
+    });
+    if (!response?.ok) throw new Error(response?.error || "Chrome không tạo được file tải xuống.");
+    return response.downloadId;
+  }
+
+  async function exportStockState() {
+    try {
+      const payload = InvoiceStockState.build({
+        mappingDataset,
+        parentExportId: Number(stockStateMeta?.schemaVersion) === InvoiceStockState.SCHEMA_VERSION
+          ? stockStateMeta.currentExportId
+          : null,
+        extensionVersion
+      });
+      await downloadJson(payload, `TonKho_ParisKimGiang_${localTimestamp(payload.exportedAt)}.json`);
+      stockStateMeta = {
+        schemaVersion: payload.schemaVersion,
+        currentExportId: payload.exportId,
+        parentExportId: payload.parentExportId,
+        exportedAt: payload.exportedAt,
+        inventoryFingerprint: payload.inventoryFingerprint
+      };
+      await InvoiceMappingStore.saveStockStateMeta(stockStateMeta);
+      setStatus(
+        `Đã xuất trạng thái tồn kho: ${payload.summary.stockItemCount} mã, ` +
+        `${formatMoney(payload.summary.availableUnitCount)} đơn vị khả dụng. File không chứa sao kê, rule hay danh mục web.`,
+        "ok"
+      );
+    } catch (error) {
+      setStatus(`Không xuất được trạng thái tồn: ${error.message}`, "error");
+    }
+  }
+
+  async function previewStockStateFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      const comparison = InvoiceStockState.compare(mappingDataset, payload, stockStateMeta);
+      pendingStockStateImport = { fileName: file.name, payload, comparison };
+      renderStockStatePreview();
+      setStatus(
+        comparison.validation.valid
+          ? `Đã đọc ${file.name}. Hãy kiểm tra chênh lệch rồi xác nhận nhập.`
+          : `File ${file.name} không hợp lệ; chưa có dữ liệu nào bị thay đổi.`,
+        comparison.validation.valid ? "warn" : "error"
+      );
+    } catch (error) {
+      pendingStockStateImport = null;
+      document.getElementById("it-state-preview").hidden = true;
+      setStatus(`Không đọc được file trạng thái tồn: ${error.message}`, "error");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function renderStockStatePreview() {
+    const node = document.getElementById("it-state-preview");
+    const pending = pendingStockStateImport;
+    if (!node || !pending) return;
+    const { payload, comparison } = pending;
+    const { validation, counts, currentSummary, incomingSummary } = comparison;
+    const messages = [...validation.errors, ...validation.warnings];
+    const needsRiskConfirm = validation.warnings.length > 0;
+    const rows = comparison.changes.slice(0, 12);
+    node.hidden = false;
+    node.innerHTML = `<div class="it-state-preview-head">
+        <div><b>Xem trước: ${escapeHtml(pending.fileName)}</b><br>
+          <small>Xuất lúc ${escapeHtml(new Date(payload.exportedAt).toLocaleString("vi-VN"))} · mã ${escapeHtml(payload.exportId)}</small>
+        </div>
+        <button id="it-state-cancel" type="button">Đóng</button>
+      </div>
+      ${messages.length ? `<div class="it-state-messages ${validation.errors.length ? "error" : "warn"}">${messages.map(message => `<div>• ${escapeHtml(message)}</div>`).join("")}</div>` : ""}
+      <div class="it-state-cards">
+        <div><small>Mã tồn</small><b>${currentSummary.stockItemCount} → ${incomingSummary.stockItemCount}</b></div>
+        <div><small>Đơn vị khả dụng</small><b>${formatMoney(currentSummary.availableUnitCount)} → ${formatMoney(incomingSummary.availableUnitCount)}</b></div>
+        <div><small>Mã mới / thiếu</small><b>+${counts.added} · −${counts.removed}</b></div>
+        <div><small>Biến động</small><b>↓${counts.decreased} · ↑${counts.increased}</b></div>
+      </div>
+      ${rows.length ? `<div class="it-table-wrap"><table><thead><tr><th>Mã kho</th><th>Hiện tại</th><th>File nhập</th><th>Chênh lệch</th></tr></thead>
+        <tbody>${rows.map(row => `<tr><td>${escapeHtml(row.stockCode)}</td><td>${row.before == null ? "—" : formatMoney(row.before)}</td>
+          <td>${row.after == null ? "—" : formatMoney(row.after)}</td><td>${row.delta > 0 ? "+" : ""}${formatMoney(row.delta)}</td></tr>`).join("")}</tbody></table></div>` : "<p>Không có thay đổi số lượng tồn.</p>"}
+      ${comparison.changes.length > rows.length ? `<small>Còn ${comparison.changes.length - rows.length} mã thay đổi khác.</small>` : ""}
+      ${needsRiskConfirm && validation.valid ? `<label class="it-confirm"><input id="it-state-risk-confirm" type="checkbox"> Tôi đã kiểm tra cảnh báo và vẫn muốn dùng file này.</label>` : ""}
+      <div class="it-actions"><button id="it-state-apply" type="button" class="primary" ${validation.valid && !needsRiskConfirm ? "" : "disabled"}>Xác nhận nhập trạng thái</button></div>`;
+    node.querySelector("#it-state-cancel").addEventListener("click", cancelStockStateImport);
+    node.querySelector("#it-state-risk-confirm")?.addEventListener("change", event => {
+      node.querySelector("#it-state-apply").disabled = !event.target.checked;
+    });
+    node.querySelector("#it-state-apply").addEventListener("click", applyStockStateImport);
+  }
+
+  function cancelStockStateImport() {
+    pendingStockStateImport = null;
+    const node = document.getElementById("it-state-preview");
+    if (node) node.hidden = true;
+  }
+
+  async function applyStockStateImport() {
+    const pending = pendingStockStateImport;
+    if (!pending?.comparison?.validation?.valid) return;
+    const button = document.getElementById("it-state-apply");
+    if (button) button.disabled = true;
+    try {
+      const nextMappingDataset = InvoiceStockState.applyToMapping(mappingDataset, pending.payload);
+      const backup = InvoiceStockState.build({
+        mappingDataset,
+        extensionVersion,
+        exportedAt: new Date().toISOString()
+      });
+      const importedAt = new Date().toISOString();
+      await InvoiceMappingStore.importStockState(nextMappingDataset, {
+        currentExportId: pending.payload.exportId,
+        parentExportId: pending.payload.parentExportId || null,
+        exportedAt: pending.payload.exportedAt,
+        importedAt,
+        sourceFile: pending.fileName,
+        inventoryFingerprint: pending.payload.inventoryFingerprint
+      }, backup);
+      stockStateMeta = {
+        schemaVersion: pending.payload.schemaVersion,
+        currentExportId: pending.payload.exportId,
+        parentExportId: pending.payload.parentExportId || null,
+        exportedAt: pending.payload.exportedAt,
+        importedAt,
+        sourceFile: pending.fileName,
+        inventoryFingerprint: pending.payload.inventoryFingerprint
+      };
+      mappingDataset = nextMappingDataset;
+      refreshMappingState();
+      renderPriorityRules(true);
+      if (!document.getElementById("it-mapping-admin").hidden) renderMappingAdmin();
+      cancelStockStateImport();
+      setStatus(
+        `Đã nhập số lượng tồn từ ${pending.fileName}; bản tồn trước khi nhập đã được sao lưu. ` +
+        `Danh mục web, ánh xạ, sao kê, rule và sổ đối soát được giữ nguyên.`,
+        "ok"
+      );
+    } catch (error) {
+      if (button) button.disabled = false;
+      setStatus(`Không áp dụng được trạng thái tồn: ${error.message}`, "error");
+    }
+  }
+
   async function importStockFile(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -448,7 +853,20 @@
   function toggleBatchReview() {
     const node = document.getElementById("it-batch-review");
     const enabled = node.hidden;
+    showBatchReviewMode(enabled);
+    if (enabled) {
+      saveBatchUiSession({ panelOpen: true }).catch(error => console.error("Không lưu được phiên Batch Review", error));
+    } else {
+      uiSession = null;
+      pendingNewInvoice = null;
+      InvoiceMappingStore.clearUiSession().catch(error => console.error("Không xóa được phiên Batch Review", error));
+    }
+  }
+
+  function showBatchReviewMode(enabled, openPanel) {
+    const node = document.getElementById("it-batch-review");
     const panel = document.getElementById("it-panel");
+    if (!node || !panel) return;
     node.hidden = !enabled;
     panel?.classList.toggle("batch-mode", enabled);
     panel?.classList.remove("mapping-mode", "statement-mode", "review-mode");
@@ -458,6 +876,23 @@
     document.getElementById("it-manage-statement").textContent = "Giao dịch ngân hàng";
     document.getElementById("it-manage-batch").textContent = enabled ? "Quay lại tính toán" : "Batch Review";
     if (enabled) renderBatchReview();
+    if (openPanel != null) panel.hidden = !openPanel;
+  }
+
+  function pendingNewInvoiceContextHtml() {
+    if (!pendingNewInvoice) return "";
+    const transaction = (statementDataset.transactions || [])
+      .find(item => String(item.id) === String(pendingNewInvoice.transactionId));
+    const date = transaction?.transactionDate || pendingNewInvoice.transactionDate || "—";
+    const credit = Number(transaction?.credit || pendingNewInvoice.credit || 0);
+    const description = transaction?.description || pendingNewInvoice.description || "Không có diễn giải";
+    return `<div id="it-pending-new-invoice" class="it-bank-selection">
+      <b>Đang chuẩn bị phiếu mới</b><br>
+      Ngày hóa đơn: <b>${escapeHtml(date)}</b> · Tổng mục tiêu: <b>${formatMoney(credit)} đ</b><br>
+      <span>${escapeHtml(description)}</span><br>
+      Phòng: <b id="it-pending-room">${escapeHtml(pendingNewInvoice.roomName || "đang chọn phòng rảnh…")}</b><br>
+      <small>Batch Review và tab danh sách gốc vẫn được giữ nguyên. Tab mới chỉ chọn phòng không hoạt động; hãy kiểm tra rồi lưu bằng nút Lưu HĐ của website.</small>
+    </div>`;
   }
 
   function renderBatchReview() {
@@ -471,6 +906,7 @@
       <label>Số giao dịch tối đa<input id="it-batch-limit" type="number" min="1" max="50" value="10"></label>
       <button id="it-build-batch" type="button" class="primary">Tạo Batch Review</button>
     </div>
+    ${pendingNewInvoiceContextHtml()}
     <div id="it-batch-summary"></div>
     <div id="it-batch-table"></div>`;
     node.querySelector("#it-build-batch")?.addEventListener("click", buildBatchReview);
@@ -505,7 +941,9 @@
       batch_ready: "Đã Accept",
       planned: "Chờ đối soát",
       done: "Đã xử lý",
-      skipped: "Bỏ qua"
+      skipped: "Bỏ qua",
+      already_issued: "Đã có HĐ khớp",
+      needs_new_invoice: "Cần tạo phiếu"
     };
     body.innerHTML = rows.map(item => `<tr data-transaction-id="${escapeHtml(item.id)}">
       <td><b>${escapeHtml(item.transactionDate)}</b><br><small>${escapeHtml(item.requestedAt)}</small></td>
@@ -667,6 +1105,29 @@
     return next;
   }
 
+  function restoreVerifiedStock(dataset, planItems) {
+    const next = structuredClone(dataset);
+    for (const item of planItems || []) {
+      const quantity = Math.max(0, Math.round(Number(item.qty) || 0));
+      if (!quantity) continue;
+      const allRows = (next.mappings || []).filter(row =>
+        row.status === "confirmed" &&
+        String(row.webCode) === String(item.code)
+      );
+      if (allRows.some(row => row.availabilityMode === "per_invoice")) continue;
+      const rows = allRows.filter(row => row.availabilityMode !== "per_invoice");
+      if (!rows.length) {
+        throw new Error(`Không còn ánh xạ kho cho mã ${item.code}; chưa thể hoàn số lượng cũ.`);
+      }
+      // Older ledger entries only store totals by web code, not the original
+      // allocation between duplicate stock codes. Returning to the first
+      // confirmed mapping preserves the correct aggregate stock. Every new
+      // verification records the latest plan for future reconciliation.
+      rows[0].availableQty = Math.max(0, Math.floor(Number(rows[0].availableQty) || 0)) + quantity;
+    }
+    return next;
+  }
+
   async function verifySavedInvoice() {
     if (!currentBankTransaction?.pendingPlan) return setStatus("Không có phương án chờ đối soát.", "error");
     const button = document.getElementById("it-verify-saved-invoice");
@@ -679,37 +1140,49 @@
       if (errors.length) throw new Error(errors.join(" "));
       const transactionId = String(currentBankTransaction.id);
       const existing = (verificationLedger.entries || []).find(entry => String(entry.transactionId) === transactionId);
-      if (!existing) {
-        const nextMapping = deductVerifiedStock(mappingDataset, plan.items);
-        const ledgerEntry = {
-          id: `ledger-${transactionId}`,
-          transactionId,
-          invoiceNo: plan.invoiceNo,
-          verifiedAt: new Date().toISOString(),
-          grand: plan.grand,
-          items: structuredClone(plan.items)
-        };
-        const nextLedger = { entries: [...(verificationLedger.entries || []), ledgerEntry] };
-        const nextStatement = structuredClone(statementDataset);
-        const nextTransaction = (nextStatement.transactions || []).find(item => String(item.id) === transactionId);
-        if (!nextTransaction) throw new Error("Không tìm thấy giao dịch trong sao kê để ghi nhận.");
-        nextTransaction.status = "done";
-        nextTransaction.verifiedAt = ledgerEntry.verifiedAt;
-        nextTransaction.ledgerId = ledgerEntry.id;
-        await InvoiceMappingStore.commitVerifiedInvoice(nextMapping, nextStatement, nextLedger);
-        mappingDataset = nextMapping;
-        statementDataset = nextStatement;
-        verificationLedger = nextLedger;
-        currentBankTransaction = nextTransaction;
-      } else {
-        currentBankTransaction.status = "done";
-        currentBankTransaction.verifiedAt = existing.verifiedAt;
-        currentBankTransaction.ledgerId = existing.id;
-        await InvoiceMappingStore.saveStatement(statementDataset);
-      }
+      const restoredMapping = existing
+        ? restoreVerifiedStock(mappingDataset, existing.items)
+        : mappingDataset;
+      const nextMapping = deductVerifiedStock(restoredMapping, plan.items);
+      const ledgerEntry = {
+        id: existing?.id || `ledger-${transactionId}`,
+        transactionId,
+        invoiceNo: plan.invoiceNo,
+        verifiedAt: new Date().toISOString(),
+        grand: plan.grand,
+        items: structuredClone(plan.items),
+        revision: Math.max(1, Math.floor(Number(existing?.revision) || 1) + (existing ? 1 : 0))
+      };
+      const nextLedger = {
+        entries: existing
+          ? (verificationLedger.entries || []).map(entry =>
+            String(entry.transactionId) === transactionId ? ledgerEntry : entry)
+          : [...(verificationLedger.entries || []), ledgerEntry]
+      };
+      const nextStatement = structuredClone(statementDataset);
+      const nextTransaction = (nextStatement.transactions || []).find(item => String(item.id) === transactionId);
+      if (!nextTransaction) throw new Error("Không tìm thấy giao dịch trong sao kê để ghi nhận.");
+      nextTransaction.status = "done";
+      nextTransaction.verifiedAt = ledgerEntry.verifiedAt;
+      nextTransaction.ledgerId = ledgerEntry.id;
+      nextTransaction.pendingPlan = null;
+      await InvoiceMappingStore.commitVerifiedInvoice(nextMapping, nextStatement, nextLedger);
+      mappingDataset = nextMapping;
+      statementDataset = nextStatement;
+      verificationLedger = nextLedger;
+      currentBankTransaction = nextTransaction;
+      const batchChanged = syncBatchPlanTransaction(nextTransaction);
       refreshMappingState();
       renderPostSaveVerificationControl();
-      setStatus(`Đã đối soát phiếu ${plan.invoiceNo}, đánh dấu sao kê đã xử lý và ghi sổ tồn kho.`, "ok");
+      renderStatementRows();
+      if (batchChanged) {
+        renderBatchPlans();
+        saveBatchUiSession({ panelOpen: !document.getElementById("it-panel")?.hidden })
+          .catch(error => console.error("Không lưu được trạng thái Batch Review sau đối soát", error));
+      }
+      setStatus(existing
+        ? `Đã tái đối soát phiếu ${plan.invoiceNo}: hoàn phương án cũ và ghi sổ phương án mới.`
+        : `Đã đối soát phiếu ${plan.invoiceNo}, đánh dấu sao kê đã xử lý và ghi sổ tồn kho.`, "ok");
     } catch (error) {
       setStatus(`Đối soát thất bại: ${error.message} Chưa thay đổi tồn kho hoặc trạng thái sao kê.`, "error");
     } finally {
@@ -818,16 +1291,37 @@
     } catch (error) { setStatus(error.message, "error"); }
   }
 
+  function preferredLineCount(goodsTarget) {
+    return Math.max(3, Math.min(6, Math.round(Number(goodsTarget || 0) / 350000) + 1));
+  }
+
+  function candidateFromStock(stock, minQty) {
+    const stockQty = Math.max(0, Math.floor(Number(stock.availableQty) || 0));
+    const invoiceLimit = InvoiceTargetSolver.recommendInvoiceLimit(stock);
+    return {
+      code: stock.webCode,
+      name: stock.webName,
+      unit: stock.webUnit,
+      price: Number(stock.webPrice),
+      qty: 0,
+      stockQty,
+      invoiceLimit,
+      maxQty: Math.min(stockQty, invoiceLimit),
+      stockCodes: stock.stockCodes,
+      minQty: Number(minQty || 0),
+      constraintGroup: stock.constraintGroup,
+      constraintGroupMax: stock.constraintGroupMax
+    };
+  }
+
   function buildCandidates() {
     const requiredWebCodes = new Set(priorityRules
       .filter(rule => prioritySelections.get(String(rule.id)) === true)
       .map(rule => String(rule.webCode)));
-    return inventory.map(stock => ({
-      code: stock.webCode, name: stock.webName, unit: stock.webUnit, price: Number(stock.webPrice), qty: 0,
-      maxQty: Math.floor(Number(stock.availableQty)), stockCodes: stock.stockCodes,
-      minQty: requiredWebCodes.has(String(stock.webCode)) ? 1 : 0,
-      constraintGroup: stock.constraintGroup, constraintGroupMax: stock.constraintGroupMax
-    }));
+    return inventory.map(stock => candidateFromStock(
+      stock,
+      requiredWebCodes.has(String(stock.webCode)) ? 1 : 0
+    )).sort((a, b) => Number(b.minQty || 0) - Number(a.minQty || 0));
   }
 
   function buildBatchCandidates(inventoryState, target) {
@@ -835,18 +1329,10 @@
       .filter(rule => rule.enabled !== false && target > Number(rule.minTotal || 0) &&
         inventoryState.some(item => String(item.webCode) === String(rule.webCode) && Number(item.availableQty) > 0))
       .sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999))[0];
-    return inventoryState.map(stock => ({
-      code: stock.webCode,
-      name: stock.webName,
-      unit: stock.webUnit,
-      price: Number(stock.webPrice),
-      qty: 0,
-      maxQty: Math.floor(Number(stock.availableQty)),
-      stockCodes: stock.stockCodes,
-      minQty: preferred && String(preferred.webCode) === String(stock.webCode) ? 1 : 0,
-      constraintGroup: stock.constraintGroup,
-      constraintGroupMax: stock.constraintGroupMax
-    }));
+    return inventoryState.map(stock => candidateFromStock(
+      stock,
+      preferred && String(preferred.webCode) === String(stock.webCode) ? 1 : 0
+    )).sort((a, b) => Number(b.minQty || 0) - Number(a.minQty || 0));
   }
 
   function calculateBatchPlan(scan, transaction, inventoryState) {
@@ -854,24 +1340,37 @@
     if (scan.invoiceDateKey !== transaction.transactionDate) return { status: "error", reason: "Ngày phiếu không khớp sao kê." };
     const targetGrand = Math.round(Number(transaction.credit) || 0);
     const targets = InvoiceTargetSolver.deriveInvoiceTargets(targetGrand, scan.currentHour, scan.taxRate);
-    const hourPricing = inferHourPricing(scan);
+    const hourPricing = scan.newInvoicePlanning
+      ? { hourlyRate: 600000, hourStep: 6000 }
+      : inferHourPricing(scan);
     const candidates = buildBatchCandidates(inventoryState, targetGrand);
     const solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, {
       maxQty: 20,
       tolerance: 0,
       preTaxTarget: targets.preTaxTarget,
       currentHour: scan.currentHour,
-      hourStep: hourPricing.hourStep
+      hourStep: hourPricing.hourStep,
+      preferredLineCount: Math.max(3, Math.min(6, Math.round(Number(targets.goodsTarget || 0) / 350000) + 1)),
+      maxActiveLines: 6
     });
     if (!solution.items) return { status: "error", reason: solution.reason || "Không tìm được phương án." };
     const selected = solution.items.filter(item => item.newQty > 0);
-    const hourTarget = solution.hourActual == null
-      ? Math.round(targets.preTaxTarget - solution.actual)
-      : solution.hourActual;
-    const finalHourAmount = hourTarget;
+    const reconciledHour = InvoiceTargetSolver.reconcileHourAmount(
+      solution.actual,
+      targets.preTaxTarget,
+      solution.hourActual
+    );
+    const { hourFromTime, finalHourAmount, hourAdjustment } = reconciledHour;
+    // Website time is rounded to 0.01 hour, but accounting requires the
+    // invoice to match the bank amount exactly without using a discount.
+    // Keep the checkout suggestion based on the rounded time and absorb the
+    // remaining few dong directly into the hour amount.
     const predictedGrand = solution.actual + finalHourAmount + targets.vatTarget;
     const difference = predictedGrand - targetGrand;
-    if (!selected.length || difference !== 0) {
+    if (!selected.length) {
+      return { status: "error", reason: "Không tìm được mặt hàng phù hợp để lập phương án; chưa được tạo hóa đơn chỉ có Tiền giờ." };
+    }
+    if (difference !== 0) {
       return { status: "error", reason: `Phương án chưa khớp tuyệt đối; lệch ${formatMoney(difference)}.` };
     }
     return {
@@ -882,17 +1381,57 @@
       currentGrand: scan.currentGrand,
       goods: solution.actual,
       hour: finalHourAmount,
+      hourFromTime,
+      hourAdjustment,
       tax: targets.vatTarget,
       taxRate: 10,
       difference,
-      proposedCheckOut: recommendCheckOut(scan, hourTarget, hourPricing.hourlyRate),
+      proposedCheckOut: recommendCheckOut(scan, hourFromTime, hourPricing.hourlyRate),
       items: selected.map(item => ({
         code: String(item.code),
         name: item.name,
         qty: Math.round(Number(item.newQty)),
         price: Math.round(Number(item.price)),
-        maxQty: Math.floor(Number(item.maxQty))
+        maxQty: Math.floor(Number(item.maxQty)),
+        stockQty: Math.floor(Number(item.stockQty)),
+        invoiceLimit: Math.floor(Number(item.invoiceLimit))
       }))
+    };
+  }
+
+  function newInvoicePlanningScan(transactionDate) {
+    const match = String(transactionDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const checkIn = match ? `${match[3]}/${match[2]}/${match[1]} 15:00` : "";
+    return {
+      ready: true,
+      newInvoicePlanning: true,
+      invoiceNo: "",
+      invoiceDateKey: String(transactionDate || ""),
+      currentGoods: 0,
+      currentHour: 0,
+      currentTax: 0,
+      taxRate: 10,
+      currentGrand: 0,
+      checkIn,
+      checkOut: checkIn,
+      durationMinutes: 1,
+      items: []
+    };
+  }
+
+  function calculateNewInvoiceBatchPlan(transaction, inventoryState) {
+    const planningScan = newInvoicePlanningScan(transaction.transactionDate);
+    const plan = calculateBatchPlan(planningScan, transaction, inventoryState);
+    if (plan.status !== "ready") return plan;
+    const checkInDate = parseUiDateTime(planningScan.checkIn);
+    const estimatedMinutes = Math.max(1, Math.round((Number(plan.hourFromTime || 0) / 600000) * 60));
+    const checkOutDate = checkInDate ? new Date(checkInDate.getTime() + estimatedMinutes * 60000) : null;
+    return {
+      ...plan,
+      requiresNewInvoice: true,
+      checkIn: planningScan.checkIn,
+      checkOut: formatUiDateTime(checkOutDate),
+      proposedCheckOut: formatUiDateTime(checkOutDate)
     };
   }
 
@@ -904,6 +1443,21 @@
       stock.availableQty = Math.max(0, Math.floor(Number(stock.availableQty)) - Math.round(Number(item.qty)));
     }
     return next;
+  }
+
+  function selectClosestInvoiceCandidate(candidates, targetAmount) {
+    const target = Number(targetAmount) || 0;
+    const distance = candidate => {
+      const total = Number(candidate?.grandTotal);
+      return Number.isFinite(total) ? Math.abs(total - target) : Number.POSITIVE_INFINITY;
+    };
+    return [...(candidates || [])].sort((left, right) =>
+      distance(left) - distance(right) ||
+      String(left?.invoiceNo || "").localeCompare(String(right?.invoiceNo || ""), "vi", {
+        numeric: true,
+        sensitivity: "base"
+      })
+    )[0] || null;
   }
 
   async function buildBatchReview() {
@@ -944,29 +1498,80 @@
           usedInvoiceNos: [...usedInvoiceNos].filter(invoiceNo => invoiceNo !== String(transaction.invoiceNo || ""))
         });
         const available = (found.candidates || []).filter(item => item.available);
-        const candidate = transaction.invoiceNo
+        const linkedCandidate = transaction.invoiceNo
           ? available.find(item => String(item.invoiceNo) === String(transaction.invoiceNo))
-          : available.length === 1 ? available[0] : null;
+          : null;
+        const candidate = linkedCandidate || selectClosestInvoiceCandidate(available, transaction.credit);
+        const automaticallySelected = !linkedCandidate && available.length > 1 && candidate;
+        const automaticSelectionReason = automaticallySelected
+          ? `Tự chọn ${candidate.invoiceNo} gần tiền sao kê nhất trong ${available.length} phiếu cùng ngày ` +
+            `(chênh ${formatMoney(Math.abs(Number(candidate.grandTotal || 0) - Number(transaction.credit || 0)))}đ).`
+          : "";
         if (!candidate) {
-          batchPlans.push({
-            transactionId: String(transaction.id),
-            status: available.length > 1 ? "needs_choice" : "error",
-            transaction,
-            candidates: available,
-            reason: available.length > 1 ? `Có ${available.length} phiếu cùng ngày, cần chọn thủ công.` : "Không tìm thấy phiếu khả dụng."
-          });
+          // Không còn phiếu chưa xuất: dò trong các phiếu ĐÃ xuất xem giao dịch đã được lập HĐ khớp tiền chưa.
+          let issued = null;
+          try {
+            issued = await request("findIssuedInvoiceByAmount", {
+              dateKey: transaction.transactionDate,
+              amount: transaction.credit
+            });
+          } catch (error) {
+            batchPlans.push({
+              transactionId: String(transaction.id),
+              status: "lookup_error",
+              transaction,
+              reason: `Không dò được hóa đơn đã xuất: ${error.message} Hãy thử lại; chưa được tạo phiếu mới.`
+            });
+            continue;
+          }
+          const issuedMatches = (issued.matches || []).filter(row => !usedInvoiceNos.has(String(row.invoiceNo)));
+          if (issuedMatches.length) {
+            batchPlans.push({
+              transactionId: String(transaction.id),
+              status: "already_issued",
+              transaction,
+              candidates: issuedMatches,
+              plan: {
+                invoiceNo: issuedMatches.length === 1 ? issuedMatches[0].invoiceNo : "",
+                grand: transaction.credit
+              },
+              reason: issuedMatches.length === 1
+                ? `Đã có HĐ ${issuedMatches[0].invoiceNo} khớp ${formatMoney(transaction.credit)}đ. Kiểm tra rồi xác nhận.`
+                : `Có ${issuedMatches.length} HĐ đã xuất khớp số tiền; chọn đúng phiếu rồi xác nhận.`
+            });
+          } else {
+            const plan = calculateNewInvoiceBatchPlan(transaction, workingInventory);
+            batchPlans.push({
+              transactionId: String(transaction.id),
+              status: plan.status === "ready" ? "ready" : "needs_new_invoice",
+              transaction,
+              plan,
+              candidates: available,
+              reason: plan.status === "ready"
+                ? "Đã tính sẵn phương án từ tồn kho cho phiếu mới. Accept để giữ phương án rồi mở tab Bán hàng."
+                : `Cần tạo phiếu mới nhưng chưa tính được phương án: ${plan.reason || "không rõ lỗi"}.`
+            });
+            if (plan.status === "ready") workingInventory = reserveBatchStock(workingInventory, plan.items);
+          }
           continue;
         }
         let opened = false;
         try {
+          usedInvoiceNos.add(String(candidate.invoiceNo));
           await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo: candidate.invoiceNo });
           opened = true;
           const scan = await waitForOpenedInvoice(candidate.invoiceNo);
           const plan = calculateBatchPlan(scan, transaction, workingInventory);
-          batchPlans.push({ transactionId: String(transaction.id), status: plan.status, transaction, plan, reason: plan.reason || "" });
+          batchPlans.push({
+            transactionId: String(transaction.id),
+            status: plan.status,
+            transaction,
+            plan,
+            candidates: available,
+            reason: plan.reason || automaticSelectionReason
+          });
           if (plan.status === "ready") {
             workingInventory = reserveBatchStock(workingInventory, plan.items);
-            usedInvoiceNos.add(String(candidate.invoiceNo));
           }
         } catch (error) {
           batchPlans.push({
@@ -982,7 +1587,15 @@
           }
         }
       }
+      if (pendingNewInvoice) {
+        const pendingEntry = batchPlans.find(entry => String(entry.transactionId) === String(pendingNewInvoice.transactionId));
+        if (pendingEntry && pendingEntry.status !== "needs_new_invoice" && pendingEntry.status !== "lookup_error") {
+          pendingNewInvoice = null;
+          document.getElementById("it-pending-new-invoice")?.remove();
+        }
+      }
       renderBatchPlans();
+      await saveBatchUiSession({ panelOpen: true });
       setStatus("Đã tạo Batch Review. Chưa có hóa đơn nào bị sửa hoặc lưu.", "ok");
     } catch (error) {
       if (summary) summary.textContent = error.message;
@@ -998,12 +1611,17 @@
     if (!summary || !table) return;
     const ready = batchPlans.filter(item => item.status === "ready");
     const planned = batchPlans.filter(item => ["planned", "batch_ready"].includes(item.status));
-    const issues = batchPlans.length - ready.length - planned.length;
+    const alreadyIssued = batchPlans.filter(item => item.status === "already_issued");
+    const needNew = batchPlans.filter(item => item.status === "needs_new_invoice");
+    const done = batchPlans.filter(item => item.status === "done");
+    const issues = batchPlans.length - ready.length - planned.length - alreadyIssued.length - needNew.length - done.length;
     const readyTotal = ready.reduce((sum, item) => sum + Number(item.plan.targetGrand || 0), 0);
     summary.innerHTML = `<div class="it-batch-kpis">
       <div><small>Tổng giao dịch</small><strong>${batchPlans.length}</strong></div>
       <div class="ok"><small>Sẵn sàng duyệt</small><strong>${ready.length}</strong></div>
       <div><small>Đã có phương án</small><strong>${planned.length}</strong></div>
+      <div class="ok"><small>Đã có HĐ khớp</small><strong>${alreadyIssued.length + done.length}</strong></div>
+      <div><small>Cần tạo phiếu</small><strong>${needNew.length}</strong></div>
       <div class="${issues ? "error" : "ok"}"><small>Cần xử lý</small><strong>${issues}</strong></div>
       <div><small>Tổng sẵn sàng</small><strong>${formatMoney(readyTotal)}</strong></div>
     </div>`;
@@ -1014,6 +1632,10 @@
         planned: "Chờ lưu/đối soát",
         batch_ready: "Đã Accept",
         needs_choice: "Cần chọn phiếu",
+        already_issued: "Đã có HĐ khớp",
+        needs_new_invoice: "Cần tạo phiếu",
+        lookup_error: "Lỗi dò hóa đơn",
+        done: "Đã xử lý",
         error: "Lỗi"
       }[entry.status] || entry.status;
       const itemDetails = (plan.items || []).map(item =>
@@ -1027,7 +1649,21 @@
         <td class="it-money">${plan.goods == null ? "—" : formatMoney(plan.goods)}</td>
         <td class="it-money">${plan.hour == null ? "—" : formatMoney(plan.hour)}</td>
         <td class="it-money">${plan.tax == null ? "—" : formatMoney(plan.tax)}</td>
-        <td><span class="it-batch-status ${escapeHtml(entry.status)}">${statusLabel}</span>${entry.reason ? `<br><small>${escapeHtml(entry.reason)}</small>` : ""}</td>
+        <td><span class="it-batch-status ${escapeHtml(entry.status)}">${statusLabel}</span>
+          ${entry.reason ? `<br><small>${escapeHtml(entry.reason)}</small>` : ""}
+          ${entry.status === "needs_choice" && (entry.candidates || []).length ? `<br><select class="it-unissued-choice" data-index="${index}">
+            <option value="">— Chọn phiếu chưa xuất —</option>
+            ${(entry.candidates || []).map(candidate => `<option value="${escapeHtml(candidate.invoiceNo)}">${escapeHtml(candidate.invoiceNo)} · ${formatMoney(candidate.grandTotal)}</option>`).join("")}
+          </select>` : ""}
+          ${entry.status === "already_issued" && (entry.candidates || []).length > 1 ? `<br><select class="it-issued-choice" data-index="${index}">
+            <option value="">— Chọn HĐ đã xuất —</option>
+            ${(entry.candidates || []).map(candidate => `<option value="${escapeHtml(candidate.invoiceNo)}" ${String(candidate.invoiceNo) === String(entry.plan?.invoiceNo || "") ? "selected" : ""}>${escapeHtml(candidate.invoiceNo)} · ${formatMoney(candidate.grandTotal)}</option>`).join("")}
+          </select>` : ""}
+          ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<br><button class="it-confirm-issued" type="button" data-index="${index}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
+          ${entry.status === "needs_new_invoice" ? `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>` : ""}
+          ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu từ phương án đã Accept</button>` : ""}
+          ${entry.status === "lookup_error" ? `<br><button class="it-retry-batch" type="button">Thử dò lại</button>` : ""}
+        </td>
         <td>${itemDetails ? `<details><summary>${plan.items.length} mã</summary><table><thead><tr><th>Mã</th><th>Tên</th><th>SL</th><th>Giá</th><th>Tồn</th></tr></thead><tbody>${itemDetails}</tbody></table></details>` : "—"}</td>
       </tr>`;
     }).join("");
@@ -1040,6 +1676,41 @@
       table.querySelectorAll(".it-batch-select:not(:disabled)").forEach(input => { input.checked = event.target.checked; });
     });
     table.querySelector("#it-approve-batch")?.addEventListener("click", approveBatchPlans);
+    table.querySelectorAll(".it-unissued-choice").forEach(select => select.addEventListener("change", chooseUnissuedInvoice));
+    table.querySelectorAll(".it-issued-choice").forEach(select => select.addEventListener("change", chooseIssuedInvoice));
+    table.querySelectorAll(".it-confirm-issued").forEach(button => button.addEventListener("click", confirmAlreadyIssued));
+    table.querySelectorAll(".it-open-pos").forEach(button => button.addEventListener("click", openPosForNewInvoice));
+    table.querySelectorAll(".it-retry-batch").forEach(button => button.addEventListener("click", buildBatchReview));
+  }
+
+  async function chooseUnissuedInvoice(event) {
+    const index = Number(event.target.dataset.index);
+    const entry = batchPlans[index];
+    const invoiceNo = String(event.target.value || "");
+    if (!entry || entry.status !== "needs_choice" || !invoiceNo) return;
+    const candidate = (entry.candidates || []).find(item => String(item.invoiceNo) === invoiceNo);
+    if (!candidate) return setStatus("Phiếu vừa chọn không còn trong danh sách ứng viên.", "error");
+    const transaction = (statementDataset.transactions || []).find(item => String(item.id) === entry.transactionId);
+    if (!transaction) return;
+    transaction.invoiceNo = invoiceNo;
+    transaction.linkedAt = new Date().toISOString();
+    await InvoiceMappingStore.saveStatement(statementDataset);
+    setStatus(`Đã chọn ${invoiceNo}. Đang tính lại Batch Review để giữ tồn kho đúng thứ tự…`, "warn");
+    await buildBatchReview();
+  }
+
+  async function chooseIssuedInvoice(event) {
+    const index = Number(event.target.dataset.index);
+    const entry = batchPlans[index];
+    const invoiceNo = String(event.target.value || "");
+    if (!entry || entry.status !== "already_issued") return;
+    const candidate = (entry.candidates || []).find(item => String(item.invoiceNo) === invoiceNo);
+    entry.plan = {
+      ...(entry.plan || {}),
+      invoiceNo: candidate ? invoiceNo : ""
+    };
+    renderBatchPlans();
+    await saveBatchUiSession({ panelOpen: true });
   }
 
   async function approveBatchPlans() {
@@ -1059,9 +1730,83 @@
       entry.transaction = transaction;
     }
     await InvoiceMappingStore.saveStatement(statementDataset);
+    await saveBatchUiSession({ panelOpen: true });
     renderBatchPlans();
     renderStatementAdmin();
     setStatus(`Đã Accept ${selectedIndexes.length} phương án vào hàng đợi. Chưa sửa hoặc lưu hóa đơn.`, "ok");
+  }
+
+  async function confirmAlreadyIssued(event) {
+    const index = Number(event.target.dataset.index);
+    const entry = batchPlans[index];
+    if (!entry || entry.status !== "already_issued") return;
+    const invoiceNo = entry.plan?.invoiceNo;
+    if (!invoiceNo) return setStatus("Không xác định được số phiếu để gắn. Nếu có nhiều HĐ khớp, hãy chọn thủ công.", "error");
+    const transaction = (statementDataset.transactions || []).find(item => String(item.id) === entry.transactionId);
+    if (!transaction) return;
+    const alreadyLinked = (statementDataset.transactions || []).find(item =>
+      String(item.id) !== String(transaction.id) &&
+      String(item.invoiceNo || "") === String(invoiceNo) &&
+      ["done", "planned", "batch_ready"].includes(item.status)
+    );
+    if (alreadyLinked) {
+      return setStatus(`HĐ ${invoiceNo} đã được gắn với một giao dịch khác. Hãy chạy lại Batch Review.`, "error");
+    }
+    transaction.invoiceNo = invoiceNo;
+    transaction.status = "done";
+    transaction.reconciledAt = new Date().toISOString();
+    transaction.reconciledNote = `Đã có HĐ ${invoiceNo} khớp ${formatMoney(transaction.credit)}đ (xác nhận thủ công).`;
+    entry.status = "done";
+    entry.transaction = transaction;
+    await InvoiceMappingStore.saveStatement(statementDataset);
+    if (pendingNewInvoice && String(pendingNewInvoice.transactionId) === String(transaction.id)) {
+      pendingNewInvoice = null;
+      document.getElementById("it-pending-new-invoice")?.remove();
+    }
+    await saveBatchUiSession({ panelOpen: true });
+    renderBatchPlans();
+    renderStatementRows();
+    setStatus(`Đã gắn giao dịch với HĐ ${invoiceNo} và đánh dấu đã xử lý.`, "ok");
+  }
+
+  async function openPosForNewInvoice(event) {
+    const index = Number(event.target.dataset.index);
+    const entry = batchPlans[index];
+    if (!entry) return;
+    const t = entry.transaction;
+    const salesAnchor = Array.from(document.querySelectorAll("a"))
+      .find(anchor => (anchor.innerText || "").trim() === "Bán hàng" && anchor.href);
+    const salesUrl = salesAnchor?.href || location.href;
+    const newTab = window.open("about:blank", "_blank");
+    if (!newTab) {
+      return setStatus("Chrome đã chặn tab mới. Hãy cho phép pop-up cho website rồi thử lại.", "error");
+    }
+    pendingNewInvoice = {
+      transactionId: String(entry.transactionId),
+      transactionDate: t.transactionDate,
+      credit: Number(t.credit || 0),
+      description: t.description || "",
+      plan: structuredClone(entry.plan || t.batchApprovedPlan || null),
+      requestedAt: new Date().toISOString()
+    };
+    setStatus(
+      `Đang mở tab Bán hàng mới để tạo phiếu ngày ${t.transactionDate}, tổng mục tiêu ${formatMoney(t.credit)}đ. ` +
+      "Tab danh sách và phiên Batch Review hiện tại vẫn được giữ nguyên.",
+      "warn"
+    );
+    try {
+      await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: structuredClone(pendingNewInvoice) });
+      try { newTab.opener = null; } catch (_) {}
+      newTab.location.replace(salesUrl);
+      setStatus(
+        `Đã mở tab mới cho giao dịch ${t.transactionDate} · ${formatMoney(t.credit)}đ. ` +
+        "Thông tin giao dịch sẽ tự hiện lại trong extension ở tab mới.",
+        "ok"
+      );
+    } catch (error) {
+      try { newTab.close(); } catch (_) {}
+      setStatus(`Không lưu được phiên trước khi mở tab mới: ${error.message}`, "error");
+    }
   }
 
   function parseUiDateTime(value) {
@@ -1126,24 +1871,29 @@
     }
     const solution = InvoiceTargetSolver.solveQuantities(candidates, goodsTarget, {
       maxQty, tolerance, preTaxTarget: targets.preTaxTarget,
-      currentHour: latestScan.currentHour, hourStep: hourPricing.hourStep
+      currentHour: latestScan.currentHour, hourStep: hourPricing.hourStep,
+      preferredLineCount: preferredLineCount(goodsTarget),
+      maxActiveLines: 6
     });
     if (!solution.items) return setStatus(solution.reason || "Không tìm được phương án.", "error");
     const selected = solution.items.filter(item => item.newQty > 0);
-    const hourTarget = solution.hourActual == null ? Math.round(targets.preTaxTarget - solution.actual) : solution.hourActual;
-    if (hourTarget < 0) return setStatus("Tiền hàng phương án vượt tổng trước VAT; không thể bù bằng tiền giờ.", "error");
-    const hourDifference = hourTarget - Number(latestScan.currentHour || 0);
-    const finalHourAmount = hourTarget;
+    const { hourFromTime, finalHourAmount, hourAdjustment } = InvoiceTargetSolver.reconcileHourAmount(
+      solution.actual,
+      targets.preTaxTarget,
+      solution.hourActual
+    );
+    if (finalHourAmount < 0) return setStatus("Tiền hàng phương án vượt tổng trước VAT; không thể bù bằng tiền giờ.", "error");
+    const hourDifference = finalHourAmount - Number(latestScan.currentHour || 0);
     const predictedGrand = solution.actual + finalHourAmount + targets.vatTarget;
-    const proposedCheckOut = recommendCheckOut(latestScan, hourTarget, hourPricing.hourlyRate);
+    const proposedCheckOut = recommendCheckOut(latestScan, hourFromTime, hourPricing.hourlyRate);
     const totalDifference = predictedGrand - targetGrand;
     const dateMatched = !currentBankTransaction || latestScan.invoiceDateKey === currentBankTransaction.transactionDate;
     const stockSufficient = selected.every(item => Number(item.newQty) <= Number(item.maxQty));
     const canAccept = totalDifference === 0 && dateMatched && stockSufficient && selected.length > 0;
     const removeRows = latestScan.items.map(item => `<tr class="changed"><td>XÓA</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.name)}</td>
-      <td>${item.qty}</td><td>→</td><td>0</td><td>—</td><td>${formatMoney(item.price)}</td></tr>`).join("");
+      <td>${item.qty}</td><td>→</td><td>0</td><td>—</td><td>—</td><td>${formatMoney(item.price)}</td></tr>`).join("");
     const addRows = selected.map(item => `<tr class="changed"><td>THÊM</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.name)}</td>
-      <td>0</td><td>→</td><td>${item.newQty}</td><td>${item.maxQty}</td><td>${formatMoney(item.price)}</td></tr>`).join("");
+      <td>0</td><td>→</td><td>${item.newQty}</td><td>${item.stockQty}</td><td>${item.invoiceLimit}</td><td>${formatMoney(item.price)}</td></tr>`).join("");
     document.getElementById("it-panel")?.classList.add("review-mode");
     document.getElementById("it-result").innerHTML = `<section class="it-review-card">
       <div class="it-review-title"><div><small>DUYỆT PHƯƠNG ÁN</small><h3>${escapeHtml(latestScan.invoiceNo || "Phiếu đang mở")}</h3></div>
@@ -1159,6 +1909,7 @@
           <div class="head"><span>Khoản mục</span><span>Hiện tại</span><span>Đề xuất</span></div>
           <div><span>Tiền hàng</span><span>${formatMoney(latestScan.currentGoods)}</span><b>${formatMoney(solution.actual)}</b></div>
           <div><span>Tiền giờ</span><span>${formatMoney(latestScan.currentHour)}</span><b>${formatMoney(finalHourAmount)}</b></div>
+          ${hourAdjustment ? `<div><span>Bù chênh vào giờ</span><span>${formatMoney(hourFromTime)}</span><b>${hourAdjustment > 0 ? "+" : ""}${formatMoney(hourAdjustment)}</b></div>` : ""}
           <div><span>VAT 10%</span><span>${formatMoney(latestScan.currentTax)}</span><b>${formatMoney(targets.vatTarget)}</b></div>
           <div class="total"><span>Tổng cộng</span><span>${formatMoney(latestScan.currentGrand)}</span><b>${formatMoney(predictedGrand)}</b></div>
         </div>
@@ -1182,7 +1933,7 @@
       </div>
     </section>
       <div class="it-add-warning">Sẽ thay ${latestScan.items.length} dòng cũ bằng ${selected.length} mã đã xác nhận từ kho.</div>
-      <div class="it-table-wrap"><table><thead><tr><th>Loại</th><th>Mã web</th><th>Tên</th><th>Cũ</th><th></th><th>Mới</th><th>Tồn tối đa</th><th>Giá web</th></tr></thead>
+      <div class="it-table-wrap"><table><thead><tr><th>Loại</th><th>Mã web</th><th>Tên</th><th>Cũ</th><th></th><th>Mới</th><th>Tồn kho</th><th>Trần/phiếu</th><th>Giá web</th></tr></thead>
       <tbody>${removeRows + addRows}</tbody></table></div>`;
     const reviewConfirm = document.getElementById("it-review-confirm");
     const applyPlanButton = document.getElementById("it-apply-plan");
@@ -1281,11 +2032,13 @@
     mappingDataset = InvoiceMappingEngine.applyBusinessRules(await InvoiceMappingStore.load(embeddedDataset));
     statementDataset = await InvoiceMappingStore.loadStatement();
     verificationLedger = await InvoiceMappingStore.loadLedger();
+    stockStateMeta = await InvoiceMappingStore.loadStockStateMeta();
     priorityRules = await InvoiceMappingStore.loadPriorityRules();
     InvoiceMappingEngine.reconcileCatalog(mappingDataset, webCatalog);
     await InvoiceMappingStore.save(mappingDataset);
     refreshMappingState();
     mount();
+    await restoreUiSession();
   }
 
   init().catch(error => console.error("Invoice Target MVP init failed", error));

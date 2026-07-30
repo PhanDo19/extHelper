@@ -23,7 +23,7 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 
 - Mọi mã bắt đầu từ số lượng 0.
 - `proposedQty <= floor(availableQty)`.
-- Ngoại lệ hoa quả: `TC` = đĩa nhỏ 350.000, `TCTO` = đĩa to 450.000; tổng số lượng `TC + TCTO <= 1` trên mỗi hóa đơn.
+- Ngoại lệ hoa quả: `TC` = đĩa nhỏ 350.000, `TCTO` = đĩa to 400.000 theo giá hiện hành trên web; tổng số lượng `TC + TCTO <= 1` trên mỗi hóa đơn.
 - Không giữ tiền của hàng cũ như khoản cố định.
 - Dùng giá web để tính phương án hóa đơn.
 
