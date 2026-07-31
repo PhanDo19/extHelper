@@ -17,6 +17,29 @@ function extractFunction(name) {
   throw new Error(`Không đọc hết ${name}`);
 }
 
+// Đọc thẳng hằng số từ content.js: nếu hardcode lại trong test thì đổi mốc giờ
+// trong code mà test vẫn pass với giá trị cũ.
+function extractConst(name) {
+  const match = source.match(new RegExp(`const ${name} = [^;]+;`));
+  if (!match) throw new Error(`Không tìm thấy hằng số ${name}`);
+  return match[0];
+}
+
+// calculateBatchPlan phụ thuộc các hằng số/hàm quy mô và cơ cấu nhóm; gom lại
+// một chỗ để ba sandbox bên dưới dùng chung.
+const batchPlanDeps = [
+  extractConst("MAX_HOUR_TO_GOODS_RATIO"),
+  extractConst("NATURAL_MIN_HOUR_TO_GOODS_RATIO"),
+  extractConst("MAX_PRODUCT_GROUP_SHARE"),
+  extractFunction("minimumGoodsForHourRatio"),
+  extractFunction("naturalMaxGoodsForHourRatio"),
+  extractFunction("preferredLineCount"),
+  extractFunction("maxActiveLines"),
+  extractFunction("minimumGroupCount"),
+  extractFunction("calculateBatchPlan"),
+  "this.calculateBatchPlan = calculateBatchPlan;"
+].join("; ");
+
 const sandbox = { structuredClone };
 vm.createContext(sandbox);
 vm.runInContext(
@@ -149,7 +172,7 @@ const planBox = {
   recommendCheckOut: () => "30/06/2026 15:00"
 };
 vm.createContext(planBox);
-vm.runInContext(`${extractFunction("calculateBatchPlan")}; this.calculateBatchPlan = calculateBatchPlan;`, planBox);
+vm.runInContext(batchPlanDeps, planBox);
 const residualPlan = planBox.calculateBatchPlan({
   ready: true,
   invoiceNo: "HD0126060331",
@@ -167,8 +190,14 @@ if (residualPlan.hourFromTime !== 606000 || residualPlan.hourAdjustment !== -91)
 if (residualPlan.tax !== 216091 || residualPlan.difference !== 0) throw new Error("VAT/tổng dự kiến không khớp sao kê.");
 
 vm.runInContext(
+  `${extractConst("NEW_INVOICE_CHECKIN_START_MINUTES")}; ` +
+  `${extractConst("NEW_INVOICE_CHECKIN_STEP_MINUTES")}; ` +
+  `${extractConst("NEW_INVOICE_CHECKIN_LAST_MINUTES")}; ` +
+  `${extractConst("NEW_INVOICE_CHECKIN_SLOT_COUNT")}; ` +
+  `${extractFunction("newInvoiceCheckInMinutes")}; ` +
   `${extractFunction("parseUiDateTime")}; ${extractFunction("formatUiDateTime")}; ` +
   `${extractFunction("newInvoicePlanningScan")}; ${extractFunction("calculateNewInvoiceBatchPlan")}; ` +
+  "this.newInvoicePlanningScan = newInvoicePlanningScan; " +
   "this.calculateNewInvoiceBatchPlan = calculateNewInvoiceBatchPlan;",
   planBox
 );
@@ -179,8 +208,140 @@ const newInvoicePlan = planBox.calculateNewInvoiceBatchPlan({
 if (newInvoicePlan.status !== "ready" || !newInvoicePlan.requiresNewInvoice) {
   throw new Error(`New-invoice Batch Review plan must be ready: ${newInvoicePlan.reason || ""}`);
 }
-if (newInvoicePlan.targetGrand !== 2377000 || newInvoicePlan.checkIn !== "30/06/2026 15:00" || !newInvoicePlan.checkOut) {
+if (newInvoicePlan.targetGrand !== 2377000 || newInvoicePlan.checkIn !== "30/06/2026 17:00" || !newInvoicePlan.checkOut) {
   throw new Error("New-invoice plan must preserve the bank amount/date and provide check-in/out times.");
+}
+
+// Giờ vào phiếu mới luôn từ 17:00 trở đi và rải đều theo thứ tự trong ngày.
+const slotCheckIns = [0, 1, 2, 3].map(slot => planBox.newInvoicePlanningScan("2026-06-30", slot).checkIn);
+if (slotCheckIns.join("|") !== "30/06/2026 17:00|30/06/2026 17:45|30/06/2026 18:30|30/06/2026 19:15") {
+  throw new Error(`Giờ vào phiếu mới phải rải đều sau 17:00: ${slotCheckIns.join("|")}`);
+}
+if (new Set(slotCheckIns).size !== slotCheckIns.length) {
+  throw new Error("Các phiếu mới cùng ngày không được trùng giờ vào.");
+}
+// Không phiếu mới nào được có giờ vào trước 17:00.
+for (const slot of [0, 1, 2, 3, 5, 8, 20]) {
+  const [, hhmm] = planBox.newInvoicePlanningScan("2026-06-30", slot).checkIn.split(" ");
+  const [hour, minute] = hhmm.split(":").map(Number);
+  if (hour * 60 + minute < 17 * 60) {
+    throw new Error(`Slot ${slot} có giờ vào ${hhmm}, sớm hơn mốc 17:00.`);
+  }
+}
+// Slot mặc định (không truyền) phải là mốc sớm nhất 17:00.
+if (planBox.newInvoicePlanningScan("2026-06-30").checkIn !== "30/06/2026 17:00") {
+  throw new Error("Slot mặc định phải bắt đầu từ 17:00.");
+}
+// Giờ vào không được tràn sang ngày hôm sau: phải nằm trong đúng ngày sao kê.
+for (const slot of [9, 12, 30, 100]) {
+  const checkIn = planBox.newInvoicePlanningScan("2026-06-30", slot).checkIn;
+  if (!checkIn.startsWith("30/06/2026")) {
+    throw new Error(`Slot ${slot} bị tràn sang ngày khác: ${checkIn}`);
+  }
+}
+// Hết khung giờ trong ngày thì slot quay vòng về 17:00 thay vì dồn cục vào một
+// mốc — dồn cục sẽ khiến không phòng nào tái sử dụng được.
+if (planBox.newInvoicePlanningScan("2026-06-30", 9).checkIn !==
+    planBox.newInvoicePlanningScan("2026-06-30", 0).checkIn) {
+  throw new Error("Slot vượt số khung giờ phải quay vòng về mốc đầu tiên.");
+}
+const wrappedCheckIns = [9, 10, 11].map(slot =>
+  planBox.newInvoicePlanningScan("2026-06-30", slot).checkIn);
+if (new Set(wrappedCheckIns).size !== wrappedCheckIns.length) {
+  throw new Error("Các slot sau khi quay vòng vẫn phải khác giờ nhau.");
+}
+
+// Website chặn hai phiếu CÙNG PHÒNG chồng giờ, nhưng phòng tái sử dụng được khi
+// khoảng giờ rời nhau — 12 phòng phải phục vụ được nhiều phiếu hơn 12.
+const roomBox = {
+  statementDataset: {
+    transactions: [
+      {
+        id: "tx-1", transactionDate: "2026-06-30", newInvoiceRoomName: "VIP 301",
+        newInvoiceCheckIn: "30/06/2026 17:00", newInvoiceCheckOut: "30/06/2026 18:00"
+      },
+      {
+        id: "tx-2", transactionDate: "2026-06-30", newInvoiceRoomName: "VIP 302",
+        newInvoiceCheckIn: "30/06/2026 17:00", newInvoiceCheckOut: "30/06/2026 19:00"
+      },
+      {
+        id: "tx-3", transactionDate: "2026-07-01", newInvoiceRoomName: "VIP 301",
+        newInvoiceCheckIn: "01/07/2026 17:00", newInvoiceCheckOut: "01/07/2026 23:00"
+      }
+    ]
+  }
+};
+vm.createContext(roomBox);
+vm.runInContext(
+  `${extractFunction("normalizeRoomText")}; ${extractFunction("parseUiDateTime")}; ` +
+  `${extractFunction("roomBookingsOnDate")}; ${extractFunction("roomIsFreeForRange")}; ` +
+  "this.roomBookingsOnDate = roomBookingsOnDate; this.roomIsFreeForRange = roomIsFreeForRange;",
+  roomBox
+);
+const bookings = roomBox.roomBookingsOnDate("2026-06-30", "");
+// Chỉ lấy phiếu đúng ngày; phiếu ngày khác không được chặn phòng.
+if (bookings.size !== 2) {
+  throw new Error(`Chỉ được tính phòng đã dùng trong đúng ngày, đang có ${bookings.size} phòng.`);
+}
+// Khoảng giờ chồng nhau -> phòng bận.
+if (roomBox.roomIsFreeForRange(bookings, "VIP 301", "30/06/2026 17:30", "30/06/2026 18:30")) {
+  throw new Error("Khoảng giờ chồng nhau phải coi là phòng đã bận.");
+}
+// Khoảng giờ rời hẳn -> tái sử dụng được phòng.
+if (!roomBox.roomIsFreeForRange(bookings, "VIP 301", "30/06/2026 19:00", "30/06/2026 20:00")) {
+  throw new Error("Khoảng giờ rời nhau phải được tái sử dụng phòng.");
+}
+// Chạm mép (giờ vào mới = giờ ra cũ) vẫn coi là chồng, để chừa biên an toàn.
+if (roomBox.roomIsFreeForRange(bookings, "VIP 301", "30/06/2026 18:00", "30/06/2026 19:00")) {
+  throw new Error("Chạm mép giờ phải coi là chồng để chừa biên an toàn.");
+}
+// Phòng chưa từng dùng trong ngày thì luôn rảnh.
+if (!roomBox.roomIsFreeForRange(bookings, "VIP 8888", "30/06/2026 17:00", "30/06/2026 18:00")) {
+  throw new Error("Phòng chưa dùng trong ngày phải còn rảnh.");
+}
+// So tên phòng không phân biệt hoa thường và khoảng trắng thừa.
+if (roomBox.roomIsFreeForRange(bookings, "  vip 301 ", "30/06/2026 17:30", "30/06/2026 18:30")) {
+  throw new Error("So khớp tên phòng phải bỏ qua hoa/thường và khoảng trắng thừa.");
+}
+// Loại trừ chính giao dịch đang tính, nếu không nó tự chặn phòng của chính mình.
+const selfExcluded = roomBox.roomBookingsOnDate("2026-06-30", "tx-1");
+if (!roomBox.roomIsFreeForRange(selfExcluded, "VIP 301", "30/06/2026 17:00", "30/06/2026 18:00")) {
+  throw new Error("Giao dịch đang tính lại không được tự chặn phòng của chính nó.");
+}
+
+// findStatementTransaction phải đọc từ statementDataset hiện hành. verifySavedInvoice
+// thay cả dataset bằng bản clone đã ghi sổ, nên tham chiếu giữ từ trước đó luôn là
+// dữ liệu cũ — đó là lý do guard "đã đối soát xong chưa" từng đọc nhầm trạng thái.
+const lookupBox = {};
+vm.createContext(lookupBox);
+vm.runInContext(
+  "var statementDataset = { transactions: [{ id: 'tx-1', status: 'planned' }] }; " +
+  `${extractFunction("findStatementTransaction")}; ` +
+  "this.findStatementTransaction = findStatementTransaction; " +
+  "this.replaceDataset = next => { statementDataset = next; }; " +
+  "this.currentDataset = () => statementDataset;",
+  lookupBox
+);
+const staleReference = lookupBox.findStatementTransaction("tx-1");
+// Mô phỏng đúng việc verifySavedInvoice làm: clone dataset, sửa bản clone, gán đè.
+const clonedDataset = structuredClone(lookupBox.currentDataset());
+clonedDataset.transactions[0].status = "done";
+lookupBox.replaceDataset(clonedDataset);
+if (staleReference.status === "done") {
+  throw new Error("Test dựng sai: tham chiếu cũ đáng lẽ không được đổi theo bản clone.");
+}
+if (lookupBox.findStatementTransaction("tx-1")?.status !== "done") {
+  throw new Error("findStatementTransaction phải đọc trạng thái mới sau khi dataset bị thay.");
+}
+if (lookupBox.findStatementTransaction("") !== null ||
+    lookupBox.findStatementTransaction(null) !== null ||
+    lookupBox.findStatementTransaction("tx-missing") !== null) {
+  throw new Error("Id rỗng hoặc không tồn tại phải trả về null.");
+}
+// Id dạng số vẫn phải khớp với id chuỗi trong dataset.
+lookupBox.replaceDataset({ transactions: [{ id: 42, status: "done" }] });
+if (lookupBox.findStatementTransaction(42)?.status !== "done") {
+  throw new Error("Phải so khớp id theo chuỗi để không phụ thuộc kiểu dữ liệu.");
 }
 
 const hourOnlyPlan = planBox.calculateBatchPlan({
@@ -194,8 +355,140 @@ const hourOnlyPlan = planBox.calculateBatchPlan({
   transactionDate: "2026-06-30",
   credit: 12152
 }, []);
-if (hourOnlyPlan.status !== "error" || !hourOnlyPlan.reason.includes("chỉ có Tiền giờ")) {
-  throw new Error("Phương án không có mặt hàng phải báo đúng nguyên nhân.");
+// Tồn kho rỗng thì không thể lập phương án; phải báo lỗi chứ không được Sẵn sàng.
+if (hourOnlyPlan.status !== "error") {
+  throw new Error("Không có mặt hàng nào thì không được ra phương án Sẵn sàng.");
+}
+
+// Hóa đơn không được phép có Tiền giờ = 0. Đây là ca tái hiện đúng lỗi thật:
+// tiền hàng ăn trọn phần trước VAT nên tiền giờ còn 0 mà tổng vẫn khớp sao kê.
+const zeroHourStock = [
+  { webCode: "9000001", webName: "Mã vừa khít", webPrice: 11047, availableQty: 5, status: "confirmed" }
+];
+const zeroHourPlan = planBox.calculateBatchPlan({
+  ready: true,
+  invoiceNo: "HD-ZERO",
+  invoiceDateKey: "2026-06-30",
+  currentHour: 0,
+  currentGrand: 0,
+  taxRate: 10
+}, {
+  transactionDate: "2026-06-30",
+  credit: 12152
+}, zeroHourStock);
+if (zeroHourPlan.status === "ready") {
+  throw new Error("Phương án Tiền giờ = 0 không được ra trạng thái Sẵn sàng.");
+}
+if (!zeroHourPlan.reason.includes("Tiền giờ")) {
+  throw new Error(`Lý do phải nêu rõ thiếu Tiền giờ: ${zeroHourPlan.reason}`);
+}
+
+// Với tồn kho đủ rộng, solver phải tự chừa chỗ cho tiền giờ thay vì dồn hết vào
+// tiền hàng — đây là ca lấy từ dòng 1.001.000đ bị lỗi trên giao diện. Dùng
+// sandbox riêng vì planBox cố định buildBatchCandidates về đúng một mã.
+const spreadBox = {
+  InvoiceTargetSolver: solver,
+  priorityRules: [],
+  inferHourPricing: () => ({ hourlyRate: 600000, hourStep: 6000 }),
+  buildBatchCandidates: stock => stock.map(row => ({
+    code: row.webCode,
+    name: row.webName,
+    price: row.webPrice,
+    qty: 0,
+    maxQty: row.availableQty,
+    stockQty: row.availableQty,
+    invoiceLimit: row.availableQty
+  })),
+  formatMoney: value => String(Number(value) || 0),
+  recommendCheckOut: () => "30/06/2026 15:00"
+};
+vm.createContext(spreadBox);
+vm.runInContext(batchPlanDeps, spreadBox);
+const realStock = [
+  { webCode: "1100019", webName: "Bia Tiger Crystal", webPrice: 45000, availableQty: 8 },
+  { webCode: "1500007", webName: "Hoa quả thập cẩm", webPrice: 400000, availableQty: 1 },
+  { webCode: "1400016", webName: "TL Camel", webPrice: 60000, availableQty: 1 },
+  { webCode: "1000064", webName: "Hạt Mắc Ca", webPrice: 180000, availableQty: 2 }
+];
+const spreadPlan = spreadBox.calculateBatchPlan({
+  ready: true,
+  newInvoicePlanning: true,
+  invoiceNo: "",
+  invoiceDateKey: "2026-06-30",
+  currentHour: 0,
+  currentGrand: 0,
+  taxRate: 10
+}, {
+  transactionDate: "2026-06-30",
+  credit: 1001000
+}, realStock);
+if (spreadPlan.status !== "ready") {
+  throw new Error(`Ca 1.001.000đ phải lập được phương án: ${spreadPlan.reason}`);
+}
+if (spreadPlan.hour <= 0) {
+  throw new Error("Phương án phải có Tiền giờ lớn hơn 0.");
+}
+// Phiếu mới dùng đơn giá 600.000đ/giờ nên sàn 30 phút là 300.000đ.
+if (spreadPlan.hour < 300000) {
+  throw new Error(`Tiền giờ phải đạt tối thiểu 30 phút (300.000đ), đang là ${spreadPlan.hour}.`);
+}
+if (spreadPlan.goods + spreadPlan.hour + spreadPlan.tax !== 1001000) {
+  throw new Error("Phương án ép tiền giờ vẫn phải khớp tuyệt đối số tiền sao kê.");
+}
+
+// Tiền giờ phải giữ tỷ lệ tự nhiên so với tiền hàng (đơn thật quan sát được là
+// 0,87–1,64 lần). Trần tỷ lệ ≤2 một mình không đủ: solver sẽ dồn hết vào tiền
+// hàng và ra tỷ lệ ~0,2.
+const spreadRatio = spreadPlan.hour / spreadPlan.goods;
+if (spreadRatio < 0.8 || spreadRatio > 2) {
+  throw new Error(`Tỷ lệ Tiền giờ/Tiền hàng ${spreadRatio.toFixed(2)} nằm ngoài dải thực tế 0,8–2.`);
+}
+// Vẫn phải gom được số lượng, không rơi lại về mỗi mã đúng 1 cái.
+if (!spreadPlan.items.some(item => item.qty > 1)) {
+  throw new Error("Phương án phải gom được số lượng > 1 vào ít nhất một mã.");
+}
+
+// Tính toán lại phải đổi sang tổ hợp khác: mã bị bỏ nhận selectionPenalty nên
+// buildBatchCandidates đẩy chúng ra sau.
+const rejectedFirst = new Set(spreadPlan.items.map(item => String(item.code)));
+const retryBox = Object.assign({}, spreadBox, {
+  buildBatchCandidates: stock => stock.map(row => ({
+    code: row.webCode,
+    name: row.webName,
+    price: row.webPrice,
+    qty: 0,
+    maxQty: row.availableQty,
+    stockQty: row.availableQty,
+    invoiceLimit: row.availableQty,
+    selectionPenalty: rejectedFirst.has(String(row.webCode)) ? 200 : 0
+  }))
+});
+vm.createContext(retryBox);
+vm.runInContext(batchPlanDeps, retryBox);
+const retryPlan = retryBox.calculateBatchPlan({
+  ready: true,
+  newInvoicePlanning: true,
+  invoiceNo: "",
+  invoiceDateKey: "2026-06-30",
+  currentHour: 0,
+  currentGrand: 0,
+  taxRate: 10
+}, {
+  transactionDate: "2026-06-30",
+  credit: 1001000
+}, realStock);
+if (retryPlan.status !== "ready") {
+  throw new Error(`Tính toán lại vẫn phải ra phương án: ${retryPlan.reason}`);
+}
+const signature = plan => plan.items.map(item => `${item.code}:${item.qty}`).sort().join("|");
+if (signature(retryPlan) === signature(spreadPlan)) {
+  throw new Error("Tính toán lại phải cho tổ hợp khác lần trước, không lặp lại y hệt.");
+}
+if (retryPlan.goods + retryPlan.hour + retryPlan.tax !== 1001000) {
+  throw new Error("Phương án tính lại vẫn phải khớp tuyệt đối số tiền sao kê.");
+}
+if (retryPlan.hour < 300000) {
+  throw new Error("Phương án tính lại vẫn phải giữ sàn Tiền giờ 30 phút.");
 }
 
 const ruleBox = {
@@ -207,6 +500,7 @@ const ruleBox = {
 };
 vm.createContext(ruleBox);
 vm.runInContext(
+  `${extractConst("EXCLUDED_PRODUCT_GROUPS")}; ${extractFunction("isAutoSellableStock")}; ` +
   `${extractFunction("candidateFromStock")}; ${extractFunction("stableDiversityRank")}; ${extractFunction("buildBatchCandidates")}; ` +
   "this.buildBatchCandidates = buildBatchCandidates;",
   ruleBox

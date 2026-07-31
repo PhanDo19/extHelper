@@ -5,6 +5,7 @@
   const RESPONSE = "invoice-target-mvp:response";
   const SAVE_CAPTURED = "invoice-target-mvp:save-request-captured";
   let saveCaptureArmedUntil = 0;
+  const invoiceListCache = new Map();
 
   function money(value) {
     if (typeof value === "number") return value;
@@ -213,17 +214,23 @@
     return { checkOut: checkOutInput.value };
   }
 
-  function applyInvoiceTimes(checkInValue, checkOutValue) {
-    const checkInDate = parseDateTime(checkInValue);
+  // keepCheckIn = true: chi ghi gio ra, giu nguyen gio vao dang co tren phieu.
+  // Dung cho phieu DA TON TAI - gio vao la du lieu that cua khach, khong duoc sua.
+  function applyInvoiceTimes(checkInValue, checkOutValue, keepCheckIn) {
     const checkOutDate = parseDateTime(checkOutValue);
-    if (!checkInDate || !checkOutDate || checkOutDate < checkInDate) {
-      throw new Error("Khoang gio vao/ra cua phuong an phieu moi khong hop le.");
-    }
+    if (!checkOutDate) throw new Error("Gio ra cua phuong an khong hop le.");
     const inputs = Array.from(document.querySelectorAll("input")).filter(input => isVisible(input) && parseDateTime(input.value));
     if (inputs.length < 2) throw new Error("Khong tim thay o gio vao/ra dang hien thi.");
     const checkInInput = inputs.find(input => /GIOVAO|NGAYVAO|CHECKIN|START/i.test(`${input.id} ${input.name}`)) || inputs[0];
     const remaining = inputs.filter(input => input !== checkInInput);
     const checkOutInput = remaining.find(input => /GIORA|NGAYRA|CHECKOUT|END/i.test(`${input.id} ${input.name}`)) || remaining[0];
+    // Voi phieu da ton tai, gio vao dung de doi chieu la gio dang co tren form
+    // chu khong phai gio trong phuong an.
+    const effectiveCheckIn = keepCheckIn ? parseDateTime(checkInInput.value) : parseDateTime(checkInValue);
+    if (!effectiveCheckIn) throw new Error("Khong doc duoc gio vao cua phieu.");
+    if (checkOutDate < effectiveCheckIn) {
+      throw new Error("Gio ra khong duoc som hon gio vao cua phieu.");
+    }
     const jq = window.jQuery || window.$;
     const applyValue = (input, date, text) => {
       const picker = jq ? jq(input).data("kendoDateTimePicker") : null;
@@ -234,9 +241,9 @@
       setNativeValue(input, text);
       input.dispatchEvent(new Event("blur", { bubbles: true }));
     };
-    applyValue(checkInInput, checkInDate, checkInValue);
+    if (!keepCheckIn) applyValue(checkInInput, effectiveCheckIn, checkInValue);
     applyValue(checkOutInput, checkOutDate, checkOutValue);
-    return { checkIn: checkInInput.value, checkOut: checkOutInput.value };
+    return { checkIn: checkInInput.value, checkOut: checkOutInput.value, keptCheckIn: Boolean(keepCheckIn) };
   }
 
   function applyHourAmount(value) {
@@ -251,18 +258,66 @@
     return { hourAmount: money(input.value) };
   }
 
+  function visibleInvoiceTotalInput() {
+    const pattern = /^numTONGCONG\d+$/;
+    return Array.from(document.querySelectorAll('[id^="numTONGCONG"]'))
+      .find(input => pattern.test(input.id) && isVisible(input)) || null;
+  }
+
+  function invoiceUiState() {
+    const detailInput = visibleInvoiceTotalInput();
+    const list = invoiceListElement();
+    return {
+      detailVisible: Boolean(detailInput),
+      detailTotalId: detailInput?.id || "",
+      listVisible: Boolean(list && isVisible(list))
+    };
+  }
+
+  async function waitForInvoiceDetailClosed(timeout = 2500) {
+    const deadline = Date.now() + timeout;
+    let state = invoiceUiState();
+    while (state.detailVisible && Date.now() < deadline) {
+      await wait(100);
+      state = invoiceUiState();
+    }
+    return state;
+  }
+
   async function closeInvoiceDetail() {
     const button = Array.from(document.querySelectorAll('button[id^="btnThoat"]')).find(isVisible);
-    if (!button) return { closed: false };
+    const initialState = invoiceUiState();
+    if (!initialState.detailVisible) {
+      return { closed: true, method: "already-closed", ...initialState };
+    }
+    if (!button) return { closed: false, method: "button-not-found", ...initialState };
     const originalAlert = window.alert;
     const suppressedAlerts = [];
     window.alert = message => { suppressedAlerts.push(String(message || "")); };
     try {
       button.click();
-      await wait(500);
+      let state = await waitForInvoiceDetailClosed();
+      let method = "button-click";
+      if (state.detailVisible) {
+        const invoked = invokeRunnerHandler([
+          /^btnThoat_Click$/i,
+          /btnThoat.*Click/i,
+          /Thoat.*Click/i,
+          /Exit.*Click/i
+        ], { sender: button, target: button });
+        if (invoked) {
+          method = "runner-handler";
+          state = await waitForInvoiceDetailClosed();
+        }
+      }
       const listDialog = window.__invoiceTargetListDialogInfo;
-      if (listDialog?.client && invoiceListElement()) window.dialogInfo = listDialog;
-      return { closed: !suffixInput("numTONGCONG"), suppressedAlerts };
+      if (!state.detailVisible && listDialog?.client && invoiceListElement()) window.dialogInfo = listDialog;
+      return {
+        closed: !state.detailVisible,
+        method,
+        suppressedAlerts,
+        ...state
+      };
     } finally {
       window.alert = originalAlert;
     }
@@ -305,17 +360,20 @@
         jq(input).data("kendoDateTimePicker"),
         jq(input).data("kendoDatePicker"),
         jq(input).data("kendoTimePicker"),
-        jq(input).data("kendoNumericTextBox"),
-        jq(input).data("kendoComboBox"),
-        jq(input).data("kendoDropDownList")
+        jq(input).data("kendoNumericTextBox")
       ].filter(Boolean) : [];
       widgets.forEach(widget => {
         if (typeof widget.value !== "function") return;
-        if (/Date|Time/.test(widget.options?.name || "")) {
-          const parsed = parseDateTime(saved.value);
-          if (parsed) widget.value(parsed);
-        } else {
-          widget.value(saved.value);
+        try {
+          if (/Date|Time/.test(widget.options?.name || "")) {
+            const parsed = parseDateTime(saved.value);
+            if (parsed) widget.value(parsed);
+          } else {
+            widget.value(saved.value);
+          }
+        } catch (_) {
+          // Kendo can expose a widget object before its input is initialized.
+          // The native input value below is sufficient for these fields.
         }
       });
       setNativeValue(input, saved.value);
@@ -1063,18 +1121,49 @@
     if (!invoiceListElement()) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
     rememberInvoiceListDialog();
 
+    const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
+      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Chưa xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
+    if (!unissuedRadio) throw new Error('Không tìm thấy bộ lọc "Chưa xuất hóa đơn".');
+
+    const used = new Set((usedInvoiceNos || []).map(String));
+    const cachedRows = invoiceListCache.get(String(dateKey));
+    if (unissuedRadio.checked && cachedRows?.length) {
+      return {
+        dateKey,
+        invoiceStatus: "unissued",
+        cached: true,
+        suppressedAlerts: [],
+        candidates: cachedRows.map(row => ({ ...row, available: !used.has(String(row.invoiceNo)) }))
+      };
+    }
+    const currentRows = invoiceListRows();
+    // Batch Review normally handles many transactions of one day. Reusing the
+    // already loaded unissued list avoids repeatedly destroying/recreating the
+    // Kendo pager DropDownList between transactions.
+    if (unissuedRadio.checked &&
+        currentRows.length &&
+        currentRows.every(row => row.dateKey === dateKey)) {
+      invoiceListCache.set(String(dateKey), currentRows.map(row => ({ ...row })));
+      return {
+        dateKey,
+        invoiceStatus: "unissued",
+        cached: true,
+        suppressedAlerts: [],
+        candidates: currentRows.map(row => ({ ...row, available: !used.has(String(row.invoiceNo)) }))
+      };
+    }
+
     const dateInputs = Array.from(document.querySelectorAll('input[type="text"]')).filter(input => normalizeDateKey(input.value));
     if (dateInputs.length < 2) throw new Error("Không tìm thấy bộ lọc Từ ngày/Đến ngày.");
     const jq = window.jQuery || window.$;
     dateInputs.slice(0, 2).forEach(input => {
       const picker = jq ? jq(input).data("kendoDatePicker") : null;
-      if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
+      try {
+        if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
+      } catch (_) {}
       setNativeValue(input, expected);
     });
 
-    const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
-      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Chưa xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
-    if (!unissuedRadio) throw new Error('Không tìm thấy bộ lọc "Chưa xuất hóa đơn".');
     if (!unissuedRadio.checked) unissuedRadio.click();
     if (!unissuedRadio.checked) {
       unissuedRadio.checked = true;
@@ -1099,7 +1188,7 @@
         await new Promise(resolve => setTimeout(resolve, 180));
         const rows = invoiceListRows();
         if (rows.length && rows.every(row => row.dateKey === dateKey)) {
-          const used = new Set((usedInvoiceNos || []).map(String));
+          invoiceListCache.set(String(dateKey), rows.map(row => ({ ...row })));
           return {
             dateKey,
             invoiceStatus: "unissued",
@@ -1128,7 +1217,9 @@
     const jq = window.jQuery || window.$;
     dateInputs.slice(0, 2).forEach(input => {
       const picker = jq ? jq(input).data("kendoDatePicker") : null;
-      if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
+      try {
+        if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
+      } catch (_) {}
       setNativeValue(input, expected);
     });
 
@@ -1170,16 +1261,29 @@
     }
   }
 
+  async function waitForInvoiceListRow(invoiceNo, uid, timeout = 5000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const grid = invoiceListElement();
+      const row = grid && Array.from(grid.querySelectorAll("tbody tr[data-uid]")).find(element =>
+        (uid && element.getAttribute("data-uid") === String(uid)) ||
+        (invoiceNo && (element.innerText || "").includes(String(invoiceNo)))
+      );
+      const loading = document.querySelector(".k-loading-mask");
+      if (row && (!loading || !isVisible(loading))) return { grid, row };
+      await wait(120);
+    }
+    return { grid: invoiceListElement(), row: null };
+  }
+
   async function openInvoiceCandidate(uid, invoiceNo) {
-    const grid = invoiceListElement();
+    const initial = await waitForInvoiceListRow(invoiceNo, uid);
+    const grid = initial.grid;
     if (!grid) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
     const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
       Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Chưa xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
     if (!unissuedRadio?.checked) throw new Error('Chỉ được tự mở khi bộ lọc "Chưa xuất hóa đơn" đang được chọn.');
-    const row = Array.from(grid.querySelectorAll("tbody tr[data-uid]")).find(element =>
-      (uid && element.getAttribute("data-uid") === String(uid)) ||
-      (!uid && (element.innerText || "").includes(String(invoiceNo || "")))
-    );
+    const row = initial.row;
     if (!row) throw new Error("Phiếu không còn trong danh sách hiện tại. Hãy tìm lại.");
     await new Promise(resolve => setTimeout(resolve, 350));
     const jq = window.jQuery || window.$;
@@ -1503,6 +1607,29 @@
     return { payload, verified };
   }
 
+  // DoSave tra ve HTTP 200 ca khi nghiep vu tu choi, loi nam trong body:
+  // { code: 1, message: null, Tag: { ID, LASTSAVEID } } la luu thanh cong.
+  // code khac 1 (hoac thieu Tag.ID) nghia la website khong ghi phieu.
+  function verifySaveResponse(responseText, expectedRecordId) {
+    let body = null;
+    try { body = JSON.parse(String(responseText || "")); } catch (_) {}
+    if (!body || typeof body !== "object") {
+      throw new Error("Website tra ve du lieu khong doc duoc; chua xac nhan luu phieu.");
+    }
+    const code = Number(body.code);
+    if (code !== 1) {
+      const reason = String(body.message || body.strData || "").trim();
+      throw new Error(`Website tu choi luu phieu (code ${Number.isFinite(code) ? code : "?"})` +
+        `${reason ? `: ${reason}` : "; khong co mo ta loi."}`);
+    }
+    const savedId = String(body.Tag?.ID || "");
+    if (!savedId) throw new Error("Website bao thanh cong nhung khong tra ve ID phieu da luu.");
+    if (expectedRecordId && savedId.toLowerCase() !== String(expectedRecordId).toLowerCase()) {
+      throw new Error(`Website luu nham phieu ${savedId}, khong phai ${expectedRecordId}.`);
+    }
+    return { savedRecordId: savedId, lastSaveId: String(body.Tag?.LASTSAVEID || "") };
+  }
+
   async function saveCurrentInvoiceViaApi(expected) {
     const { payload, verified } = buildCurrentSavePayload(expected);
     const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
@@ -1519,11 +1646,13 @@
     let responseText = "";
     try { responseText = (await response.text()).slice(0, 4000); } catch (_) {}
     if (!response.ok) throw new Error(`Website tu choi luu API (HTTP ${response.status}).`);
+    const confirmed = verifySaveResponse(responseText, payload.ID);
     return {
       saved: true,
       httpStatus: response.status,
       endpoint: new URL(endpoint).pathname,
       responseText,
+      ...confirmed,
       ...verified
     };
   }
@@ -1539,9 +1668,10 @@
       else if (detail.action === "findIssuedInvoiceByAmount") result = await findIssuedInvoiceByAmount(detail.dateKey, detail.amount);
       else if (detail.action === "openInvoiceCandidate") result = await openInvoiceCandidate(detail.uid, detail.invoiceNo);
       else if (detail.action === "applyCheckOut") result = applyCheckOut(detail.value);
-      else if (detail.action === "applyInvoiceTimes") result = applyInvoiceTimes(detail.checkIn, detail.checkOut);
+      else if (detail.action === "applyInvoiceTimes") result = applyInvoiceTimes(detail.checkIn, detail.checkOut, detail.keepCheckIn);
       else if (detail.action === "applyHourAmount") result = applyHourAmount(detail.value);
       else if (detail.action === "closeInvoiceDetail") result = await closeInvoiceDetail();
+      else if (detail.action === "getInvoiceUiState") result = invoiceUiState();
       else if (detail.action === "applyInvoiceTotals") result = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);
       else if (detail.action === "normalizePaymentDialog") result = normalizePaymentDialog();
       else if (detail.action === "applyInvoicePlan") result = await applyInvoicePlan(detail);

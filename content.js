@@ -102,6 +102,15 @@
     }).filter(Boolean);
   }
 
+  // Luôn tra giao dịch theo id từ statementDataset hiện hành: sau mỗi lần ghi
+  // sổ, dataset bị thay bằng bản clone mới nên mọi tham chiếu giữ từ trước đó
+  // đều là dữ liệu cũ.
+  function findStatementTransaction(transactionId) {
+    const id = String(transactionId || "");
+    if (!id) return null;
+    return (statementDataset.transactions || []).find(item => String(item.id) === id) || null;
+  }
+
   function syncBatchPlanTransaction(transaction) {
     const transactionId = String(transaction?.id || "");
     if (!transactionId) return false;
@@ -179,18 +188,64 @@
       normalizeRoomText(visibleText) === roomName;
   }
 
+  // Website không cho hai phiếu cùng PHÒNG chồng giờ. Chỉ cần khoảng giờ rời
+  // nhau là tái sử dụng được phòng, nên phải lưu cả giờ vào/ra đã dùng chứ
+  // không chỉ tên phòng — số phòng có hạn (12) mà một ngày có thể nhiều phiếu hơn.
+  function roomBookingsOnDate(dateKey, excludedTransactionId) {
+    const day = String(dateKey || "");
+    const excluded = String(excludedTransactionId || "");
+    const bookings = new Map();
+    for (const item of statementDataset.transactions || []) {
+      if (String(item.id) === excluded) continue;
+      if (String(item.transactionDate || "") !== day) continue;
+      const room = normalizeRoomText(item.newInvoiceRoomName);
+      if (!room) continue;
+      const from = parseUiDateTime(item.newInvoiceCheckIn);
+      const to = parseUiDateTime(item.newInvoiceCheckOut);
+      if (!from || !to) continue;
+      const key = room.toLocaleUpperCase("vi-VN");
+      if (!bookings.has(key)) bookings.set(key, []);
+      bookings.get(key).push({ from: from.getTime(), to: to.getTime() });
+    }
+    return bookings;
+  }
+
+  // Hai khoảng giờ chồng nhau khi khoảng này bắt đầu trước khi khoảng kia kết
+  // thúc và ngược lại. Chạm mép (giờ ra = giờ vào phiếu sau) vẫn coi là chồng
+  // để chừa biên an toàn cho website.
+  function roomIsFreeForRange(bookings, roomName, checkIn, checkOut) {
+    const key = normalizeRoomText(roomName).toLocaleUpperCase("vi-VN");
+    const slots = bookings.get(key);
+    if (!slots?.length) return true;
+    const from = parseUiDateTime(checkIn);
+    const to = parseUiDateTime(checkOut);
+    if (!from || !to) return false;
+    return !slots.some(slot => from.getTime() <= slot.to && slot.from <= to.getTime());
+  }
+
   async function autoOpenIdleRoomInvoiceForm() {
     if (!pendingNewInvoice || !isSalesWorkspacePage()) return { opened: false, roomName: "" };
+    const bookings = roomBookingsOnDate(pendingNewInvoice.transactionDate, pendingNewInvoice.transactionId);
+    const plannedCheckIn = pendingNewInvoice.plan?.checkIn || "";
+    const plannedCheckOut = pendingNewInvoice.plan?.checkOut || "";
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const saveButton = Array.from(document.querySelectorAll("button"))
         .find(button => (button.innerText || "").trim() === "Lưu HĐ" && isRendered(button));
       if (saveButton) return { opened: true, roomName: pendingNewInvoice.roomName || "" };
-      const idleRoom = Array.from(document.querySelectorAll(".table.context"))
-        .find(room => {
+      const idleRooms = Array.from(document.querySelectorAll(".table.context"))
+        .filter(room => {
           const image = room.querySelector("img[alt]");
           return isRendered(room) && isRendered(image) &&
             isIdleRoomLabel(image?.getAttribute("alt"), room.innerText);
         });
+      // Chọn phòng mà khoảng giờ của phương án không chồng với phiếu nào đã lập
+      // trong ngày. Phòng tái sử dụng được miễn là giờ rời nhau.
+      const idleRoom = idleRooms.find(room => {
+        const name = normalizeRoomText(room.querySelector("img[alt]")?.getAttribute("alt"));
+        if (!name) return false;
+        if (!plannedCheckIn || !plannedCheckOut) return true;
+        return roomIsFreeForRange(bookings, name, plannedCheckIn, plannedCheckOut);
+      });
       if (idleRoom) {
         const roomName = normalizeRoomText(idleRoom.querySelector("img[alt]")?.getAttribute("alt"));
         idleRoom.querySelector("img[alt]")?.click();
@@ -214,8 +269,13 @@
     currentBankTransaction = transaction;
     document.getElementById("it-target").value = formatMoney(plan.targetGrand || transaction.credit);
     setStatus("Đang áp dụng phương án đã Accept từ Batch Review vào phiếu mới…", "warn");
+    // Phiếu mới: được phép đặt cả giờ vào (từ 17:00 trở đi) lẫn giờ ra.
     if (plan.checkIn && plan.checkOut) {
-      await request("applyInvoiceTimes", { checkIn: plan.checkIn, checkOut: plan.checkOut });
+      await request("applyInvoiceTimes", {
+        checkIn: plan.checkIn,
+        checkOut: plan.checkOut,
+        keepCheckIn: false
+      });
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     const applied = await request("applyInvoicePlan", {
@@ -295,6 +355,14 @@
           pendingNewInvoice.formAutoOpenedAt = new Date().toISOString();
           const roomNode = document.getElementById("it-pending-room");
           if (roomNode) roomNode.textContent = opened.roomName;
+          // Ghi phòng KÈM khoảng giờ vào sao kê: phiếu mới sau trong cùng ngày
+          // chỉ cần tránh trùng khoảng giờ, vẫn dùng lại được phòng này.
+          if (transaction) {
+            transaction.newInvoiceRoomName = opened.roomName;
+            transaction.newInvoiceCheckIn = pendingNewInvoice.plan?.checkIn || "";
+            transaction.newInvoiceCheckOut = pendingNewInvoice.plan?.checkOut || "";
+            await InvoiceMappingStore.saveStatement(statementDataset);
+          }
           await saveBatchUiSession({ panelOpen: true });
           if (transaction && pendingNewInvoice.plan?.requiresNewInvoice) {
             try {
@@ -1534,6 +1602,37 @@
     return Math.max(3, Math.min(6, Math.round(Number(goodsTarget || 0) / 350000) + 1));
   }
 
+  // Hóa đơn càng lớn = nhóm khách càng đông = càng nhiều dòng hàng và nhiều
+  // nhóm hàng khác nhau, giống đơn thật hơn là dồn vào vài mã đắt tiền.
+  const MAX_PRODUCT_GROUP_SHARE = 0.6;
+
+  function maxActiveLines(goodsTarget) {
+    return Math.max(4, Math.min(9, Math.round(Number(goodsTarget || 0) / 300000) + 2));
+  }
+
+  function minimumGroupCount(goodsTarget) {
+    const goods = Math.max(0, Number(goodsTarget) || 0);
+    if (goods < 500000) return 1;
+    if (goods < 1000000) return 2;
+    return 3;
+  }
+
+  const MAX_HOUR_TO_GOODS_RATIO = 2;
+  // Đơn thật quan sát được có tiền giờ ≈ 0,87–1,64 lần tiền hàng. Chỉ chặn trần
+  // (≤2) thì solver dồn hết vào tiền hàng và ra tỷ lệ 0,2 — xa thực tế. Vì vậy
+  // đặt thêm sàn mềm: dưới mức này vẫn hợp lệ nhưng bị xếp sau.
+  const NATURAL_MIN_HOUR_TO_GOODS_RATIO = 0.8;
+
+  function minimumGoodsForHourRatio(preTaxTarget) {
+    return Math.ceil(Math.max(0, Number(preTaxTarget) || 0) / (MAX_HOUR_TO_GOODS_RATIO + 1));
+  }
+
+  // Tiền hàng tối đa để tiền giờ còn đạt tỷ lệ tự nhiên:
+  // giờ ≥ r×hàng  và  hàng + giờ = preTax  =>  hàng ≤ preTax/(1+r).
+  function naturalMaxGoodsForHourRatio(preTaxTarget) {
+    return Math.floor(Math.max(0, Number(preTaxTarget) || 0) / (1 + NATURAL_MIN_HOUR_TO_GOODS_RATIO));
+  }
+
   function candidateFromStock(stock, minQty, selectionPenalty, ruleMaxQty) {
     const stockQty = Math.max(0, Math.floor(Number(stock.availableQty) || 0));
     const invoiceLimit = InvoiceTargetSolver.recommendInvoiceLimit(stock);
@@ -1553,7 +1652,9 @@
       minQty: Number(minQty || 0),
       selectionPenalty: Math.max(0, Number(selectionPenalty) || 0),
       constraintGroup: stock.constraintGroup,
-      constraintGroupMax: stock.constraintGroupMax
+      constraintGroupMax: stock.constraintGroupMax,
+      // Nhóm hàng của website, dùng để cân đối cơ cấu hóa đơn cho giống đơn thật.
+      productGroup: String(stock.webGroup || "")
     };
   }
 
@@ -1589,20 +1690,34 @@
     return productUsage;
   }
 
+  // Các nhóm không bao giờ tự đưa vào phương án: đây là phí phát sinh thực tế
+  // (đồ vỡ, phí đồ ăn ngoài, phí rượu…) chứ không phải hàng bán chủ động.
+  const EXCLUDED_PRODUCT_GROUPS = new Set(["PHUPHI"]);
+
+  function isAutoSellableStock(stock) {
+    return !EXCLUDED_PRODUCT_GROUPS.has(String(stock?.webGroup || "").toUpperCase());
+  }
+
   function buildBatchCandidates(inventoryState, target, transaction, productUsage) {
+    const sellableStock = (inventoryState || []).filter(isAutoSellableStock);
     const eligibleRules = priorityRules
       .filter(rule => rule.enabled !== false && target > Number(rule.minTotal || 0) &&
-        inventoryState.some(item => String(item.webCode) === String(rule.webCode) && Number(item.availableQty) > 0));
+        sellableStock.some(item => String(item.webCode) === String(rule.webCode) && Number(item.availableQty) > 0));
     const requiredRules = eligibleRules.filter(rule => rule.mode === "required");
     const rotatingRule = eligibleRules
       .filter(rule => rule.mode !== "required")
       .sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999))[0];
     const activeRules = rotatingRule ? [...requiredRules, rotatingRule] : requiredRules;
     const seed = `${transaction?.id || ""}|${transaction?.transactionDate || ""}|${transaction?.credit || target}|${transaction?.recalculationNonce || 0}`;
-    const rejectedCodes = new Set((transaction?.lastRejectedBatchPlan?.items || [])
+    // Mã càng bị bỏ nhiều lần càng bị đẩy ra xa, nên bấm Tính toán lại liên tiếp
+    // vẫn ra tổ hợp mới thay vì quay vòng về phương án cũ.
+    const rejectionCounts = transaction?.rejectedBatchCodeCounts || {};
+    const legacyRejected = (transaction?.lastRejectedBatchPlan?.items || [])
       .map(item => String(item.code || ""))
-      .filter(Boolean));
-    return inventoryState.map(stock => {
+      .filter(Boolean);
+    const rejectionCountFor = code =>
+      Number(rejectionCounts[code]) || (legacyRejected.includes(code) ? 1 : 0);
+    return sellableStock.map(stock => {
       const code = String(stock.webCode);
       const priorUseCount = Number(productUsage?.get(code) || 0);
       const rotation = stableDiversityRank(seed, code) % 20;
@@ -1614,7 +1729,7 @@
       return candidateFromStock(
         stock,
         minQty,
-        priorUseCount * 30 + rotation + (rejectedCodes.has(code) ? 200 : 0),
+        priorUseCount * 30 + rotation + rejectionCountFor(code) * 200,
         maxQty
       );
     }).sort((a, b) =>
@@ -1625,6 +1740,7 @@
   }
 
   function calculateBatchPlan(scan, transaction, inventoryState, productUsage) {
+    const maxHourToGoodsRatio = 2;
     if (!scan?.ready) return { status: "error", reason: "Không đọc được chi tiết phiếu." };
     if (scan.invoiceDateKey !== transaction.transactionDate) return { status: "error", reason: "Ngày phiếu không khớp sao kê." };
     const targetGrand = Math.round(Number(transaction.credit) || 0);
@@ -1647,6 +1763,13 @@
     const hourPricing = scan.newInvoicePlanning
       ? { hourlyRate: 600000, hourStep: 6000 }
       : inferHourPricing(scan);
+    // Hóa đơn không được phép không có Tiền giờ. Đặt sàn tương đương 30 phút
+    // theo đơn giá giờ của chính phiếu để solver chừa chỗ cho tiền giờ thay vì
+    // dồn hết vào tiền hàng.
+    const minHourAmount = hourPricing.hourStep
+      ? Math.max(hourPricing.hourStep, Math.round(hourPricing.hourlyRate / 2))
+      : 0;
+    const minGoodsAmount = Math.ceil(Math.max(0, Number(targets.preTaxTarget) || 0) / (maxHourToGoodsRatio + 1));
     const candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage);
     const solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, {
       maxQty: 20,
@@ -1654,8 +1777,21 @@
       preTaxTarget: targets.preTaxTarget,
       currentHour: scan.currentHour,
       hourStep: hourPricing.hourStep,
-      preferredLineCount: Math.max(3, Math.min(6, Math.round(Number(targets.goodsTarget || 0) / 350000) + 1)),
-      maxActiveLines: 6
+      minHourAmount,
+      minGoodsAmount,
+      maxGoodsAmount: naturalMaxGoodsForHourRatio(targets.preTaxTarget),
+      // Ưu tiên phương án nhiều số lượng: bỏ phạt tập trung, thưởng tổng số
+      // lượng, và cho hình phạt "mã vừa bị loại" đủ nặng để Tính toán lại thực
+      // sự đổi sang tổ hợp khác.
+      concentrationWeight: 0,
+      unitWeight: 5000,
+      selectionWeight: 20000,
+      // Cơ cấu hóa đơn thật: không nhóm hàng nào chiếm quá 60% tiền hàng, và
+      // hóa đơn đủ lớn thì phải có ít nhất 3 nhóm khác nhau.
+      maxGroupShare: MAX_PRODUCT_GROUP_SHARE,
+      minGroupCount: minimumGroupCount(targets.goodsTarget),
+      preferredLineCount: preferredLineCount(targets.goodsTarget),
+      maxActiveLines: maxActiveLines(targets.goodsTarget)
     });
     if (!solution.items) return { status: "error", reason: solution.reason || "Không tìm được phương án." };
     const selected = solution.items.filter(item => item.newQty > 0);
@@ -1676,6 +1812,20 @@
     }
     if (difference !== 0) {
       return { status: "error", reason: `Phương án chưa khớp tuyệt đối; lệch ${formatMoney(difference)}.` };
+    }
+    // Chốt chặn cuối: dù solver có ép sàn tiền giờ, vẫn không để lọt phương án
+    // Tiền giờ = 0 ra trạng thái Sẵn sàng.
+    if (finalHourAmount <= 0) {
+      return {
+        status: "error",
+        reason: "Phương án không có Tiền giờ; chưa được tạo hóa đơn thiếu Tiền giờ. Hãy chỉnh tồn kho/rule rồi tính lại."
+      };
+    }
+    if (solution.actual <= 0 || finalHourAmount > solution.actual * maxHourToGoodsRatio) {
+      return {
+        status: "error",
+        reason: `Tiền giờ ${formatMoney(finalHourAmount)} vượt ${maxHourToGoodsRatio} lần tiền hàng ${formatMoney(solution.actual)}; tồn kho/rule hiện tại chưa tạo được phương án thực tế.`
+      };
     }
     return {
       status: "ready",
@@ -1703,9 +1853,35 @@
     };
   }
 
-  function newInvoicePlanningScan(transactionDate) {
+  // Giờ vào phiếu MỚI luôn từ 17:00 trở đi và không được tràn sang ngày hôm sau.
+  // Quy định này chỉ áp dụng cho phiếu tạo mới; phiếu đã tồn tại luôn giữ nguyên
+  // giờ vào của website.
+  //
+  // Website chặn hai phiếu CÙNG PHÒNG chồng giờ, nên các phiếu cùng ngày được
+  // rải giãn cách. Khi số phiếu vượt số khung giờ trong buổi tối, slot quay vòng
+  // về 17:00 — lúc đó phòng được chọn lại theo khoảng giờ còn trống, xem
+  // roomIsFreeForRange.
+  const NEW_INVOICE_CHECKIN_START_MINUTES = 17 * 60;
+  const NEW_INVOICE_CHECKIN_STEP_MINUTES = 45;
+  const NEW_INVOICE_CHECKIN_LAST_MINUTES = 23 * 60 + 30;
+  const NEW_INVOICE_CHECKIN_SLOT_COUNT = Math.floor(
+    (NEW_INVOICE_CHECKIN_LAST_MINUTES - NEW_INVOICE_CHECKIN_START_MINUTES) /
+    NEW_INVOICE_CHECKIN_STEP_MINUTES
+  ) + 1;
+
+  function newInvoiceCheckInMinutes(slotIndex) {
+    const slot = Math.max(0, Math.round(Number(slotIndex) || 0)) % NEW_INVOICE_CHECKIN_SLOT_COUNT;
+    return NEW_INVOICE_CHECKIN_START_MINUTES + slot * NEW_INVOICE_CHECKIN_STEP_MINUTES;
+  }
+
+  function newInvoicePlanningScan(transactionDate, slotIndex) {
     const match = String(transactionDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    const checkIn = match ? `${match[3]}/${match[2]}/${match[1]} 15:00` : "";
+    // Dựng bằng Date để không tạo ra chuỗi giờ không hợp lệ kiểu "24:30".
+    // newInvoiceCheckInMinutes đã kẹp trần nên giờ vào luôn nằm trong ngày.
+    const checkInDate = match
+      ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, newInvoiceCheckInMinutes(slotIndex))
+      : null;
+    const checkIn = formatUiDateTime(checkInDate);
     return {
       ready: true,
       newInvoicePlanning: true,
@@ -1723,8 +1899,8 @@
     };
   }
 
-  function calculateNewInvoiceBatchPlan(transaction, inventoryState, productUsage) {
-    const planningScan = newInvoicePlanningScan(transaction.transactionDate);
+  function calculateNewInvoiceBatchPlan(transaction, inventoryState, productUsage, slotIndex) {
+    const planningScan = newInvoicePlanningScan(transaction.transactionDate, slotIndex);
     const plan = calculateBatchPlan(planningScan, transaction, inventoryState, productUsage);
     if (plan.status !== "ready") return plan;
     const checkInDate = parseUiDateTime(planningScan.checkIn);
@@ -1816,6 +1992,29 @@
         selectedTransactionIds
       );
       const productUsage = new Map();
+      // Đếm số phiếu mới đã lập theo từng ngày để rải giờ vào sau 17:00. Phải
+      // tính cả những phiếu mới đã lập ở các lần dựng Batch Review trước, nếu
+      // không lần chạy sau lại bắt đầu từ 17:00 và trùng giờ phiếu đã có.
+      const newInvoiceSlotByDate = new Map();
+      const selectedIdSet = new Set(selectedTransactionIds);
+      for (const item of statementDataset.transactions || []) {
+        // Giao dịch trong lượt này sẽ tự chiếm slot khi lặp bên dưới; đếm ở đây
+        // nữa thì slot bị nhảy cóc.
+        if (selectedIdSet.has(String(item.id))) continue;
+        const plan = item.pendingPlan || item.batchApprovedPlan;
+        if (!plan?.requiresNewInvoice) continue;
+        const dateKey = String(item.transactionDate || "");
+        if (!dateKey) continue;
+        newInvoiceSlotByDate.set(dateKey, (newInvoiceSlotByDate.get(dateKey) || 0) + 1);
+      }
+      // Cấp slot kế tiếp cho một ngày. Mọi phiếu mới đều phải đi qua đây để hai
+      // phiếu cùng ngày không nhận cùng một giờ vào.
+      const takeNewInvoiceSlot = dateKey => {
+        const key = String(dateKey || "");
+        const slot = newInvoiceSlotByDate.get(key) || 0;
+        newInvoiceSlotByDate.set(key, slot + 1);
+        return slot;
+      };
       const usedInvoiceNos = new Set((statementDataset.transactions || [])
         .filter(item => ["done", "planned", "batch_ready"].includes(item.status) && item.invoiceNo)
         .map(item => String(item.invoiceNo)));
@@ -1839,6 +2038,7 @@
           continue;
         }
         if (transaction.status === "planned" && transaction.pendingPlan) {
+          if (transaction.pendingPlan.requiresNewInvoice) takeNewInvoiceSlot(transaction.transactionDate);
           batchPlans.push({ transactionId: String(transaction.id), status: "planned", transaction, plan: transaction.pendingPlan });
           addPlanProductUsage(productUsage, transaction.pendingPlan.items);
           workingInventory = reserveBatchStock(workingInventory, transaction.pendingPlan.items);
@@ -1846,6 +2046,7 @@
           continue;
         }
         if (transaction.status === "batch_ready" && transaction.batchApprovedPlan) {
+          if (transaction.batchApprovedPlan.requiresNewInvoice) takeNewInvoiceSlot(transaction.transactionDate);
           batchPlans.push({ transactionId: String(transaction.id), status: "batch_ready", transaction, plan: transaction.batchApprovedPlan });
           addPlanProductUsage(productUsage, transaction.batchApprovedPlan.items);
           workingInventory = reserveBatchStock(workingInventory, transaction.batchApprovedPlan.items);
@@ -1899,7 +2100,8 @@
                 : `Có ${issuedMatches.length} HĐ đã xuất khớp số tiền; chọn đúng phiếu rồi xác nhận.`
             });
           } else {
-            const plan = calculateNewInvoiceBatchPlan(transaction, workingInventory, productUsage);
+            const slotIndex = takeNewInvoiceSlot(transaction.transactionDate);
+            const plan = calculateNewInvoiceBatchPlan(transaction, workingInventory, productUsage, slotIndex);
             batchPlans.push({
               transactionId: String(transaction.id),
               status: plan.status === "ready" ? "ready" : "needs_new_invoice",
@@ -2069,12 +2271,11 @@
     const button = event.target.closest("button");
     const index = Number(button?.dataset.index);
     const entry = batchPlans[index];
-    const transaction = (statementDataset.transactions || []).find(item =>
-      String(item.id) === String(entry?.transactionId || "")
-    );
+    const transaction = findStatementTransaction(entry?.transactionId);
     const plan = transaction?.pendingPlan || entry?.plan;
     if (!entry || entry.status !== "planned" || !transaction || !plan?.invoiceNo) {
-      return setStatus("Không có phiếu đang chờ đối soát ở dòng này.", "error");
+      setStatus("Không có phiếu đang chờ đối soát ở dòng này.", "error");
+      return { verified: false, closed: false, error: "no-pending-invoice" };
     }
     try {
       if (button) {
@@ -2118,10 +2319,14 @@
             `Đã đối soát phiếu ${plan.invoiceNo}, nhưng website chưa đóng được form. Hãy bấm Thoát để trở về danh sách phiếu.`,
             "warn"
           );
+          return { verified: true, closed: false, invoiceNo: plan.invoiceNo, closeResult: closed };
         }
+        return { verified: true, closed: true, invoiceNo: plan.invoiceNo, closeResult: closed };
       }
+      return { verified: false, closed: false, invoiceNo: plan.invoiceNo, error: "transaction-not-done" };
     } catch (error) {
       setStatus(`Đối soát từ Batch Review thất bại: ${error.message} Chưa thay đổi tồn kho hoặc sao kê.`, "error");
+      return { verified: false, closed: false, invoiceNo: plan?.invoiceNo || "", error: error.message };
     } finally {
       if (button?.isConnected && currentBankTransaction?.status !== "done") {
         button.disabled = false;
@@ -2174,6 +2379,8 @@
       transaction.batchApprovedPlan = structuredClone(entry.plan);
       transaction.batchApprovedAt = new Date().toISOString();
       delete transaction.lastRejectedBatchPlan;
+      delete transaction.rejectedBatchCodeCounts;
+      delete transaction.recalculationNonce;
       entry.status = "batch_ready";
       entry.transaction = transaction;
     }
@@ -2212,6 +2419,14 @@
         }
       }
       transaction.lastRejectedBatchPlan = structuredClone(activePlan);
+      // Đếm số lần từng mã bị bỏ. Nếu chỉ nhớ "đã từng bị bỏ" thì sau vài lần
+      // mọi mã đều bị phạt bằng nhau, hình phạt triệt tiêu và tổ hợp cũ quay lại.
+      const rejectionCounts = { ...(transaction.rejectedBatchCodeCounts || {}) };
+      for (const item of activePlan.items || []) {
+        const code = String(item.code || "");
+        if (code) rejectionCounts[code] = (Number(rejectionCounts[code]) || 0) + 1;
+      }
+      transaction.rejectedBatchCodeCounts = rejectionCounts;
       transaction.recalculationNonce = Math.max(0, Number(transaction.recalculationNonce) || 0) + 1;
       transaction.status = "pending";
       transaction.verifiedAt = "";
@@ -2240,14 +2455,21 @@
     const button = event.target.closest("button");
     const index = Number(button?.dataset.index);
     const entry = batchPlans[index];
-    const transaction = entry?.transaction;
+    // Reconciliation replaces statementDataset with a cloned snapshot. Never
+    // mutate entry.transaction here because it may belong to the previous
+    // snapshot after an earlier invoice in the same API batch was committed.
+    const transaction = findStatementTransaction(entry?.transactionId);
     const plan = entry?.plan || transaction?.pendingPlan || transaction?.batchApprovedPlan;
     if (!entry || !["batch_ready", "planned"].includes(entry.status) || !transaction || !plan || plan.requiresNewInvoice) {
-      return setStatus("Phương án này không thể áp dụng trực tiếp vào phiếu đã có.", "error");
+      const message = "Phương án này không thể áp dụng trực tiếp vào phiếu đã có.";
+      setStatus(message, "error");
+      return { applied: false, error: message };
     }
     const invoiceNo = String(plan.invoiceNo || transaction.invoiceNo || "");
     if (!invoiceNo || !Array.isArray(plan.items) || !plan.items.length) {
-      return setStatus("Phương án đã Accept thiếu số phiếu hoặc danh sách hàng.", "error");
+      const message = "Phương án đã Accept thiếu số phiếu hoặc danh sách hàng.";
+      setStatus(message, "error");
+      return { applied: false, error: message };
     }
     try {
       if (button) {
@@ -2319,12 +2541,21 @@
       );
       const panel = document.getElementById("it-panel");
       if (panel) panel.hidden = true;
+      return { applied: true, invoiceNo, transactionId: String(transaction.id) };
     } catch (error) {
+      let closeResult = null;
+      try {
+        closeResult = await request("closeInvoiceDetail");
+      } catch (_) {}
       if (button?.isConnected) {
         button.disabled = false;
         button.textContent = "Thử mở và áp dụng lại";
       }
-      setStatus(`${error.message} Không bấm Lưu HĐ nếu form chưa khớp.`, "error");
+      const closeNote = closeResult?.closed
+        ? " Form đã được đóng để tránh giữ nhầm phiếu."
+        : " Website chưa đóng được form; hãy bấm Thoát trước khi thử lại.";
+      setStatus(`${error.message}${closeNote} Không bấm Lưu HĐ nếu form chưa khớp.`, "error");
+      return { applied: false, error: error.message, closeResult };
     }
   }
 
@@ -2344,15 +2575,20 @@
     if (!entry || entry.status !== "batch_ready" || entry.plan?.requiresNewInvoice) {
       throw new Error("Dòng này chưa ở trạng thái Đã Accept hoặc cần tạo phiếu mới.");
     }
-    const transaction = (statementDataset.transactions || []).find(item =>
-      String(item.id) === String(entry.transactionId || "")
-    );
+    let transaction = findStatementTransaction(entry.transactionId);
     if (!transaction) throw new Error("Không tìm thấy giao dịch sao kê của dòng đã chọn.");
 
     const proxy = batchButtonProxy(index, button);
-    await applyAcceptedBatchPlan({ target: { closest: () => proxy } });
+    const applyResult = await applyAcceptedBatchPlan({ target: { closest: () => proxy } });
     entry = batchPlans[index];
-    if (!entry || entry.status !== "planned" || transaction.status !== "planned") {
+    transaction = findStatementTransaction(entry?.transactionId);
+    if (!applyResult?.applied) {
+      throw new Error(
+        `${applyResult?.error || "Không áp dụng được phương án vào form."} ` +
+        "Chưa gửi request lưu."
+      );
+    }
+    if (!entry || entry.status !== "planned" || transaction?.status !== "planned") {
       throw new Error("Không áp dụng được phương án vào form; chưa gửi request lưu.");
     }
     const plan = transaction.pendingPlan || entry.plan;
@@ -2371,12 +2607,35 @@
     if (!saved?.saved) throw new Error(`Website chưa xác nhận lưu ${plan.invoiceNo}.`);
 
     setStatus(`API đã nhận ${plan.invoiceNo}; đang đóng form và đọc lại từ server…`, "warn");
-    await request("closeInvoiceDetail");
+    const closedAfterSave = await request("closeInvoiceDetail");
+    if (!closedAfterSave?.closed) {
+      throw new Error(
+        `API đã lưu ${plan.invoiceNo} nhưng form chi tiết vẫn đang mở. ` +
+        "Batch đã dừng an toàn; hãy bấm Thoát rồi chọn Đối soát sau lưu."
+      );
+    }
     await new Promise(resolve => setTimeout(resolve, 450));
     const verifyProxy = batchButtonProxy(index);
-    await verifyBatchSavedInvoice({ target: { closest: () => verifyProxy } });
-    if (transaction.status !== "done") {
+    const verification = await verifyBatchSavedInvoice({ target: { closest: () => verifyProxy } });
+    // verifySavedInvoice thay statementDataset bằng bản clone đã ghi sổ, nên
+    // biến transaction bắt từ đầu hàm vẫn trỏ vào dataset cũ và không bao giờ
+    // đổi sang "done". Phải đọc lại theo id từ dataset hiện hành.
+    const verified = findStatementTransaction(entry.transactionId);
+    if (verified?.status !== "done") {
       throw new Error(`Đã gửi API nhưng chưa đối soát được ${plan.invoiceNo}; tồn kho và sao kê chưa bị thay đổi.`);
+    }
+    if (!verification?.verified || !verification?.closed) {
+      throw new Error(
+        `Đã đối soát ${plan.invoiceNo} nhưng form chi tiết chưa đóng; ` +
+        "batch không chạy sang phiếu kế tiếp."
+      );
+    }
+    const uiState = await request("getInvoiceUiState");
+    if (uiState?.detailVisible || !uiState?.listVisible) {
+      throw new Error(
+        `Sau khi xử lý ${plan.invoiceNo}, website chưa trở về danh sách phiếu; ` +
+        "batch đã dừng để không ghi nhầm phiếu."
+      );
     }
     return { invoiceNo: plan.invoiceNo, httpStatus: saved.httpStatus };
   }
@@ -2560,6 +2819,10 @@
     const targets = InvoiceTargetSolver.deriveInvoiceTargets(targetGrand, latestScan.currentHour, latestScan.taxRate);
     const goodsTarget = targets.goodsTarget;
     const hourPricing = inferHourPricing(latestScan);
+    const minHourAmount = hourPricing.hourStep
+      ? Math.max(hourPricing.hourStep, Math.round(hourPricing.hourlyRate / 2))
+      : 0;
+    const minGoodsAmount = minimumGoodsForHourRatio(targets.preTaxTarget);
     const candidates = buildCandidates();
     const requiredMinimum = candidates.reduce((sum, item) => sum + Number(item.minQty || 0) * Number(item.price || 0), 0);
     if (requiredMinimum > targets.preTaxTarget + tolerance) {
@@ -2568,6 +2831,7 @@
     const solution = InvoiceTargetSolver.solveQuantities(candidates, goodsTarget, {
       maxQty, tolerance, preTaxTarget: targets.preTaxTarget,
       currentHour: latestScan.currentHour, hourStep: hourPricing.hourStep,
+      minHourAmount, minGoodsAmount,
       preferredLineCount: preferredLineCount(goodsTarget),
       maxActiveLines: 6
     });
@@ -2585,7 +2849,10 @@
     const totalDifference = predictedGrand - targetGrand;
     const dateMatched = !currentBankTransaction || latestScan.invoiceDateKey === currentBankTransaction.transactionDate;
     const stockSufficient = selected.every(item => Number(item.newQty) <= Number(item.maxQty));
-    const canAccept = totalDifference === 0 && dateMatched && stockSufficient && selected.length > 0;
+    const ratioRealistic = solution.actual > 0 &&
+      finalHourAmount <= solution.actual * MAX_HOUR_TO_GOODS_RATIO;
+    const canAccept = totalDifference === 0 && dateMatched && stockSufficient &&
+      ratioRealistic && selected.length > 0;
     const removeRows = latestScan.items.map(item => `<tr class="changed"><td>XÓA</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.name)}</td>
       <td>${item.qty}</td><td>→</td><td>0</td><td>—</td><td>—</td><td>${formatMoney(item.price)}</td></tr>`).join("");
     const addRows = selected.map(item => `<tr class="changed"><td>THÊM</td><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.name)}</td>
@@ -2610,6 +2877,7 @@
           <div class="total"><span>Tổng cộng</span><span>${formatMoney(latestScan.currentGrand)}</span><b>${formatMoney(predictedGrand)}</b></div>
         </div>
         <div class="it-review-checks">
+          <div class="${ratioRealistic ? "pass" : "fail"}">${ratioRealistic ? "✓" : "×"} Tiền giờ không vượt ${MAX_HOUR_TO_GOODS_RATIO} lần tiền hàng</div>
           <div class="${dateMatched ? "pass" : "fail"}">${dateMatched ? "✓" : "×"} Ngày phiếu khớp sao kê</div>
           <div class="${stockSufficient ? "pass" : "fail"}">${stockSufficient ? "✓" : "×"} Không vượt tồn kho</div>
           <div class="${totalDifference === 0 ? "pass" : "fail"}">${totalDifference === 0 ? "✓" : "×"} Tổng khớp tuyệt đối</div>

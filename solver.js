@@ -103,12 +103,23 @@
     }
     const preferredLineCount = Math.max(1, Math.round(Number(opts.preferredLineCount) || 4));
     const lineCountPenalty = Math.abs(activeLines - preferredLineCount);
+    // concentrationWeight thấp => cho phép dồn nhiều số lượng vào một mã thay vì
+    // luôn rải mỗi mã 1 cái. selectionWeight cao => mã vừa bị loại ở lần tính
+    // trước thực sự bị đẩy ra, nếu không hình phạt tập trung sẽ lấn át và tính
+    // lại cho ra đúng tổ hợp cũ.
+    const concentrationWeight = Math.max(0, Number(opts.concentrationWeight ?? 10000));
+    const selectionWeight = Math.max(0, Number(opts.selectionWeight ?? 100));
+    // unitWeight > 0 nghĩa là ưu tiên phương án có tổng số lượng LỚN hơn (điểm
+    // càng thấp càng tốt nên phải trừ đi). Mặc định giữ nguyên hành vi cũ là
+    // cộng totalUnits, tức chuộng phương án ít hàng.
+    const unitWeight = Number(opts.unitWeight ?? 0);
+    const unitScore = unitWeight > 0 ? -totalUnits * unitWeight : totalUnits;
     return lineCountPenalty * 100000 +
-      concentrationPenalty * 10000 +
-      selectionPenalty * 100 +
+      concentrationPenalty * concentrationWeight +
+      selectionPenalty * selectionWeight +
       changedLines * 1000 +
       changedUnits * 10 +
-      totalUnits;
+      unitScore;
   }
 
   function solveQuantities(items, targetAmount, options) {
@@ -130,8 +141,15 @@
     const scaledPrices = prices.map(price => Math.max(1, Math.round(price / scale)));
     const scaledTarget = Math.max(0, Math.round(Number(targetAmount) / scale));
     const scaledTolerance = Math.max(0, Math.ceil(Number(opts.tolerance) / scale));
+    const minGoodsAmount = Math.max(0, Math.round(Number(opts.minGoodsAmount) || 0));
+    const maxGoodsAmount = Math.max(0, Math.round(Number(opts.maxGoodsAmount) || 0));
+    const scaledMinGoods = Math.max(0, Math.ceil(minGoodsAmount / scale));
+    const scaledPlanningTarget = Math.max(scaledTarget, scaledMinGoods);
     const requiredAmount = usable.reduce((sum, item, index) => sum + Math.max(0, Math.floor(Number(item.minQty) || 0)) * scaledPrices[index], 0);
-    const maxAmount = Math.max(scaledTarget + scaledTolerance + Math.max(...scaledPrices), requiredAmount + Math.max(...scaledPrices));
+    const maxAmount = Math.max(
+      scaledPlanningTarget + scaledTolerance + Math.max(...scaledPrices),
+      requiredAmount + Math.max(...scaledPrices)
+    );
 
     let states = new Map([[0, []]]);
     for (let index = 0; index < usable.length; index += 1) {
@@ -165,8 +183,8 @@
       }
       if (next.size > opts.maxStates) {
         const ranked = [...next.entries()].sort((a, b) => {
-          const da = Math.abs(a[0] - scaledTarget);
-          const db = Math.abs(b[0] - scaledTarget);
+          const da = Math.abs(a[0] - scaledPlanningTarget);
+          const db = Math.abs(b[0] - scaledPlanningTarget);
           return da - db ||
             scoreQuantities(a[1], current.slice(0, a[1].length), usable.slice(0, a[1].length), opts) -
             scoreQuantities(b[1], current.slice(0, b[1].length), usable.slice(0, b[1].length), opts);
@@ -175,6 +193,31 @@
       } else {
         states = next;
       }
+    }
+
+    // Hóa đơn thật hiếm khi dồn hết tiền vào một nhóm hàng. Đo mức lệch cơ cấu:
+    // phần tiền vượt trần của nhóm lớn nhất, cộng phạt nếu quá ít nhóm.
+    const maxGroupShare = Number(opts.maxGroupShare) || 0;
+    const minGroupCount = Math.max(0, Math.round(Number(opts.minGroupCount) || 0));
+    function groupImbalance(quantities, goodsAmount) {
+      if ((!maxGroupShare && !minGroupCount) || goodsAmount <= 0) return 0;
+      const totals = new Map();
+      for (let index = 0; index < quantities.length; index += 1) {
+        const qty = Number(quantities[index]) || 0;
+        if (qty <= 0) continue;
+        const group = String(usable[index].productGroup || "");
+        if (!group) continue;
+        totals.set(group, (totals.get(group) || 0) + qty * prices[index]);
+      }
+      if (!totals.size) return 0;
+      let excess = 0;
+      if (maxGroupShare > 0) {
+        const cap = goodsAmount * maxGroupShare;
+        for (const amount of totals.values()) excess += Math.max(0, amount - cap);
+      }
+      // Thiếu nhóm bị quy đổi thành tiền để so sánh cùng thang với phần vượt trần.
+      const missingGroups = Math.max(0, minGroupCount - totals.size);
+      return Math.round(excess + missingGroups * goodsAmount * 0.25);
     }
 
     let best = null;
@@ -189,10 +232,57 @@
       const finalAbs = preTaxDifference == null ? Math.abs(difference) : Math.abs(preTaxDifference);
       const hourDeviation = hourActual == null ? 0 : Math.abs(hourActual - Number(opts.currentHour || 0));
       const quantityScore = scoreQuantities(quantities, current, usable, opts);
-      const better = !best || finalAbs < best.finalAbs ||
-        (finalAbs === best.finalAbs && hourDeviation < best.hourDeviation) ||
-        (finalAbs === best.finalAbs && hourDeviation === best.hourDeviation && quantityScore < best.quantityScore);
-      if (better) best = { actual, difference, quantities, finalAbs, hourDeviation, quantityScore, hourActual, hourDiscount: 0, preTaxDifference };
+      // Hóa đơn phải luôn có Tiền giờ: tổ hợp nào ăn hết phần tiền giờ (hoặc để
+      // lại quá ít) bị xếp sau, để solver ưu tiên phương án tiền hàng thấp hơn
+      // và chừa đủ chỗ cho tiền giờ. Vẫn giữ lại làm phương án dự phòng nếu
+      // không còn lựa chọn nào khác.
+      const minHourAmount = Math.max(0, Math.round(Number(opts.minHourAmount) || 0));
+      const hourShortfall = hourActual == null || !minHourAmount
+        ? 0
+        : Math.max(0, minHourAmount - hourActual);
+      // Vượt maxGoodsAmount vẫn hợp lệ nhưng bị xếp sau: đây là sàn mềm giữ cho
+      // tỷ lệ tiền giờ/tiền hàng gần với hóa đơn thật.
+      const goodsExcess = maxGoodsAmount > 0 ? Math.max(0, actual - maxGoodsAmount) : 0;
+      const goodsShortfall = Math.max(0, minGoodsAmount - actual) + goodsExcess;
+      const imbalance = groupImbalance(quantities, actual);
+      // Tổng phạt "mã vừa bị loại ở lần tính trước". Phải so sánh TRƯỚC cơ cấu
+      // nhóm, nếu không nút Tính toán lại sẽ luôn trả về đúng tổ hợp cũ vì
+      // imbalance lấn át hoàn toàn selectionPenalty nằm trong quantityScore.
+      let rejection = 0;
+      for (let i = 0; i < quantities.length; i += 1) {
+        if (Number(quantities[i]) > 0) rejection += Math.max(0, Number(usable[i]?.selectionPenalty) || 0);
+      }
+      // Thứ tự: ràng buộc cứng (giờ, tỷ lệ hàng, khớp tuyệt đối) trước, rồi tới
+      // né tổ hợp vừa bị bỏ, cơ cấu nhóm, cuối cùng là các tiêu chí thẩm mỹ.
+      const better = !best ||
+        hourShortfall < best.hourShortfall ||
+        (hourShortfall === best.hourShortfall && goodsShortfall < best.goodsShortfall) ||
+        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall && finalAbs < best.finalAbs) ||
+        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall &&
+          finalAbs === best.finalAbs && rejection < best.rejection) ||
+        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall &&
+          finalAbs === best.finalAbs && rejection === best.rejection && imbalance < best.imbalance) ||
+        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall &&
+          finalAbs === best.finalAbs && rejection === best.rejection && imbalance === best.imbalance &&
+          hourDeviation < best.hourDeviation) ||
+        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall && finalAbs === best.finalAbs &&
+          rejection === best.rejection && imbalance === best.imbalance &&
+          hourDeviation === best.hourDeviation && quantityScore < best.quantityScore);
+      if (better) best = {
+        actual,
+        difference,
+        quantities,
+        finalAbs,
+        hourDeviation,
+        quantityScore,
+        hourActual,
+        hourDiscount: 0,
+        preTaxDifference,
+        hourShortfall,
+        goodsShortfall,
+        imbalance,
+        rejection
+      };
     }
     if (!best) return { ok: false, reason: "Không tìm được phương án." };
 
@@ -203,6 +293,9 @@
       actual: best.actual,
       difference: best.difference,
       hourActual: best.hourActual,
+      hourShortfall: best.hourShortfall,
+      goodsShortfall: best.goodsShortfall,
+      groupImbalance: best.imbalance,
       hourDiscount: best.hourDiscount,
       preTaxDifference: best.preTaxDifference,
       scale,

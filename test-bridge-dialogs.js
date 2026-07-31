@@ -77,8 +77,25 @@ const filterProductSource = extractFunction("filterProduct");
 if (/actualSearchButton\.click|btnSearch_Click/.test(filterProductSource)) {
   throw new Error("Product resolution must not open the website's F3 keyboard dialog.");
 }
-if (!source.includes("await closeTransientQuantityDialogs();\n      throw error;")) {
+if (!/await closeTransientQuantityDialogs\(\);\r?\n\s+throw error;/.test(source)) {
   throw new Error("Failed apply must close the transient keyboard.");
+}
+for (const closeGuard of [
+  "function visibleInvoiceTotalInput()",
+  "async function waitForInvoiceDetailClosed(",
+  "closed: !state.detailVisible",
+  'detail.action === "getInvoiceUiState"'
+]) {
+  if (!source.includes(closeGuard)) {
+    throw new Error(`Missing invoice close guard: ${closeGuard}`);
+  }
+}
+if (source.includes("jq(input).data(\"kendoDropDownList\")") &&
+    source.includes("widget.value(saved.value);")) {
+  throw new Error("Form-state restore must not call an uninitialized Kendo DropDownList.");
+}
+if (!source.includes("Kendo can expose a widget object before its input is initialized")) {
+  throw new Error("Kendo initialization guard is missing.");
 }
 const normalizePaymentSource = extractFunction("normalizePaymentDialog");
 for (const invariant of [

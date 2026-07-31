@@ -180,3 +180,23 @@ assert.strictEqual(
   2160909,
   "the real 2,377,000 plan must still match the pre-tax target"
 );
+
+const ratioConstrained = solver.solveQuantities([
+  { code: "A", name: "A", price: 100000, qty: 0, maxQty: 20 }
+], 200000, {
+  maxQty: 20,
+  tolerance: 0,
+  preTaxTarget: 1500000,
+  currentHour: 1300000,
+  hourStep: 100000,
+  minHourAmount: 100000,
+  minGoodsAmount: 500000
+});
+assert.ok(
+  ratioConstrained.actual >= 500000,
+  "minimum goods amount must override an unrealistic old goods target"
+);
+assert.ok(
+  ratioConstrained.hourActual <= ratioConstrained.actual * 2,
+  "singing fee must not exceed twice the goods amount"
+);
