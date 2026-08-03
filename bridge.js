@@ -4,8 +4,42 @@
   const REQUEST = "invoice-target-mvp:request";
   const RESPONSE = "invoice-target-mvp:response";
   const SAVE_CAPTURED = "invoice-target-mvp:save-request-captured";
+  const SAVE_BLOCKED = "invoice-target-mvp:save-blocked";
+  const RUNTIME_WARNING = "invoice-target-mvp:runtime-warning";
   let saveCaptureArmedUntil = 0;
+  let apiTraceArmedUntil = 0;
+  const apiTraceRecords = [];
   const invoiceListCache = new Map();
+
+  function isKnownTransientKendoAlert(message) {
+    const text = String(message || "").replace(/\s+/g, " ").toLowerCase();
+    return text.includes("cannot call method 'value' of kendodropdownlist before it is initialized") ||
+      text.includes('cannot call method "value" of kendodropdownlist before it is initialized');
+  }
+
+  // The website raises this Kendo pager error from a delayed callback, after the
+  // short-lived alert suppression in invoice lookup has already been restored.
+  // Keep the guard installed for the page lifetime, but suppress only the exact
+  // known transient Kendo message. Every other website alert remains untouched.
+  function installTransientKendoAlertGuard() {
+    if (window.__invoiceTargetKendoAlertGuardInstalled) return;
+    window.__invoiceTargetKendoAlertGuardInstalled = true;
+    const nativeAlert = window.alert;
+    window.alert = function invoiceTargetAlertGuard(message) {
+      if (!isKnownTransientKendoAlert(message)) {
+        return Reflect.apply(nativeAlert, window, [message]);
+      }
+      const detail = {
+        reason: "Website vừa gọi bộ lọc Kendo trước khi khởi tạo xong. Extension đã bỏ qua cảnh báo tạm thời và sẽ không làm treo Batch Review.",
+        originalMessage: String(message || "")
+      };
+      console.warn("[InvoiceTarget bridge] Suppressed transient Kendo alert", detail.originalMessage);
+      window.dispatchEvent(new CustomEvent(RUNTIME_WARNING, { detail }));
+      return undefined;
+    };
+  }
+
+  installTransientKendoAlertGuard();
 
   function money(value) {
     if (typeof value === "number") return value;
@@ -46,8 +80,8 @@
     }
   }
 
-  function xhrResponseText(xhr) {
-    try { return String(xhr.responseText || "").slice(0, 8000); } catch (_) { return ""; }
+  function xhrResponseText(xhr, limit = 8000) {
+    try { return String(xhr.responseText || "").slice(0, limit); } catch (_) { return ""; }
   }
 
   function emitSaveCapture(record) {
@@ -78,18 +112,22 @@
     };
     XMLHttpRequest.prototype.send = function (body) {
       const meta = this.__invoiceTargetRequest;
-      if (meta && shouldCaptureSaveRequest(meta.method, meta.url)) {
+      const captureSave = Boolean(meta && shouldCaptureSaveRequest(meta.method, meta.url));
+      const traceApi = Boolean(meta && shouldTraceApiRequest(meta.method, meta.url));
+      if (captureSave || traceApi) {
         const serialized = serializeRequestBody(body);
         this.addEventListener("loadend", () => {
-          emitSaveCapture({
+          const record = {
             transport: "xhr",
             method: meta.method,
             url: meta.url,
             headers: safeRequestHeaders(meta.headers),
             ...serialized,
             status: Number(this.status || 0),
-            responseText: xhrResponseText(this)
-          });
+            responseText: xhrResponseText(this, traceApi ? 131072 : 8000)
+          };
+          if (traceApi) appendApiTrace(record);
+          if (captureSave) emitSaveCapture(record);
         }, { once: true });
       }
       return nativeSend.call(this, body);
@@ -104,12 +142,15 @@
         const headers = {};
         new Headers(init?.headers || request?.headers || {}).forEach((value, name) => { headers[name] = value; });
         const capture = shouldCaptureSaveRequest(method, url);
-        const serialized = capture ? serializeRequestBody(init?.body) : null;
+        const traceApi = shouldTraceApiRequest(method, url);
+        const serialized = (capture || traceApi) ? serializeRequestBody(init?.body) : null;
         const response = await nativeFetch.apply(this, arguments);
-        if (capture) {
+        if (capture || traceApi) {
           let responseText = "";
-          try { responseText = (await response.clone().text()).slice(0, 8000); } catch (_) {}
-          emitSaveCapture({
+          try {
+            responseText = (await response.clone().text()).slice(0, traceApi ? 131072 : 8000);
+          } catch (_) {}
+          const record = {
             transport: "fetch",
             method,
             url,
@@ -117,7 +158,9 @@
             ...serialized,
             status: Number(response.status || 0),
             responseText
-          });
+          };
+          if (traceApi) appendApiTrace(record);
+          if (capture) emitSaveCapture(record);
         }
         return response;
       };
@@ -341,6 +384,58 @@
     return money(input.value);
   }
 
+  function shouldTraceApiRequest(method, url) {
+    if (Date.now() > apiTraceArmedUntil) return false;
+    try {
+      const target = new URL(url, location.href);
+      return target.origin === location.origin &&
+        /^(GET|POST|PUT|PATCH)$/i.test(String(method || "")) &&
+        /(AddEdit|GetDataSearchData|LayDuLieu|GridLookupData|KiemTra|DoSave)/i.test(target.pathname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function appendApiTrace(record) {
+    apiTraceRecords.push({
+      ...record,
+      url: new URL(record.url, location.href).href,
+      capturedAt: new Date().toISOString()
+    });
+    if (apiTraceRecords.length > 200) apiTraceRecords.splice(0, apiTraceRecords.length - 200);
+  }
+
+  function armApiTrace() {
+    apiTraceRecords.splice(0, apiTraceRecords.length);
+    apiTraceArmedUntil = Date.now() + 10 * 60 * 1000;
+    return { armed: true, expiresAt: new Date(apiTraceArmedUntil).toISOString() };
+  }
+
+  function getApiTrace() {
+    return {
+      armed: Date.now() <= apiTraceArmedUntil,
+      expiresAt: apiTraceArmedUntil ? new Date(apiTraceArmedUntil).toISOString() : "",
+      page: location.href,
+      records: apiTraceRecords.map(record => ({ ...record }))
+    };
+  }
+
+  // Dùng ở bước cuối trước Batch API: chỉ đồng bộ giá trị hiển thị/Kendo mà
+  // không phát change/blur, vì các event đó khiến website tính lại VAT theo
+  // (tiền hàng + tiền giờ) và ghi đè công thức VAT theo sao kê của kế toán.
+  function setNumericAmountQuiet(prefix, value) {
+    const input = suffixInput(prefix);
+    if (!input) throw new Error(`Khong tim thay o ${prefix}.`);
+    const amount = Math.round(Number(value) || 0);
+    const jq = window.jQuery || window.$;
+    const widget = jq ? jq(input).data("kendoNumericTextBox") : null;
+    if (widget?.value) widget.value(amount);
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (descriptor?.set) descriptor.set.call(input, String(amount));
+    else input.value = String(amount);
+    return money(input.value);
+  }
+
   function captureInvoiceFormState() {
     const anchor = suffixInput("numTONGCONG");
     const root = anchor?.closest(".k-window, [role='dialog']") || anchor?.parentElement?.parentElement || document;
@@ -544,13 +639,13 @@
     )).filter(isLayoutVisible);
     return dialogs
       .filter(dialog => {
-        const text = String(dialog.innerText || "").replace(/\s+/g, " ");
-        return /LƯU HÓA ĐƠN/i.test(text) &&
-          /TỔNG TIỀN/i.test(text) &&
-          /TIỀN MẶT/i.test(text) &&
-          /Tiền thanh toán/i.test(text) &&
+        const text = normalizedVietnameseText(dialog.innerText || "");
+        return text.includes("LUU HOA DON") &&
+          text.includes("TONG TIEN") &&
+          text.includes("TIEN MAT") &&
+          text.includes("TIEN THANH TOAN") &&
           dialogControls(dialog).some(control =>
-            ["Lưu in", "Lưu thoát"].includes(dialogControlText(control))
+            ["LUU IN", "LUU THOAT"].includes(normalizedVietnameseText(dialogControlText(control)))
           );
       })
       .sort((left, right) => dialogZIndex(right) - dialogZIndex(left))[0] || null;
@@ -638,12 +733,14 @@
   });
   document.addEventListener("click", event => {
     const button = event.target?.closest?.("button,input[type='button'],input[type='submit']");
-    if (!button || !["Lưu in", "Lưu thoát"].includes(dialogControlText(button))) return;
+    if (!button || !["LUU IN", "LUU THOAT"].includes(normalizedVietnameseText(dialogControlText(button)))) return;
     const result = normalizePaymentDialog();
     if (!result.ready) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      window.alert("Tiền mặt chưa khớp Tổng tiền. Extension đã chặn lưu để tránh sai hóa đơn.");
+      window.dispatchEvent(new CustomEvent(SAVE_BLOCKED, {
+        detail: { reason: "Tiền mặt chưa khớp Tổng tiền. Extension đã chặn lưu để tránh sai hóa đơn." }
+      }));
     }
   }, true);
 
@@ -653,7 +750,7 @@
       const preservedFormState = captureInvoiceFormState();
       const replaced = await replaceInvoiceItems(detail.items || []);
       restoreInvoiceFormState(preservedFormState);
-      const hour = applyHourAmount(detail.finalHourAmount);
+      applyHourAmount(detail.finalHourAmount);
       const totals = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);
       const deadline = Date.now() + 2000;
       let totalPresent = false;
@@ -668,16 +765,57 @@
         throw new Error("Website da reset phan thong tin phieu; chua duoc bam Luu HD.");
       }
       const closedInputDialogs = await closeTransientQuantityDialogs();
+      // Kendo tinh lai cac o tien bat dong bo sau moi lan blur, nen gia tri doc
+      // ngay trong applyInvoiceTotals co the da bi website ghi de. Doc lai tu
+      // form SAU khi moi thu on dinh, neu khong doi soat se bao "Sai tong cong"
+      // du form thuc te van dung.
+      const settled = {
+        goods: valueOf("numTIENHANG"),
+        hour: valueOf("numTIENGIO"),
+        tax: valueOf("numTIENTHUE"),
+        grand: valueOf("numTONGCONG")
+      };
+      // Website co the tinh lai VAT/tong theo cong thuc rieng sau khi blur. Ghi
+      // de mot lan roi doc lai; neu van lech thi tra ve so THAT tren form de
+      // content.js bao loi dung ban chat thay vi gui request sai.
+      const expectedGrand = Math.round(Number(detail.targetGrand) || 0);
+      if (expectedGrand > 0 && settled.grand !== expectedGrand) {
+        setNumericAmount("numTIENHANG", totals.goods);
+        setNumericAmount("numTIENGIO", Math.round(Number(detail.finalHourAmount) || 0));
+        setNumericAmount("numTIENTHUE", totals.tax);
+        setNumericAmount("numTONGCONG", expectedGrand);
+        await wait(400);
+        settled.goods = valueOf("numTIENHANG");
+        settled.hour = valueOf("numTIENGIO");
+        settled.tax = valueOf("numTIENTHUE");
+        settled.grand = valueOf("numTONGCONG");
+      }
+      // Website đã ổn định xong; ghi lớp hiển thị cuối cùng theo đúng payload
+      // sắp gửi. Không phát event để tránh công thức VAT mặc định chạy lại.
+      if (expectedGrand > 0) {
+        const expectedHour = Math.round(Number(detail.finalHourAmount) || 0);
+        const expectedTax = Math.round(Number(detail.targetTax) ||
+          (expectedGrand - totals.goods - expectedHour));
+        setNumericAmountQuiet("numTIENHANG", totals.goods);
+        setNumericAmountQuiet("numTIENGIO", expectedHour);
+        setNumericAmountQuiet("numTILETHUE", 10);
+        setNumericAmountQuiet("numTIENTHUE", expectedTax);
+        setNumericAmountQuiet("numTONGCONG", expectedGrand);
+        settled.goods = valueOf("numTIENHANG");
+        settled.hour = valueOf("numTIENGIO");
+        settled.tax = valueOf("numTIENTHUE");
+        settled.grand = valueOf("numTONGCONG");
+      }
       return {
         ready: true,
         mode: "kendo-atomic",
         closedInputDialogs,
         items: replaced.snapshot.items,
-        currentGoods: totals.goods,
-        currentHour: hour.hourAmount,
-        currentTax: totals.tax,
+        currentGoods: settled.goods,
+        currentHour: settled.hour,
+        currentTax: settled.tax,
         taxRate: valueOf("numTILETHUE"),
-        currentGrand: totals.grand,
+        currentGrand: settled.grand,
         checkIn: detail.checkIn || "",
         checkOut: detail.checkOut || ""
       };
@@ -831,10 +969,35 @@
     return true;
   }
 
+  function findLoadedProduct(found, code) {
+    const dataSource = found?.grid?.dataSource;
+    if (!dataSource) return null;
+    const target = String(code || "").trim();
+    const view = typeof dataSource.view === "function" ? dataSource.view() : [];
+    const data = typeof dataSource.data === "function" ? dataSource.data() : [];
+    const loaded = [...new Set([...(view || []), ...(data || [])])];
+    const codePatterns = [/^DMATHANG_CODE$/i, /^CODE$/i, /^MAHANG$/i, /ITEM.*CODE/i, /PRODUCT.*CODE/i];
+    const modelMatch = loaded.find(item => {
+      if (String(objectValue(item, found.fields.code) || "").trim() === target) return true;
+      return itemKeys(item).some(key =>
+        codePatterns.some(pattern => pattern.test(key)) &&
+        String(objectValue(item, key) || "").trim() === target
+      );
+    });
+    if (modelMatch) return modelMatch;
+
+    // Some older Kendo builds expose an incomplete model schema while the DOM
+    // row is already correct. Resolve the rendered row by code and map its uid
+    // back to the official DataSource model instead of rejecting a valid item.
+    const domRow = Array.from(found.element?.querySelectorAll("tbody tr[data-uid]") || [])
+      .find(row => Array.from(row.children).some(cell => String(cell.textContent || "").trim() === target));
+    const uid = domRow?.getAttribute("data-uid") || "";
+    return uid && typeof dataSource.getByUid === "function" ? dataSource.getByUid(uid) : null;
+  }
+
   async function filterProduct(found, code) {
     const dataSource = found.grid.dataSource;
-    const field = found.fields.code;
-    const exact = () => dataSource.view().find(item => String(objectValue(item, field) || "").trim() === String(code).trim());
+    const exact = () => findLoadedProduct(found, code);
     let item = exact();
     if (item) return item;
 
@@ -877,14 +1040,18 @@
       } catch (_error) {
         continue;
       }
-      const pageDeadline = Date.now() + 1500;
+      const pageDeadline = Date.now() + 2500;
       while (Date.now() < pageDeadline) {
         item = exact();
         if (item) return item;
         await wait(120);
       }
     }
-    if (!item) throw new Error(`Khong tim thay ma hang ${code} tren danh muc web.`);
+    if (!item) {
+      const currentPage = typeof dataSource.page === "function" ? Number(dataSource.page()) : 0;
+      throw new Error(`Khong tim thay ma hang ${code} tren danh muc web ` +
+        `(tong ${total || 0}, ${totalPages} trang, trang hien tai ${currentPage || "?"}).`);
+    }
     return item;
   }
 
@@ -1077,6 +1244,34 @@
     }) || null;
   }
 
+  // Sau khi form phiếu đóng, website dựng lại grid danh sách. Trong lúc đó
+  // kendoDropDownList của pager chưa init xong; bấm Refresh hoặc đổi ô lọc ngay
+  // lúc này làm website ném "Cannot call method 'value' of kendoDropDownList
+  // before it is initialized" và cả batch dừng lại.
+  async function waitForInvoiceListReady(timeout = 8000) {
+    const jq = window.jQuery || window.$;
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const grid = invoiceListElement();
+      const widget = grid && jq ? jq(grid).data("kendoGrid") : null;
+      const pagerElement = grid?.querySelector(".k-pager-wrap, .k-pager");
+      const pagerSelects = pagerElement ? Array.from(pagerElement.querySelectorAll("select")) : [];
+      // Chính thẻ SELECT chưa được Kendo khởi tạo là nguyên nhân website ném
+      // "before it is initialized". Không coi SELECT thuần là sẵn sàng.
+      const pagerReady = !pagerElement || !pagerSelects.length || pagerSelects.every(select =>
+        Boolean(jq && (jq(select).data("kendoDropDownList") || jq(select).data("kendoDropDown")))
+      );
+      const loading = grid?.querySelector(".k-loading-mask");
+      if (grid && widget && pagerReady && (!loading || !isVisible(loading))) {
+        // Kendo hoàn tất init trong microtask kế tiếp; nhường thêm một nhịp.
+        await wait(150);
+        return true;
+      }
+      await wait(150);
+    }
+    throw new Error("Danh sách phiếu chưa khởi tạo xong bộ lọc Kendo; hãy thử lại sau vài giây.");
+  }
+
   function rememberInvoiceListDialog() {
     const current = window.dialogInfo;
     const runner = current?.client?.get_CodeRunner?.();
@@ -1119,6 +1314,7 @@
     const expected = dateDisplay(dateKey);
     if (!expected) throw new Error("Ngày giao dịch không hợp lệ.");
     if (!invoiceListElement()) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
+    await waitForInvoiceListReady();
     rememberInvoiceListDialog();
 
     const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
@@ -1155,28 +1351,30 @@
 
     const dateInputs = Array.from(document.querySelectorAll('input[type="text"]')).filter(input => normalizeDateKey(input.value));
     if (dateInputs.length < 2) throw new Error("Không tìm thấy bộ lọc Từ ngày/Đến ngày.");
-    const jq = window.jQuery || window.$;
-    dateInputs.slice(0, 2).forEach(input => {
-      const picker = jq ? jq(input).data("kendoDatePicker") : null;
-      try {
-        if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
-      } catch (_) {}
-      setNativeValue(input, expected);
-    });
-
-    if (!unissuedRadio.checked) unissuedRadio.click();
-    if (!unissuedRadio.checked) {
-      unissuedRadio.checked = true;
-      unissuedRadio.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-
     const refresh = document.querySelector('[id^="btnRefresh"]') ||
       Array.from(document.querySelectorAll("button")).find(button => (button.innerText || "").trim() === "Refresh");
     if (!refresh) throw new Error("Không tìm thấy nút Refresh của danh sách phiếu.");
+    // Chặn alert từ TRƯỚC khi chạm vào ô lọc: đổi ngày/radio cũng có thể làm
+    // website ném lỗi Kendo nội bộ, và alert đó sẽ treo cả batch.
     const originalAlert = window.alert;
     const suppressedAlerts = [];
     window.alert = message => { suppressedAlerts.push(String(message || "")); };
     try {
+      const jq = window.jQuery || window.$;
+      dateInputs.slice(0, 2).forEach(input => {
+        const picker = jq ? jq(input).data("kendoDatePicker") : null;
+        try {
+          if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
+        } catch (_) {}
+        setNativeValue(input, expected);
+      });
+
+      if (!unissuedRadio.checked) unissuedRadio.click();
+      if (!unissuedRadio.checked) {
+        unissuedRadio.checked = true;
+        unissuedRadio.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
       refresh.click();
 
       const startedAt = Date.now();
@@ -1210,37 +1408,39 @@
     const expected = dateDisplay(dateKey);
     if (!expected) throw new Error("Ngày giao dịch không hợp lệ.");
     if (!invoiceListElement()) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
+    await waitForInvoiceListReady();
     rememberInvoiceListDialog();
 
     const dateInputs = Array.from(document.querySelectorAll('input[type="text"]')).filter(input => normalizeDateKey(input.value));
     if (dateInputs.length < 2) throw new Error("Không tìm thấy bộ lọc Từ ngày/Đến ngày.");
-    const jq = window.jQuery || window.$;
-    dateInputs.slice(0, 2).forEach(input => {
-      const picker = jq ? jq(input).data("kendoDatePicker") : null;
-      try {
-        if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
-      } catch (_) {}
-      setNativeValue(input, expected);
-    });
-
     // Radio "Đã xuất hóa đơn" là _1 (đối ứng "Chưa xuất" _2); dự phòng theo nhãn.
     const issuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_1"]') ||
       Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Đã xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
     if (!issuedRadio) throw new Error('Không tìm thấy bộ lọc "Đã xuất hóa đơn".');
-    if (!issuedRadio.checked) issuedRadio.click();
-    if (!issuedRadio.checked) {
-      issuedRadio.checked = true;
-      issuedRadio.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-
     const refresh = document.querySelector('[id^="btnRefresh"]') ||
       Array.from(document.querySelectorAll("button")).find(button => (button.innerText || "").trim() === "Refresh");
     if (!refresh) throw new Error("Không tìm thấy nút Refresh của danh sách phiếu.");
+    // Chặn alert từ TRƯỚC khi chạm vào ô lọc, xem findInvoiceCandidates.
     const originalAlert = window.alert;
     const suppressedAlerts = [];
     window.alert = message => { suppressedAlerts.push(String(message || "")); };
     const target = Math.round(Number(amount) || 0);
     try {
+      const jq = window.jQuery || window.$;
+      dateInputs.slice(0, 2).forEach(input => {
+        const picker = jq ? jq(input).data("kendoDatePicker") : null;
+        try {
+          if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
+        } catch (_) {}
+        setNativeValue(input, expected);
+      });
+
+      if (!issuedRadio.checked) issuedRadio.click();
+      if (!issuedRadio.checked) {
+        issuedRadio.checked = true;
+        issuedRadio.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+
       refresh.click();
       const startedAt = Date.now();
       const deadline = startedAt + 22000;
@@ -1408,6 +1608,9 @@
   }
 
   const SALES_TABLE_ID = "d56b4b85-68c8-44c1-947d-9f3899e55a7c";
+  const PRODUCT_GRID_TABLE_ID = "c07a4b54-e177-40d9-b077-c140fd4641d9";
+  const SALES_FORM_ID = "aaf252bb-ed11-4077-8852-5e453a6881a3";
+  const SALES_MENU_ID = "f3ca052a-082b-49f6-8d4f-93b8a525e571";
 
   function extractJsonObject(source, startAt) {
     const start = source.indexOf("{", startAt);
@@ -1435,30 +1638,238 @@
     return null;
   }
 
-  function currentFormData() {
-    const scripts = Array.from(document.scripts)
+  function isGuid(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      .test(String(value || "").trim());
+  }
+
+  function formDataRecordId(formData) {
+    return String(formData?._RecordID || formData?.mapper?.ID || "").trim();
+  }
+
+  function formDataField(formData, fieldName) {
+    const map = (formData?.mapper?.Maps || [])
+      .find(item => String(item.Field || "").toUpperCase() === String(fieldName || "").toUpperCase());
+    return map?.Value;
+  }
+
+  function currentFormData(options) {
+    options = options || {};
+    const visibleInvoiceNo = String(suffixInput("txtNAME")?.value || "").trim();
+    const candidates = [];
+    const addCandidate = (formData, source) => {
+      if (!formData || String(formData._AddEditTableID || "") !== SALES_TABLE_ID) return;
+      if (candidates.some(candidate => candidate.formData === formData)) return;
+      candidates.push({ formData, source });
+    };
+
+    // Form mới được website mở động thường cập nhật window.formData, trong khi
+    // document.scripts vẫn còn nhiều formData cũ của trang cha.
+    addCandidate(window.formData, "window.formData");
+    Array.from(document.scripts)
       .map(script => script.textContent || "")
       .filter(source => source.includes("new AddEdit_JsClient") && source.includes("new DataTransferJs("))
-      .reverse();
-    const visibleInvoiceNo = String(suffixInput("txtNAME")?.value || "").trim();
-    let fallback = null;
-    for (const source of scripts) {
-      const marker = source.indexOf("var formData = new DataTransferJs(");
-      if (marker < 0) continue;
-      const formData = extractJsonObject(source, marker);
-      if (!formData || String(formData._AddEditTableID || "") !== SALES_TABLE_ID) continue;
-      fallback ||= formData;
-      const nameMap = (formData.mapper?.Maps || []).find(map => String(map.Field).toUpperCase() === "NAME");
-      if (!visibleInvoiceNo || String(nameMap?.Value || "").trim() === visibleInvoiceNo) return formData;
+      .reverse()
+      .forEach((source, index) => {
+        let marker = source.indexOf("new DataTransferJs(");
+        while (marker >= 0) {
+          addCandidate(extractJsonObject(source, marker), `script:${index}`);
+          marker = source.indexOf("new DataTransferJs(", marker + 1);
+        }
+      });
+
+    const normalizedVisibleName = /^(TU DONG|TỰ ĐỘNG)$/i.test(visibleInvoiceNo) ? "" : visibleInvoiceNo;
+    const ranked = candidates.map(candidate => {
+      const recordId = formDataRecordId(candidate.formData);
+      const name = String(formDataField(candidate.formData, "NAME") || "").trim();
+      const lastSaveId = String(formDataField(candidate.formData, "LASTSAVEID") || "").trim();
+      let score = 0;
+      if (isGuid(recordId)) score += 100;
+      if (isGuid(lastSaveId)) score += 20;
+      if (candidate.source === "window.formData") score += 10;
+      if (normalizedVisibleName && name === normalizedVisibleName) score += 50;
+      return { ...candidate, recordId, name, lastSaveId, score };
+    }).sort((left, right) => right.score - left.score);
+
+    // A fresh modal exposes blank window.formData while the parent page may still keep
+    // old invoice scripts with valid GUIDs. Prefer the live blank form for mode=0.
+    const selected = options.allowBlankRecordId
+      ? (ranked.find(candidate => candidate.source === "window.formData" && !candidate.recordId && candidate.name) ||
+        ranked.find(candidate => !candidate.recordId && candidate.name) ||
+        ranked.find(candidate => isGuid(candidate.recordId)))
+      : ranked.find(candidate => isGuid(candidate.recordId));
+    if (selected) return selected.formData;
+    const details = ranked.slice(0, 4)
+      .map(candidate => `${candidate.source}[ID=${candidate.recordId || "rong"},NAME=${candidate.name || "rong"}]`)
+      .join("; ");
+    throw new Error(`Khong tim thay ID phieu tam hop le${details ? `: ${details}` : "."}`);
+  }
+
+  function normalizedVietnameseText(value) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[đĐ]/g, match => match === "đ" ? "d" : "D")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase();
+  }
+
+  function visibleOfficialInvoiceSaveControl() {
+    const paymentDialog = visiblePaymentDialog();
+    return Array.from(document.querySelectorAll(
+      "button,input[type='button'],input[type='submit'],a"
+    )).find(control => {
+      // Form bán hàng của website tự nó cũng nằm trong một Kendo/modal wrapper.
+      // Chỉ loại nút thuộc hộp Lưu hóa đơn đang mở; không loại Lưu HĐ hoặc
+      // Thanh toán (F12) của form chính.
+      if (!isLayoutVisible(control) || paymentDialog?.contains(control)) {
+        return false;
+      }
+      const label = normalizedVietnameseText(dialogControlText(control));
+      return label === "LUU HD" || label === "THANH TOAN" || label === "THANH TOAN (F12)";
+    }) || null;
+  }
+
+  function officialSaveExitControl(dialog) {
+    return dialogControls(dialog).find(control =>
+      normalizedVietnameseText(dialogControlText(control)) === "LUU THOAT"
+    ) || null;
+  }
+
+  function officialSaveCancelControl(dialog) {
+    return dialogControls(dialog).find(control =>
+      normalizedVietnameseText(dialogControlText(control)) === "HUY BO"
+    ) || null;
+  }
+
+  function waitForSaveCapture(timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        window.removeEventListener(SAVE_CAPTURED, onCapture);
+        reject(new Error("Website khong gui request DoSave sau khi bam Luu thoat."));
+      }, timeoutMs);
+      function onCapture(event) {
+        window.clearTimeout(timeout);
+        window.removeEventListener(SAVE_CAPTURED, onCapture);
+        resolve(event.detail || {});
+      }
+      window.addEventListener(SAVE_CAPTURED, onCapture);
+    });
+  }
+
+  function verifyDisplayedInvoiceBeforeOfficialSave(expected) {
+    const actual = scan();
+    if (!actual.ready) throw new Error(actual.reason || "Form phieu moi chua san sang de luu.");
+    const expectedGrand = Math.round(Number(expected?.targetGrand) || 0);
+    const expectedGoods = Math.round(Number(expected?.targetGoods) || 0);
+    const expectedHour = Math.round(Number(expected?.targetHour) || 0);
+    const expectedTax = Math.round(Number(expected?.targetTax) || 0);
+    if (Math.round(Number(actual.currentGrand) || 0) !== expectedGrand ||
+        Math.round(Number(actual.currentGoods) || 0) !== expectedGoods ||
+        Math.round(Number(actual.currentHour) || 0) !== expectedHour ||
+        Math.round(Number(actual.currentTax) || 0) !== expectedTax) {
+      throw new Error("Form phieu moi chua khop tong/tien hang/tien gio/VAT; chua mo hop thoai luu.");
     }
-    if (fallback) return fallback;
-    throw new Error("Khong doc duoc formData cua phieu dang mo.");
+    const expectedItems = expectedItemMap(expected?.items);
+    const actualItems = expectedItemMap(actual.items);
+    if (actualItems.size !== expectedItems.size) {
+      throw new Error("So dong hang tren form phieu moi chua khop phuong an.");
+    }
+    for (const [code, item] of expectedItems) {
+      const current = actualItems.get(code);
+      if (!current || current.qty !== item.qty || current.price !== item.price) {
+        throw new Error(`Mat hang ${code} tren form phieu moi chua khop phuong an.`);
+      }
+    }
+    return actual;
+  }
+
+  async function saveFreshInvoiceThroughOfficialUi(expected) {
+    verifyDisplayedInvoiceBeforeOfficialSave(expected);
+    const saveControl = visibleOfficialInvoiceSaveControl();
+    if (!saveControl) throw new Error("Khong tim thay nut Luu HD/Thanh toan cua website cho phieu moi.");
+    saveControl.click();
+
+    const dialogDeadline = Date.now() + 6000;
+    let dialog = null;
+    while (Date.now() < dialogDeadline) {
+      await wait(100);
+      dialog = visiblePaymentDialog();
+      if (dialog) break;
+    }
+    if (!dialog) throw new Error("Website khong mo hop thoai LUU HOA DON.");
+
+    // Website khởi tạo ID/NAME/LASTSAVEID khi mở bước thanh toán. Nếu đã có
+    // GUID, đóng hộp thoại mà không lưu rồi dùng payload API chính xác của
+    // extension. Điều này tránh website lưu tổng đang hiển thị bị làm tròn.
+    const initializedFormData = currentFormData({ allowBlankRecordId: true });
+    if (isGuid(formDataRecordId(initializedFormData))) {
+      const cancel = officialSaveCancelControl(dialog);
+      if (!cancel) throw new Error("Website da tao ID phieu nhung khong tim thay nut Huy bo cua hop thoai luu.");
+      cancel.click();
+      await wait(250);
+      if (visiblePaymentDialog()) throw new Error("Khong dong duoc hop thoai luu truoc khi gui API.");
+      const saved = await postCurrentInvoiceViaApi(expected);
+      return { ...saved, officialUiBootstrap: true };
+    }
+
+    const payment = normalizePaymentDialog();
+    if (!payment.ready || payment.grand !== Math.round(Number(expected?.targetGrand) || 0)) {
+      throw new Error("Tien mat trong hop thoai luu chua khop Tong tien; extension da dung truoc khi gui.");
+    }
+    const saveExit = officialSaveExitControl(dialog);
+    if (!saveExit) throw new Error("Khong tim thay nut Luu thoat trong hop thoai hoa don.");
+
+    const capturedPromise = waitForSaveCapture();
+    saveExit.click();
+    const captured = await capturedPromise;
+    let payload = null;
+    try { payload = JSON.parse(String(captured.body || "")); } catch (_) {}
+    if (!payload) throw new Error("Khong doc duoc payload DoSave do website vua gui.");
+    const verified = validateSavePayload(payload, expected);
+    const confirmed = verifySaveResponse(captured.responseText, payload.ID);
+    return {
+      saved: true,
+      officialUiBootstrap: true,
+      httpStatus: Number(captured.status || 0),
+      endpoint: String(captured.url || ""),
+      ...verified,
+      ...confirmed
+    };
   }
 
   function localServerDateTime(date) {
     const pad = value => String(value).padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
       `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
+
+  function localDateKey(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+    const pad = value => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  function localMidnightIso(dateKey) {
+    const match = String(dateKey || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return "";
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  }
+
+  function storedLocalDateKey(value) {
+    const date = new Date(String(value || ""));
+    return Number.isNaN(date.getTime()) ? normalizeDateKey(value) : localDateKey(date);
+  }
+
+  function parseStoredDateTime(value) {
+    const text = String(value || "").trim();
+    if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(text)) {
+      const date = new Date(text);
+      if (!Number.isNaN(date.getTime())) return date;
+    }
+    return parseDateTime(text);
   }
 
   function liveDetailRows() {
@@ -1500,14 +1911,22 @@
     const expectedGrand = Math.round(Number(expected?.targetGrand) || 0);
     const expectedGoods = Math.round(Number(expected?.targetGoods) || 0);
     const expectedHour = Math.round(Number(expected?.targetHour) || 0);
+    const expectedTax = Math.round(Number(expected?.targetTax) || 0);
     if (String(fields.SOHD || "").trim()) throw new Error("Phieu da co so hoa don; Batch API bi chan.");
     if (expected?.invoiceNo && String(fields.NAME || "") !== String(expected.invoiceNo)) {
       throw new Error(`Request dang tro toi ${fields.NAME || "phieu khac"}, khong phai ${expected.invoiceNo}.`);
     }
+    if (expected?.requiresFreshDraft) {
+      const lastSaveId = String(fields.LASTSAVEID || "").trim();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lastSaveId)) {
+        throw new Error("Phieu nhap moi khong co LASTSAVEID hop le; khong duoc gui lai payload cu.");
+      }
+    }
     if (money(fields.TONGCONG) !== expectedGrand ||
         money(fields.TIENHANG) !== expectedGoods ||
-        money(fields.TIENGIO) !== expectedHour) {
-      throw new Error("Tong tien, tien hang hoac tien gio trong request chua khop phuong an.");
+        money(fields.TIENGIO) !== expectedHour ||
+        money(fields.TIENTHUE) !== expectedTax) {
+      throw new Error("Tong tien, tien hang, tien gio hoac VAT trong request chua khop phuong an.");
     }
     ["TILEGIAMGIA", "TIENGIAMGIA", "TILEGIAMGIAGIO", "TIENGIAMGIAGIO"].forEach(field => {
       if (money(fields[field]) !== 0) throw new Error("Ke toan khong dung giam gia; request da bi chan.");
@@ -1517,12 +1936,35 @@
       throw new Error("Tien mat/khach dua/tien thanh toan chua bang tong cong.");
     }
 
+    const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey);
+    const expectedCheckIn = parseDateTime(expected?.checkIn);
+    const expectedCheckOut = parseDateTime(expected?.checkOut);
+    if (invoiceDateKey) {
+      if (storedLocalDateKey(fields.NGAY) !== invoiceDateKey) {
+        throw new Error(`Ngay hoa don trong request chua khop ${invoiceDateKey}.`);
+      }
+      if (!expectedCheckIn || !expectedCheckOut || expectedCheckOut <= expectedCheckIn ||
+          localDateKey(expectedCheckIn) !== invoiceDateKey) {
+        throw new Error("Gio vao/ra cua phuong an moi khong hop le voi ngay giao dich.");
+      }
+      const actualCheckIn = parseStoredDateTime(fields.BATDAUPHONGCUOI || fields.BATDAU);
+      const actualCheckOut = parseStoredDateTime(fields.KETTHUC);
+      if (!actualCheckIn || !actualCheckOut ||
+          Math.abs(actualCheckIn.getTime() - expectedCheckIn.getTime()) >= 60000 ||
+          Math.abs(actualCheckOut.getTime() - expectedCheckOut.getTime()) >= 60000) {
+        throw new Error("Gio vao/ra trong request chua khop phuong an da Accept.");
+      }
+    }
+
     const rows = payload.clientMap.Grids?.find(grid => String(grid.Name).toLowerCase() === "detail")?.Data || [];
     if (!rows.length) throw new Error("Request khong co dong hang.");
     const expectedItems = expectedItemMap(expected?.items);
     const actualItems = new Map();
     let goods = 0;
     rows.forEach(row => {
+      if (invoiceDateKey && normalizeDateKey(row.NGAYTHUCHIEN) !== invoiceDateKey) {
+        throw new Error(`Ngay thuc hien cua dong hang chua khop ${invoiceDateKey}.`);
+      }
       const code = String(row.DMATHANG_CODE || row.MAHANG || "").trim();
       const qty = Math.round(Number(row.SLXUATCHUAQUYDOI ?? row.SLXUAT ?? row.SOLUONG) || 0);
       const price = Math.round(Number(row.DONGIA) || 0);
@@ -1544,13 +1986,19 @@
     return { invoiceNo: String(fields.NAME || ""), recordId, rowCount: rows.length };
   }
 
-  function buildCurrentSavePayload(expected) {
+  function buildCurrentSavePayload(expected, detailRowsOverride) {
     const formData = currentFormData();
     const recordId = String(formData._RecordID || formData.mapper?.ID || "");
     const grand = Math.round(Number(expected?.targetGrand) || valueOf("numTONGCONG"));
     const goods = Math.round(Number(expected?.targetGoods) || valueOf("numTIENHANG"));
     const hour = Math.round(Number(expected?.targetHour) || valueOf("numTIENGIO"));
     const tax = Math.round(Number(expected?.targetTax) || valueOf("numTIENTHUE"));
+    const checkIn = parseDateTime(expected?.checkIn);
+    const checkOut = parseDateTime(expected?.checkOut);
+    const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey) || localDateKey(checkIn);
+    if (expected?.requiresFreshDraft && (!invoiceDateKey || !checkIn || !checkOut || checkOut <= checkIn)) {
+      throw new Error("Phuong an phieu moi thieu ngay hoa don hoac gio vao/ra hop le.");
+    }
     const overrides = {
       TIENHANG: goods,
       TIENGIO: hour,
@@ -1566,6 +2014,12 @@
       TIENTHANHTOAN: grand,
       TRALAI: 0
     };
+    if (invoiceDateKey && checkIn && checkOut) {
+      overrides.NGAY = localMidnightIso(invoiceDateKey);
+      overrides.BATDAUPHONGCUOI = checkIn.toISOString();
+      overrides.KETTHUC = checkOut.toISOString();
+      overrides.BATDAU = localServerDateTime(checkIn);
+    }
     const maps = (formData.mapper?.Maps || []).map(map => {
       const field = String(map.Field || "").toUpperCase();
       return {
@@ -1573,13 +2027,19 @@
         Value: Object.prototype.hasOwnProperty.call(overrides, field) ? overrides[field] : map.Value
       };
     });
+    const sourceDetailRows = Array.isArray(detailRowsOverride)
+      ? cloneJson(detailRowsOverride)
+      : liveDetailRows();
+    const detailRows = sourceDetailRows.map(row => invoiceDateKey
+      ? { ...row, NGAYTHUCHIEN: `${invoiceDateKey} 00:00:00` }
+      : row);
     const payload = {
       mode: 2,
       clientMap: {
         TableID: SALES_TABLE_ID,
         ID: recordId,
         Maps: maps,
-        Grids: [{ Name: "detail", Data: liveDetailRows() }],
+        Grids: [{ Name: "detail", Data: detailRows }],
         CustomPostTable: [{
           Name: "LoaiQuy",
           Data: [
@@ -1602,7 +2062,8 @@
       ...expected,
       targetGrand: grand,
       targetGoods: goods,
-      targetHour: hour
+      targetHour: hour,
+      targetTax: tax
     });
     return { payload, verified };
   }
@@ -1619,6 +2080,13 @@
     const code = Number(body.code);
     if (code !== 1) {
       const reason = String(body.message || body.strData || "").trim();
+      const normalizedReason = reason.normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[đĐ]/g, match => match === "đ" ? "d" : "D")
+        .toUpperCase();
+      if (normalizedReason.includes("HOA DON DA THAY DOI")) {
+        throw new Error("Phieu nhap da thay doi hoac LASTSAVEID da cu; hay mo mot phieu nhap moi, khong gui lai request nay.");
+      }
       throw new Error(`Website tu choi luu phieu (code ${Number.isFinite(code) ? code : "?"})` +
         `${reason ? `: ${reason}` : "; khong co mo ta loi."}`);
     }
@@ -1630,8 +2098,8 @@
     return { savedRecordId: savedId, lastSaveId: String(body.Tag?.LASTSAVEID || "") };
   }
 
-  async function saveCurrentInvoiceViaApi(expected) {
-    const { payload, verified } = buildCurrentSavePayload(expected);
+  async function postCurrentInvoiceViaApi(expected, detailRowsOverride) {
+    const { payload, verified } = buildCurrentSavePayload(expected, detailRowsOverride);
     const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
     const endpoint = `${location.origin}/${base}/AddEdit/DoSave?is_ajax=1`;
     const response = await window.fetch(endpoint, {
@@ -1657,6 +2125,410 @@
     };
   }
 
+  function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function setMapValues(maps, overrides) {
+    const result = cloneJson(maps || []);
+    const byName = new Map(result.map((entry, index) => [String(entry.Field || "").toUpperCase(), index]));
+    Object.entries(overrides || {}).forEach(([field, value]) => {
+      const normalized = String(field).toUpperCase();
+      const index = byName.get(normalized);
+      if (index == null) {
+        byName.set(normalized, result.length);
+        result.push({ Field: field, Value: value });
+      } else {
+        result[index].Value = value;
+      }
+    });
+    return result;
+  }
+
+  async function fetchProductRowsForApiPlan(items, warehouseId) {
+    const wanted = new Set((items || []).map(item => String(item.code || "").trim()).filter(Boolean));
+    if (!wanted.size) throw new Error("Phuong an API khong co ma hang.");
+    const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+    const response = await window.fetch(`${location.origin}/${base}/DataGrid/GetDataSearchData`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json;utf-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify({
+        LookupMode: false,
+        GUID: "d94717a7-1192-417a-bf6f-6cc00262c5de",
+        cols: ["rowindex", "CODE", "NAME", "DDONVITINH_NAME", "GIABAN", "TONKHADUNG", "_CARD_"],
+        ControlName: "grMatHang",
+        SourceType: 0,
+        FormID: SALES_FORM_ID,
+        RecordID: "",
+        AddEditTableID: SALES_TABLE_ID,
+        filters: {},
+        MenuID: SALES_MENU_ID,
+        TableID: PRODUCT_GRID_TABLE_ID,
+        skip: 0,
+        take: 1000,
+        page: 1,
+        pageSize: 1000,
+        ShowSum: false,
+        customData: { DNHOMMATHANGID: "", DKHOXUATID: warehouseId }
+      })
+    });
+    if (!response.ok) throw new Error(`Khong doc duoc danh muc mat hang (HTTP ${response.status}).`);
+    const body = await response.json();
+    const rows = Array.isArray(body?.Data) ? body.Data : [];
+    const byCode = new Map(rows.map(row => [String(row.CODE || "").trim(), row]));
+    const missing = Array.from(wanted).filter(code => !byCode.has(code));
+    if (missing.length) throw new Error(`Khong tim thay ma hang tren web: ${missing.join(", ")}.`);
+    return byCode;
+  }
+
+  function existingInvoiceApiDetailRows(items, products, warehouseId) {
+    const currentRows = liveDetailRows();
+    if (!currentRows.length) throw new Error("Phieu hien tai khong co dong hang mau de tao request API.");
+    const template = currentRows[0];
+    const currentByCode = new Map(currentRows.map(row => [
+      String(row.DMATHANG_CODE || row.MAHANG || "").trim(),
+      row
+    ]));
+    return (items || []).map((item, index) => {
+      const code = String(item.code || "").trim();
+      const product = products.get(code);
+      const qty = Math.max(1, Math.round(Number(item.qty ?? item.newQty) || 0));
+      const price = Math.round(Number(item.price) || Number(product?.GIABAN) || 0);
+      if (!product?.ID || !product?.DDONVITINHID || price <= 0) {
+        throw new Error(`Du lieu web cua ma ${code} thieu ID, don vi hoac gia.`);
+      }
+      const existing = currentByCode.get(code);
+      const row = cloneJson(existing || template);
+      if (!existing) row.ID = null;
+      delete row.uid;
+      row.DMATHANGID = product.ID;
+      row.DMATHANG_NAME = product.NAME;
+      row.DMATHANG_CODE = code;
+      row.DMATHANG_MASANCO = product.MASANCO || "";
+      row.TENHANG = product.NAME;
+      row.DDONVITINHID = product.DDONVITINHID;
+      row.DDONVITINH_NAME = product.DDONVITINH_NAME || "";
+      row.DKHOHANGID = warehouseId || row.DKHOHANGID || null;
+      row.SLXUATCHUAQUYDOI = qty;
+      row.SLXUAT = qty;
+      row.SLTHUCXUAT = qty;
+      row.DONGIA = price;
+      row.DONGIABAOCAO = Math.round(price * 1.1);
+      row.TILEGIAMGIA = 0;
+      row.TIENGIAMGIA = 0;
+      row.GIAMTHEOTIEN = 0;
+      row.THANHTIEN = qty * price;
+      row.THANHTIENBAOCAO = Math.round(qty * price * 1.1);
+      row.TILETHUEMATHANG = 0;
+      row.TIENTHUEMATHANG = 0;
+      row.NOTE = "";
+      row.THUTU = index + 1;
+      return row;
+    });
+  }
+
+  async function saveExistingInvoicePlanViaApi(expected) {
+    const formData = currentFormData();
+    const baseFields = mapObject(formData.mapper?.Maps);
+    const warehouseId = String(baseFields.DKHOXUATID || "").trim();
+    if (!isGuid(warehouseId)) throw new Error("Phieu hien tai thieu DKHOXUATID de lap chi tiet API.");
+    const products = await fetchProductRowsForApiPlan(expected?.items, warehouseId);
+    const detailRows = existingInvoiceApiDetailRows(expected?.items, products, warehouseId);
+    const calculatedGoods = detailRows.reduce((sum, row) => sum + Math.round(Number(row.THANHTIEN) || 0), 0);
+    const targetGoods = Math.round(Number(expected?.targetGoods) || 0);
+    if (calculatedGoods !== targetGoods) {
+      throw new Error(`Tong chi tiet API ${calculatedGoods} khong bang tien hang ${targetGoods}.`);
+    }
+    return postCurrentInvoiceViaApi(expected, detailRows);
+  }
+
+  function freshSessionDetailRows(items, products) {
+    return (items || []).map((item, index) => {
+      const code = String(item.code || "").trim();
+      const product = products.get(code);
+      const qty = Math.max(1, Math.round(Number(item.qty ?? item.newQty) || 0));
+      const price = Math.round(Number(item.price) || Number(product?.GIABAN) || 0);
+      if (!product?.ID || !product?.DDONVITINHID || price <= 0) {
+        throw new Error(`Du lieu web cua ma ${code} thieu ID, don vi hoac gia.`);
+      }
+      return {
+        DMATHANGID: product.ID,
+        DMATHANG_NAME: product.NAME,
+        DMATHANG_CODE: code,
+        DMATHANG_MASANCO: product.MASANCO || "",
+        DDONVITINHID: product.DDONVITINHID,
+        DDONVITINH_NAME: product.DDONVITINH_NAME || "",
+        KHUYENMAI: 0,
+        DONGIA: price,
+        SLKHUYENMAI: 0,
+        TILEGIAMGIA: 0,
+        TIENGIAMGIA: 0,
+        GIAMTHEOTIEN: 0,
+        SLXUATCHUAQUYDOI: qty,
+        TILETHUEMATHANG: 0,
+        KICHTHUOC: null,
+        DNHANVIEN1ID: null,
+        DNHANVIEN_NAME: null,
+        DMATHANG_SOLANDIEUTRI: Number(product.SOLANDIEUTRI) || 0,
+        DMATHANG_CHUKYDIEUTRI: Number(product.CHUKYDIEUTRI) || 0,
+        TENHANG: product.NAME,
+        NOTE: "",
+        ID: `it${Date.now().toString(36)}${index}`,
+        TIENTHUEMATHANG: 0,
+        THANHTIEN: qty * price,
+        THUTU: index + 1
+      };
+    });
+  }
+
+  function finalPaymentDetailRows(sessionRows, persistedIds, warehouseId, taxRate) {
+    return sessionRows.map((row, index) => {
+      const persistedId = String(persistedIds?.[row.ID] || "").trim();
+      if (!isGuid(persistedId)) throw new Error(`Website khong tra ID dong hang ${row.DMATHANG_CODE}.`);
+      return {
+        ID: persistedId,
+        GIATRINHAP: 0,
+        COMBOPARENTID: null,
+        TRASUASIZE: null,
+        GIAVON: 0,
+        GIOTINHLUONG: null,
+        HANSUDUNG: null,
+        HOAHONG2: null,
+        SLXUATCHUAQUYDOI: row.SLXUATCHUAQUYDOI,
+        DKHOHANGID: warehouseId,
+        TDONHANGTRAID: null,
+        DONGIABAOCAO: Math.round(row.DONGIA * (1 + taxRate / 100)),
+        COMBOSL: null,
+        DTRANGTHAICHEBIENID: null,
+        XUATVATTU: 0,
+        GIAMTHEOTIEN: 0,
+        SLTANG: null,
+        DONGIA: row.DONGIA,
+        HOAHONG3: null,
+        NOTE: row.NOTE || "",
+        SLNHAPCHUAQUYDOI: 0,
+        TILEGIAMGIA: 0,
+        DENGIO: null,
+        KICHTHUOC: row.KICHTHUOC,
+        DNHANVIEN1ID: null,
+        DNHANVIEN_NAME: null,
+        GIOHATCOMBO: null,
+        TENHANG: row.TENHANG,
+        NGAYTHUCHIEN: null,
+        SLDAXUAT: 0,
+        SUDUNGNGAY: null,
+        LOAIDONVITINH: 0,
+        DMATHANGID: row.DMATHANGID,
+        DMATHANG_DLOAIMATHANGID: "0",
+        DMATHANG_CODE: row.DMATHANG_CODE,
+        DMATHANG_SOLANDIEUTRI: row.DMATHANG_SOLANDIEUTRI,
+        DMATHANG_CHUKYDIEUTRI: row.DMATHANG_CHUKYDIEUTRI,
+        TIENGIAMGIA: 0,
+        GIATRIXUAT: 0,
+        BAOHANH: null,
+        TIENTHUEMATHANG: 0,
+        TRUKHO: null,
+        HOAHONG1: null,
+        THANHTIENBAOCAO: Math.round(row.THANHTIEN * (1 + taxRate / 100)),
+        NHAPTHANHTIEN: null,
+        TILETHUEMATHANG: 0,
+        CKBAOCAO: 0,
+        SLNHAP: 0,
+        SLKHUYENMAI: 0,
+        THANHTIEN: row.THANHTIEN,
+        TUGIO: null,
+        QUYDOI: 1,
+        DDONVITINHID: row.DDONVITINHID,
+        DDONVITINH_NAME: row.DDONVITINH_NAME,
+        THUTU: index + 1,
+        DNHANVIEN2ID: null,
+        DNHANVIEN2_NAME: null,
+        DNHANVIEN3ID: null,
+        DNHANVIEN3_NAME: null,
+        SLTHUCTE: 0,
+        COMBOID: null,
+        SLHETHONG: 0,
+        SLXUAT: row.SLXUATCHUAQUYDOI,
+        KHUYENMAI: 0,
+        TDIEUTRIID: null,
+        SLTHUCXUAT: row.SLXUATCHUAQUYDOI
+      };
+    });
+  }
+
+  async function postDoSavePayload(payload) {
+    const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+    const endpoint = `${location.origin}/${base}/AddEdit/DoSave?is_ajax=1`;
+    const response = await window.fetch(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json;utf-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify(payload)
+    });
+    const responseText = await response.text();
+    if (!response.ok) throw new Error(`Website tu choi DoSave (HTTP ${response.status}).`);
+    let body;
+    try { body = JSON.parse(responseText); } catch (_) {
+      throw new Error("Website tra ve DoSave khong phai JSON.");
+    }
+    if (Number(body?.code) !== 1 || !isGuid(body?.Tag?.ID)) {
+      throw new Error(String(body?.message || body?.strData || "DoSave khong thanh cong."));
+    }
+    return { body, responseText, endpoint: new URL(endpoint).pathname, httpStatus: response.status };
+  }
+
+  async function createAndPayFreshInvoiceViaApi(expected) {
+    const formData = currentFormData({ allowBlankRecordId: true });
+    if (isGuid(formDataRecordId(formData))) {
+      throw new Error("Form hien tai da co ID; khong duoc dung flow tao phieu moi hai buoc.");
+    }
+    const grand = Math.round(Number(expected?.targetGrand) || 0);
+    const goods = Math.round(Number(expected?.targetGoods) || 0);
+    const hour = Math.round(Number(expected?.targetHour) || 0);
+    const tax = Math.round(Number(expected?.targetTax) || 0);
+    const taxRate = 10;
+    const checkIn = parseDateTime(expected?.checkIn);
+    const checkOut = parseDateTime(expected?.checkOut);
+    const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey);
+    if (!grand || goods <= 0 || hour <= 0 || tax < 0 || goods + hour + tax !== grand) {
+      throw new Error("Tong = tien hang + tien gio + VAT cua phuong an API khong hop le.");
+    }
+    if (!invoiceDateKey || !checkIn || !checkOut || checkOut <= checkIn || localDateKey(checkIn) !== invoiceDateKey) {
+      throw new Error("Ngay va gio vao/ra cua phieu moi khong hop le.");
+    }
+    const baseFields = mapObject(formData.mapper?.Maps);
+    const roomId = String(baseFields.DBANID || "").trim();
+    const warehouseId = String(baseFields.DKHOXUATID || "").trim();
+    if (!isGuid(roomId) || !isGuid(warehouseId)) throw new Error("Form phong moi thieu DBANID hoac DKHOXUATID.");
+    const products = await fetchProductRowsForApiPlan(expected.items, warehouseId);
+    const sessionRows = freshSessionDetailRows(expected.items, products);
+    const calculatedGoods = sessionRows.reduce((sum, row) => sum + row.THANHTIEN, 0);
+    if (calculatedGoods !== goods) throw new Error("Tong chi tiet hang khong bang tien hang cua phuong an.");
+    const commonOverrides = {
+      BATDAUPHONGCUOI: checkIn.toISOString(),
+      KETTHUC: checkOut.toISOString(),
+      BATDAU: localServerDateTime(checkIn),
+      NGAY: localMidnightIso(invoiceDateKey),
+      TILETHUE: taxRate,
+      TILEGIAMGIA: 0,
+      TIENGIAMGIA: 0,
+      TILEGIAMGIAGIO: 0,
+      TIENGIAMGIAGIO: 0,
+      TIENGIAMGIATONG: 0,
+      TIENHANG: goods,
+      TIENGIO: hour,
+      TIENGIOPHONGCUOI: hour,
+      TIENTHUE: tax,
+      TONGCONG: grand,
+      PHUONGTHUCTT: "TM",
+      SOHD: "",
+      MODE: 1
+    };
+    const sessionPayload = {
+      mode: 0,
+      clientMap: {
+        TableID: SALES_TABLE_ID,
+        ID: "",
+        Maps: setMapValues(formData.mapper?.Maps, {
+          ...commonOverrides,
+          NAME: "Tự động",
+          LASTSAVEID: "",
+          DIENGIAI: ""
+        }),
+        Grids: [{ Name: "detail", Data: sessionRows }],
+        CustomPostTable: [{
+          Name: "LuuVet",
+          Data: sessionRows.map(row => ({
+            PHANLOAI: 4,
+            BAN: String(suffixInput("lblTENBAN")?.textContent || ""),
+            NOTE: `Them mat hang '${row.TENHANG}' vao bill, so luong: ${row.SLXUATCHUAQUYDOI}`,
+            SOLUONG: row.SLXUATCHUAQUYDOI,
+            DONGIA: row.DONGIA,
+            THANHTIEN: 0,
+            TENHANG: row.TENHANG,
+            GIOCLIENT: localServerDateTime(new Date()).replace(/-/g, "/"),
+            CHUCNANG: "Su dung dich vu",
+            THIETBI: ""
+          }))
+        }],
+        CustomPost: { MODEQUANLY: 0, GioClient: localServerDateTime(new Date()) }
+      },
+      TableID: SALES_TABLE_ID,
+      ID: "",
+      Loai: 0
+    };
+    const session = await postDoSavePayload(sessionPayload);
+    const sessionTag = session.body.Tag || {};
+    if (!isGuid(sessionTag.LASTSAVEID) || !String(sessionTag.NAME || "").trim()) {
+      throw new Error("Luu phien thanh cong nhung thieu NAME hoac LASTSAVEID.");
+    }
+    const paymentRows = finalPaymentDetailRows(sessionRows, sessionTag.detail, warehouseId, taxRate);
+    const paymentPayload = {
+      mode: 2,
+      clientMap: {
+        TableID: SALES_TABLE_ID,
+        ID: sessionTag.ID,
+        Maps: setMapValues(sessionPayload.clientMap.Maps, {
+          ...commonOverrides,
+          NAME: sessionTag.NAME,
+          LASTSAVEID: sessionTag.LASTSAVEID,
+          DIENGIAI: "Xuat ban hang"
+        }),
+        Grids: [{ Name: "detail", Data: paymentRows }],
+        CustomPostTable: [
+          { Name: "ThanhToan", Data: [
+            { truong: "KHACHDUA", value: grand },
+            { truong: "TRALAI", value: 0 }
+          ] },
+          { Name: "LoaiQuy", Data: [
+            { truong: "TIENMAT", value: grand },
+            { truong: "TIENTHANHTOAN", value: grand }
+          ] }
+        ],
+        CustomPost: {
+          MODEQUANLY: 0,
+          GioClient: localServerDateTime(new Date()),
+          DVOUCHERID: null,
+          XUATHOADON: false
+        }
+      },
+      TableID: SALES_TABLE_ID,
+      ID: sessionTag.ID,
+      Loai: 0
+    };
+    const payment = await postDoSavePayload(paymentPayload);
+    if (String(payment.body.Tag.ID).toLowerCase() !== String(sessionTag.ID).toLowerCase()) {
+      throw new Error("API thanh toan tra ve ID khac phien vua tao.");
+    }
+    return {
+      saved: true,
+      createdFresh: true,
+      invoiceNo: String(sessionTag.NAME),
+      savedRecordId: String(sessionTag.ID),
+      lastSaveId: String(payment.body.Tag.LASTSAVEID || ""),
+      endpoint: payment.endpoint,
+      httpStatus: payment.httpStatus,
+      sessionHttpStatus: session.httpStatus,
+      rowCount: paymentRows.length,
+      targetGrand: grand
+    };
+  }
+
+  async function saveCurrentInvoiceViaApi(expected) {
+    const formData = currentFormData({ allowBlankRecordId: Boolean(expected?.requiresFreshDraft) });
+    if (expected?.requiresFreshDraft && !isGuid(formDataRecordId(formData))) {
+      return saveFreshInvoiceThroughOfficialUi(expected);
+    }
+    return postCurrentInvoiceViaApi(expected);
+  }
+
   window.addEventListener(REQUEST, async event => {
     const detail = event.detail || {};
     let result;
@@ -1676,6 +2548,10 @@
       else if (detail.action === "normalizePaymentDialog") result = normalizePaymentDialog();
       else if (detail.action === "applyInvoicePlan") result = await applyInvoicePlan(detail);
       else if (detail.action === "saveCurrentInvoiceViaApi") result = await saveCurrentInvoiceViaApi(detail);
+      else if (detail.action === "saveExistingInvoicePlanViaApi") result = await saveExistingInvoicePlanViaApi(detail);
+      else if (detail.action === "createAndPayFreshInvoiceViaApi") result = await createAndPayFreshInvoiceViaApi(detail);
+      else if (detail.action === "armApiTrace") result = armApiTrace();
+      else if (detail.action === "getApiTrace") result = getApiTrace();
       else throw new Error("Thao tác không được hỗ trợ.");
       window.dispatchEvent(new CustomEvent(RESPONSE, { detail: { id: detail.id, ok: true, result } }));
     } catch (error) {

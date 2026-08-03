@@ -77,6 +77,14 @@ expectThrow(
   () => sandbox.verifySaveResponse(JSON.stringify({ code: -1, message: null, Tag: null }), RECORD_ID),
   "code -1"
 );
+expectThrow(
+  "LASTSAVEID cũ",
+  () => sandbox.verifySaveResponse(
+    JSON.stringify({ code: 0, message: "HÓA ĐƠN ĐÃ THAY ĐỔI VUI LÒNG THỰC HIỆN LẠI", Tag: "9999" }),
+    RECORD_ID
+  ),
+  "LASTSAVEID da cu"
+);
 // Một số lỗi trả mô tả trong strData thay vì message.
 expectThrow(
   "lỗi nằm trong strData",

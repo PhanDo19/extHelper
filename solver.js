@@ -22,18 +22,68 @@
   }
 
   function derivePreTax(grandTotal, taxRate) {
-    const multiplier = 1 + Number(taxRate || 0) / 100;
-    return Math.max(0, Math.round(Number(grandTotal || 0) / multiplier));
+    return inclusiveVatTargets(grandTotal, taxRate).preTaxTarget;
+  }
+
+  // Website tính VAT trên tiền hàng + tiền giờ rồi cộng VAT vào tổng. Khi đầu
+  // vào là tổng sao kê đã gồm VAT, phải chia ngược cho 1 + thuế suất.
+  function inclusiveVatTargets(grandTotal, taxRate) {
+    const grand = Math.max(0, Math.round(Number(grandTotal) || 0));
+    const rate = Math.max(0, Number(taxRate) || 0);
+    if (!grand || !rate) {
+      return {
+        preTaxTarget: grand,
+        vatTarget: 0,
+        calculatedGrand: grand,
+        grandReachable: grand > 0,
+        reachableAlternatives: grand > 0 ? [grand] : []
+      };
+    }
+    const estimate = Math.max(0, Math.round(grand / (1 + rate / 100)));
+    const candidates = [];
+    for (let preTax = Math.max(0, estimate - 8); preTax <= estimate + 8; preTax += 1) {
+      const vat = Math.max(0, Math.round(preTax * rate / 100));
+      const calculatedGrand = preTax + vat;
+      candidates.push({
+        preTaxTarget: preTax,
+        vatTarget: vat,
+        calculatedGrand,
+        difference: calculatedGrand - grand
+      });
+    }
+    candidates.sort((left, right) =>
+      Math.abs(left.difference) - Math.abs(right.difference) ||
+      Math.abs(left.preTaxTarget - estimate) - Math.abs(right.preTaxTarget - estimate) ||
+      left.preTaxTarget - right.preTaxTarget
+    );
+    const best = candidates[0];
+    const reachableAlternatives = [...new Set(candidates.map(item => item.calculatedGrand))]
+      .sort((left, right) => Math.abs(left - grand) - Math.abs(right - grand) || left - right)
+      .slice(0, 2);
+    return {
+      preTaxTarget: best.preTaxTarget,
+      vatTarget: best.vatTarget,
+      calculatedGrand: best.calculatedGrand,
+      grandReachable: best.calculatedGrand === grand,
+      reachableAlternatives
+    };
+  }
+
+  function statementVat(grandTotal, taxRate) {
+    return inclusiveVatTargets(grandTotal, taxRate).vatTarget;
   }
 
   function deriveInvoiceTargets(targetGrand, currentHour, taxRate) {
-    const preTaxTarget = derivePreTax(targetGrand, taxRate);
-    const vatTarget = Math.max(0, Math.round(Number(targetGrand || 0) - preTaxTarget));
+    const grand = Math.max(0, Math.round(Number(targetGrand) || 0));
+    const inclusive = inclusiveVatTargets(grand, taxRate);
     return {
-      preTaxTarget,
-      vatTarget,
+      preTaxTarget: inclusive.preTaxTarget,
+      vatTarget: inclusive.vatTarget,
+      grandReachable: inclusive.grandReachable,
+      calculatedGrand: inclusive.calculatedGrand,
+      reachableAlternatives: inclusive.reachableAlternatives,
       currentHour: Math.max(0, Math.round(Number(currentHour || 0))),
-      goodsTarget: Math.max(0, Math.round(preTaxTarget - Number(currentHour || 0)))
+      goodsTarget: Math.max(0, Math.round(inclusive.preTaxTarget - Number(currentHour || 0)))
     };
   }
 
@@ -227,6 +277,11 @@
       const hourStep = Math.max(0, Math.round(Number(opts.hourStep) || 0));
       const preTaxTarget = Math.max(0, Math.round(Number(opts.preTaxTarget) || 0));
       const requiredHour = hourStep && preTaxTarget ? preTaxTarget - actual : 0;
+      const exactMinHourAmount = Math.max(0, Math.round(Number(opts.minHourAmount) || 0));
+      const exactMaxHourAmount = Math.max(0, Math.round(Number(opts.maxHourAmount) || 0));
+      if (opts.requireHourStepExact && hourStep && requiredHour < exactMinHourAmount) continue;
+      if (opts.requireHourStepExact && hourStep && exactMaxHourAmount && requiredHour > exactMaxHourAmount) continue;
+      if (opts.requireHourStepExact && hourStep && requiredHour >= 0 && requiredHour % hourStep !== 0) continue;
       const hourActual = hourStep && requiredHour >= 0 ? Math.max(0, Math.ceil(requiredHour / hourStep) * hourStep) : null;
       const preTaxDifference = hourActual == null ? null : actual + hourActual - preTaxTarget;
       const finalAbs = preTaxDifference == null ? Math.abs(difference) : Math.abs(preTaxDifference);
@@ -237,9 +292,21 @@
       // và chừa đủ chỗ cho tiền giờ. Vẫn giữ lại làm phương án dự phòng nếu
       // không còn lựa chọn nào khác.
       const minHourAmount = Math.max(0, Math.round(Number(opts.minHourAmount) || 0));
-      const hourShortfall = hourActual == null || !minHourAmount
+      // requiredHour < 0 nghĩa là tiền hàng đã ăn hết phần trước VAT nên không
+      // còn chỗ cho Tiền giờ. Trước đây hourActual = null làm hai mức phạt dưới
+      // bị bỏ qua, khiến tổ hợp vỡ trần lại đạt hourRangeViolation = 0 và thắng
+      // mọi phương án hợp lệ. Phần âm phải bị tính là thiếu hụt đúng bằng độ vỡ.
+      const overshoot = hourStep && preTaxTarget && requiredHour < 0
+        ? Math.abs(requiredHour)
+        : 0;
+      const hourShortfall = overshoot > 0
+        ? minHourAmount + overshoot
+        : (hourActual == null || !minHourAmount ? 0 : Math.max(0, minHourAmount - hourActual));
+      const maxHourAmount = Math.max(0, Math.round(Number(opts.maxHourAmount) || 0));
+      const hourExcess = hourActual == null || !maxHourAmount
         ? 0
-        : Math.max(0, minHourAmount - hourActual);
+        : Math.max(0, hourActual - maxHourAmount);
+      const hourRangeViolation = hourShortfall + hourExcess;
       // Vượt maxGoodsAmount vẫn hợp lệ nhưng bị xếp sau: đây là sàn mềm giữ cho
       // tỷ lệ tiền giờ/tiền hàng gần với hóa đơn thật.
       const goodsExcess = maxGoodsAmount > 0 ? Math.max(0, actual - maxGoodsAmount) : 0;
@@ -255,19 +322,19 @@
       // Thứ tự: ràng buộc cứng (giờ, tỷ lệ hàng, khớp tuyệt đối) trước, rồi tới
       // né tổ hợp vừa bị bỏ, cơ cấu nhóm, cuối cùng là các tiêu chí thẩm mỹ.
       const better = !best ||
-        hourShortfall < best.hourShortfall ||
-        (hourShortfall === best.hourShortfall && goodsShortfall < best.goodsShortfall) ||
-        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall && finalAbs < best.finalAbs) ||
-        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall &&
-          finalAbs === best.finalAbs && rejection < best.rejection) ||
-        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall &&
-          finalAbs === best.finalAbs && rejection === best.rejection && imbalance < best.imbalance) ||
-        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall &&
-          finalAbs === best.finalAbs && rejection === best.rejection && imbalance === best.imbalance &&
-          hourDeviation < best.hourDeviation) ||
-        (hourShortfall === best.hourShortfall && goodsShortfall === best.goodsShortfall && finalAbs === best.finalAbs &&
-          rejection === best.rejection && imbalance === best.imbalance &&
-          hourDeviation === best.hourDeviation && quantityScore < best.quantityScore);
+        hourRangeViolation < best.hourRangeViolation ||
+        (hourRangeViolation === best.hourRangeViolation && goodsShortfall < best.goodsShortfall) ||
+        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall && finalAbs < best.finalAbs) ||
+        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall &&
+          finalAbs === best.finalAbs && hourDeviation < best.hourDeviation) ||
+        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall &&
+          finalAbs === best.finalAbs && hourDeviation === best.hourDeviation && rejection < best.rejection) ||
+        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall &&
+          finalAbs === best.finalAbs && hourDeviation === best.hourDeviation &&
+          rejection === best.rejection && imbalance < best.imbalance) ||
+        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall && finalAbs === best.finalAbs &&
+          hourDeviation === best.hourDeviation && rejection === best.rejection && imbalance === best.imbalance &&
+          quantityScore < best.quantityScore);
       if (better) best = {
         actual,
         difference,
@@ -279,6 +346,8 @@
         hourDiscount: 0,
         preTaxDifference,
         hourShortfall,
+        hourExcess,
+        hourRangeViolation,
         goodsShortfall,
         imbalance,
         rejection
@@ -294,6 +363,8 @@
       difference: best.difference,
       hourActual: best.hourActual,
       hourShortfall: best.hourShortfall,
+      hourExcess: best.hourExcess,
+      hourRangeViolation: best.hourRangeViolation,
       goodsShortfall: best.goodsShortfall,
       groupImbalance: best.imbalance,
       hourDiscount: best.hourDiscount,
@@ -307,6 +378,8 @@
     gcd,
     gcdAll,
     derivePreTax,
+    inclusiveVatTargets,
+    statementVat,
     deriveInvoiceTargets,
     deriveGoodsTarget,
     reconcileHourAmount,

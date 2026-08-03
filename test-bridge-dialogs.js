@@ -3,6 +3,18 @@ const vm = require("vm");
 
 const source = fs.readFileSync("bridge.js", "utf8");
 
+for (const alertGuard of [
+  "function isKnownTransientKendoAlert(message)",
+  "function installTransientKendoAlertGuard()",
+  "__invoiceTargetKendoAlertGuardInstalled",
+  "Reflect.apply(nativeAlert, window, [message])",
+  "invoice-target-mvp:runtime-warning"
+]) {
+  if (!source.includes(alertGuard)) {
+    throw new Error(`Missing persistent Kendo alert guard: ${alertGuard}`);
+  }
+}
+
 function extractFunction(name) {
   const start = source.indexOf(`function ${name}(`);
   if (start < 0) throw new Error(`Missing ${name}`);
@@ -19,12 +31,23 @@ function extractFunction(name) {
 const context = {};
 vm.createContext(context);
 vm.runInContext(
-  `${extractFunction("dialogControlText")};
+  `${extractFunction("isKnownTransientKendoAlert")};
+   ${extractFunction("dialogControlText")};
    ${extractFunction("dialogControls")};
    ${extractFunction("isTransientQuantityDialog")};
+   this.isKnownTransientKendoAlert = isKnownTransientKendoAlert;
    this.isTransientQuantityDialog = isTransientQuantityDialog;`,
   context
 );
+
+if (!context.isKnownTransientKendoAlert(
+  "Rất tiếc, không thể xử lý, chi tiết: Uncaught Error: Cannot call method 'value' of kendoDropDownList before it is initialized"
+)) {
+  throw new Error("Known asynchronous Kendo alert must be suppressed.");
+}
+if (context.isKnownTransientKendoAlert("Bạn có chắc muốn hủy hóa đơn?")) {
+  throw new Error("Legitimate website alerts must pass through unchanged.");
+}
 
 const button = text => ({ innerText: text, textContent: text, value: "" });
 const inputButton = text => ({
@@ -73,6 +96,17 @@ if (!source.includes("/^btnCancel_Click$/i")) {
 if (!source.includes("dataSource.page(page)")) {
   throw new Error("Remote catalog page traversal fallback is missing.");
 }
+for (const catalogFallback of [
+  "function findLoadedProduct(found, code)",
+  "tbody tr[data-uid]",
+  "dataSource.getByUid(uid)",
+  "const exact = () => findLoadedProduct(found, code)",
+  "const pageDeadline = Date.now() + 2500"
+]) {
+  if (!source.includes(catalogFallback)) {
+    throw new Error(`Robust product catalog lookup is missing: ${catalogFallback}`);
+  }
+}
 const filterProductSource = extractFunction("filterProduct");
 if (/actualSearchButton\.click|btnSearch_Click/.test(filterProductSource)) {
   throw new Error("Product resolution must not open the website's F3 keyboard dialog.");
@@ -108,11 +142,25 @@ for (const invariant of [
     throw new Error(`Missing payment invariant: ${invariant}`);
   }
 }
-if (!source.includes('["Lưu in", "Lưu thoát"].includes(dialogControlText(button))')) {
+if (!source.includes('["LUU IN", "LUU THOAT"].includes(normalizedVietnameseText(dialogControlText(button)))')) {
   throw new Error("Official save controls must run the payment guard.");
 }
 if (!source.includes("event.stopImmediatePropagation()")) {
   throw new Error("Invalid payment values must block the official save action.");
+}
+if (!source.includes("paymentDialog?.contains(control)") ||
+    source.includes('control.closest(".k-window,.k-dialog,[role=\'dialog\'],.ui-dialog,.modal")')) {
+  throw new Error("Main Lưu HĐ/Thanh toán control must not be rejected by the form modal wrapper.");
+}
+for (const freshBootstrapInvariant of [
+  "function officialSaveCancelControl(dialog)",
+  "const initializedFormData = currentFormData({ allowBlankRecordId: true })",
+  "await postCurrentInvoiceViaApi(expected)",
+  "officialUiBootstrap: true"
+]) {
+  if (!source.includes(freshBootstrapInvariant)) {
+    throw new Error(`Missing safe fresh-invoice bootstrap invariant: ${freshBootstrapInvariant}`);
+  }
 }
 for (const requiredCapture of [
   "function installSaveRequestCapture()",

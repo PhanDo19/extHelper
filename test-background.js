@@ -2,6 +2,8 @@ const assert = require("assert");
 
 let listener;
 let downloadOptions;
+let createdTabOptions;
+let removedTabId;
 globalThis.chrome = {
   runtime: {
     lastError: null,
@@ -15,6 +17,16 @@ globalThis.chrome = {
     download(options, callback) {
       downloadOptions = options;
       callback(42);
+    }
+  },
+  tabs: {
+    create(options, callback) {
+      createdTabOptions = options;
+      callback({ id: 77 });
+    },
+    remove(tabId, callback) {
+      removedTabId = tabId;
+      callback();
     }
   }
 };
@@ -41,4 +53,29 @@ assert.strictEqual(validResponse.downloadId, 42);
 assert.strictEqual(downloadOptions.saveAs, false);
 assert.match(downloadOptions.url, /^data:application\/json/);
 
-console.log("Background download: OK");
+let traceResponse;
+assert.strictEqual(listener({
+  type: "invoiceTarget.downloadStockState",
+  filename: "invoice-api-trace-2026-08-02T09-27-16-000Z.json",
+  content: "{\"schemaVersion\":1,\"records\":[]}"
+}, {}, response => { traceResponse = response; }), true);
+assert.strictEqual(traceResponse.ok, true);
+assert.strictEqual(downloadOptions.filename, "invoice-api-trace-2026-08-02T09-27-16-000Z.json");
+
+let openResponse;
+assert.strictEqual(listener({
+  type: "invoiceTarget.openBatchWorkerTab",
+  url: "http://banhang.thuanvietsoft.com/pariskimgiang/Form"
+}, {}, response => { openResponse = response; }), true);
+assert.strictEqual(openResponse.ok, true);
+assert.strictEqual(openResponse.tabId, 77);
+assert.strictEqual(createdTabOptions.active, true);
+
+let closeResponse;
+assert.strictEqual(listener({
+  type: "invoiceTarget.closeCurrentBatchWorkerTab"
+}, { tab: { id: 77 } }, response => { closeResponse = response; }), true);
+assert.strictEqual(closeResponse.ok, true);
+assert.strictEqual(removedTabId, 77);
+
+console.log("Background download and Batch worker tabs: OK");

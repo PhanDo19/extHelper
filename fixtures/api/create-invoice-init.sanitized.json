@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "description": "Chuỗi request mở form phiếu mới, xác nhận từ hai trace độc lập và giống hệt nhau.",
+  "capturedFlow": "open-empty-room",
+  "persistentRecordCreated": false,
+  "requests": [
+    {
+      "order": 1,
+      "requiredFor": "render-and-initialize-new-invoice-form",
+      "method": "GET",
+      "path": "/pariskimgiang/AddEdit",
+      "query": {
+        "TableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+        "RecordID": "",
+        "Loai": "0",
+        "MaxTab": "0",
+        "NOTITLE": "1",
+        "DBANID": "<ROOM_ID>",
+        "DKHUVUCID": "<AREA_ID>",
+        "is_dialog": "1"
+      },
+      "responseContract": "HTML form; HTTP 200. RecordID remains blank until DoSave succeeds."
+    },
+    {
+      "order": 2,
+      "requiredFor": "ui-product-grid-only",
+      "method": "POST",
+      "path": "/pariskimgiang/DataGrid/GetDataSearchData",
+      "jsonBody": {
+        "LookupMode": false,
+        "GUID": "<GRID_GUID>",
+        "cols": ["rowindex", "CODE", "NAME", "DDONVITINH_NAME", "GIABAN", "TONKHADUNG", "_CARD_"],
+        "ControlName": "grMatHang",
+        "SourceType": 0,
+        "FormID": "<FORM_ID>",
+        "RecordID": "",
+        "AddEditTableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+        "filters": {},
+        "MenuID": "f3ca052a-082b-49f6-8d4f-93b8a525e571",
+        "TableID": "c07a4b54-e177-40d9-b077-c140fd4641d9",
+        "skip": 0,
+        "take": 20,
+        "page": 1,
+        "pageSize": 20,
+        "ShowSum": false,
+        "customData": {
+          "DNHOMMATHANGID": "",
+          "DKHOXUATID": "d626340f-6db2-413a-b308-b0fbe6a90808"
+        }
+      },
+      "responseContract": "Product grid data; not required by API-only DoSave when the extension already has the catalog and IDs."
+    },
+    {
+      "order": 3,
+      "requiredFor": "ui-lookup-only",
+      "method": "POST",
+      "path": "/pariskimgiang/Service/GridLookupData",
+      "jsonBody": {
+        "SourceType": 0,
+        "FormID": "<FORM_ID>",
+        "RecordID": "",
+        "AddEditTableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+        "TableID": "d1987a78-b9a9-4e76-bb40-687915d80a93",
+        "ID": ""
+      },
+      "responseContract": "Customer/CLB lookup data; UI helper."
+    },
+    {
+      "order": 4,
+      "requiredFor": "ui-lookup-only",
+      "method": "POST",
+      "path": "/pariskimgiang/Service/GridLookupData",
+      "jsonBody": {
+        "SourceType": 0,
+        "FormID": "<FORM_ID>",
+        "RecordID": "",
+        "AddEditTableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+        "TableID": "4fcd6076-b152-4405-bcad-d72888107612",
+        "ID": ""
+      },
+      "responseContract": "Empty lookup in both traces; UI helper."
+    },
+    {
+      "order": 5,
+      "requiredFor": "ui-lookup-only",
+      "method": "POST",
+      "path": "/pariskimgiang/Service/GridLookupData",
+      "jsonBody": {
+        "SourceType": 0,
+        "FormID": "<FORM_ID>",
+        "RecordID": "",
+        "AddEditTableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+        "TableID": "288d682b-addc-4473-be66-4ede71e1178c",
+        "ID": ""
+      },
+      "responseContract": "Empty lookup in both traces; UI helper."
+    }
+  ],
+  "persistence": {
+    "method": "POST",
+    "path": "/pariskimgiang/AddEdit/DoSave?is_ajax=1",
+    "successContract": "JSON code === 1 and Tag.ID is a valid invoice ID",
+    "note": "DoSave is the first request that creates the persistent invoice record."
+  }
+}

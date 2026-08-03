@@ -36,6 +36,36 @@ for (const outcome of [
 
 console.log("batch API close gate: OK");
 
+const saveBatchStart = source.indexOf("async function saveBatchEntryViaApi(");
+const saveBatchEnd = source.indexOf("\n  async function saveNewBatchEntryViaWorker(", saveBatchStart);
+const saveBatchSource = source.slice(saveBatchStart, saveBatchEnd);
+for (const directApiGuard of [
+  "openAcceptedInvoiceForApi(index, proxy)",
+  'request("saveExistingInvoicePlanViaApi"',
+  "transaction.pendingPlan = {",
+  'try { await request("closeInvoiceDetail"); } catch (_) {}'
+]) {
+  if (!saveBatchSource.includes(directApiGuard)) {
+    throw new Error(`Missing direct existing-invoice API guard: ${directApiGuard}`);
+  }
+}
+if (saveBatchSource.includes("applyAcceptedBatchPlan(")) {
+  throw new Error("Batch API must not mutate invoice items through the UI before DoSave.");
+}
+for (const bridgeApiGuard of [
+  "function existingInvoiceApiDetailRows(",
+  "async function saveExistingInvoicePlanViaApi(",
+  "fetchProductRowsForApiPlan(expected?.items, warehouseId)",
+  "postCurrentInvoiceViaApi(expected, detailRows)",
+  'detail.action === "saveExistingInvoicePlanViaApi"'
+]) {
+  if (!bridgeSource.includes(bridgeApiGuard)) {
+    throw new Error(`Missing direct API detail builder: ${bridgeApiGuard}`);
+  }
+}
+
+console.log("existing invoice direct API path: OK");
+
 for (const lookupGuard of [
   "const invoiceListCache = new Map();",
   "async function waitForInvoiceListRow(invoiceNo, uid, timeout = 5000)",
@@ -54,3 +84,39 @@ for (const lookupGuard of [
 }
 
 console.log("same-day invoice-list reuse: OK");
+
+for (const readinessGuard of [
+  "const pagerSelects = pagerElement ? Array.from(pagerElement.querySelectorAll(\"select\")) : [];",
+  "pagerSelects.every(select =>",
+  "throw new Error(\"Danh sách phiếu chưa khởi tạo xong bộ lọc Kendo; hãy thử lại sau vài giây.\")"
+]) {
+  if (!bridgeSource.includes(readinessGuard)) {
+    throw new Error(`Missing Kendo invoice-list readiness guard: ${readinessGuard}`);
+  }
+}
+
+for (const roundedGrandGuard of [
+  "amount: transaction.acceptedGrandOverride || transaction.credit",
+  "async function resetRoundedGrand(event)",
+  "delete transaction.acceptedGrandOverride",
+  'table.querySelectorAll(".it-reset-rounded")'
+]) {
+  if (!source.includes(roundedGrandGuard)) {
+    throw new Error(`Missing rounded-grand recovery guard: ${roundedGrandGuard}`);
+  }
+}
+
+if (bridgeSource.includes('window.alert("Tiền mặt chưa khớp Tổng tiền.')) {
+  throw new Error("Save blocking must not use a native alert.");
+}
+for (const saveBlockedGuard of [
+  'const SAVE_BLOCKED = "invoice-target-mvp:save-blocked";',
+  "window.dispatchEvent(new CustomEvent(SAVE_BLOCKED",
+  "window.addEventListener(SAVE_BLOCKED"
+]) {
+  if (!source.includes(saveBlockedGuard) && !bridgeSource.includes(saveBlockedGuard)) {
+    throw new Error(`Missing non-blocking save warning: ${saveBlockedGuard}`);
+  }
+}
+
+console.log("Kendo readiness / rounded-grand recovery: OK");

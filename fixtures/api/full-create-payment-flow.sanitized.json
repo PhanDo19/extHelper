@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "description": "Luồng đầy đủ đã bắt trực tiếp trên website: mở phòng trống, thêm hàng, Lưu HĐ, mở lại, tính giờ, thanh toán và đóng bill không in.",
+  "capturedAt": "2026-08-02",
+  "testRoom": "<ROOM_NAME>",
+  "testInvoice": "<INVOICE_NUMBER>",
+  "requestCount": 12,
+  "requestSequence": [
+    { "order": 1, "phase": "open-new", "method": "GET", "path": "/pariskimgiang/AddEdit", "recordID": "", "roomID": "<ROOM_ID>" },
+    { "order": 2, "phase": "open-new", "method": "POST", "path": "/pariskimgiang/DataGrid/GetDataSearchData", "purpose": "product-grid" },
+    { "order": 3, "phase": "open-new", "method": "POST", "path": "/pariskimgiang/Service/GridLookupData", "purpose": "lookup-1" },
+    { "order": 4, "phase": "open-new", "method": "POST", "path": "/pariskimgiang/Service/GridLookupData", "purpose": "lookup-2" },
+    { "order": 5, "phase": "open-new", "method": "POST", "path": "/pariskimgiang/Service/GridLookupData", "purpose": "lookup-3" },
+    { "order": 6, "phase": "save-session", "method": "POST", "path": "/pariskimgiang/AddEdit/DoSave?is_ajax=1" },
+    { "order": 7, "phase": "reopen-session", "method": "GET", "path": "/pariskimgiang/AddEdit", "recordID": "", "roomID": "<ROOM_ID>" },
+    { "order": 8, "phase": "reopen-session", "method": "POST", "path": "/pariskimgiang/DataGrid/GetDataSearchData", "purpose": "product-grid" },
+    { "order": 9, "phase": "reopen-session", "method": "POST", "path": "/pariskimgiang/Service/GridLookupData", "purpose": "lookup-1" },
+    { "order": 10, "phase": "reopen-session", "method": "POST", "path": "/pariskimgiang/Service/GridLookupData", "purpose": "lookup-2" },
+    { "order": 11, "phase": "reopen-session", "method": "POST", "path": "/pariskimgiang/Service/GridLookupData", "purpose": "lookup-3" },
+    { "order": 12, "phase": "close-and-pay", "method": "POST", "path": "/pariskimgiang/AddEdit/DoSave?is_ajax=1" }
+  ],
+  "openFormContract": {
+    "query": {
+      "TableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+      "RecordID": "",
+      "Loai": "0",
+      "MaxTab": "0",
+      "NOTITLE": "1",
+      "DBANID": "<ROOM_ID>",
+      "DKHUVUCID": "<AREA_ID>",
+      "is_dialog": "1"
+    },
+    "important": "Website mở lại phiên đang chạy bằng RecordID rỗng cộng DBANID; không truyền invoice ID trong URL. API-only nên dùng ID và LASTSAVEID trả về từ lần Lưu HĐ đầu tiên."
+  },
+  "sessionSave": {
+    "mode": 0,
+    "clientMap": {
+      "TableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+      "ID": "",
+      "Maps": {
+        "DBANID": "<ROOM_ID>",
+        "DKHOXUATID": "<WAREHOUSE_ID>",
+        "NAME": "Tự động",
+        "LASTSAVEID": "",
+        "MODE": 1,
+        "PHUONGTHUCTT": "TM",
+        "TIENHANG": 40000,
+        "TIENGIO": 0,
+        "TIENTHUE": 4000,
+        "TILETHUE": 10,
+        "TONGCONG": 44000
+      },
+      "Grids": [
+        {
+          "Name": "detail",
+          "Data": [
+            {
+              "ID": "<TEMP_LINE_ID>",
+              "DMATHANGID": "<PRODUCT_ID>",
+              "DMATHANG_CODE": "1000001",
+              "SLXUATCHUAQUYDOI": 1,
+              "DONGIA": 40000,
+              "THANHTIEN": 40000
+            }
+          ]
+        }
+      ],
+      "CustomPostTable": [
+        { "Name": "LuuVet", "Data": "<AUDIT_ROWS>" }
+      ]
+    },
+    "response": {
+      "code": 1,
+      "Tag": {
+        "detail": { "<TEMP_LINE_ID>": "<PERSISTED_LINE_ID>" },
+        "ID": "<INVOICE_ID>",
+        "NAME": "<INVOICE_NUMBER>",
+        "LASTSAVEID": "<SESSION_LASTSAVE_ID>"
+      }
+    },
+    "meaning": "Tạo và giữ phiên phòng đang chạy; chưa đóng bill."
+  },
+  "paymentSave": {
+    "mode": 2,
+    "clientMap": {
+      "TableID": "d56b4b85-68c8-44c1-947d-9f3899e55a7c",
+      "ID": "<INVOICE_ID>",
+      "Maps": {
+        "DBANID": "<ROOM_ID>",
+        "DKHOXUATID": "<WAREHOUSE_ID>",
+        "NAME": "<INVOICE_NUMBER>",
+        "LASTSAVEID": "<SESSION_LASTSAVE_ID>",
+        "DIENGIAI": "Xuất bán hàng",
+        "MODE": "1",
+        "PHUONGTHUCTT": "TM",
+        "TIENHANG": 40000,
+        "TIENGIO": 18000,
+        "TIENTHUE": 5800,
+        "TILETHUE": 10,
+        "TONGCONG": 63800,
+        "TIENGIOPHONGCUOI": 18000
+      },
+      "Grids": [
+        {
+          "Name": "detail",
+          "Data": [
+            {
+              "ID": "<PERSISTED_LINE_ID>",
+              "DMATHANGID": "<PRODUCT_ID>",
+              "DMATHANG_CODE": "1000001",
+              "DKHOHANGID": "<WAREHOUSE_ID>",
+              "SLXUAT": 1,
+              "SLTHUCXUAT": 1,
+              "SLXUATCHUAQUYDOI": 1,
+              "DONGIA": 40000,
+              "THANHTIEN": 40000
+            }
+          ]
+        }
+      ],
+      "CustomPostTable": [
+        {
+          "Name": "ThanhToan",
+          "Data": [
+            { "truong": "KHACHDUA", "value": 63800 },
+            { "truong": "TRALAI", "value": 0 }
+          ]
+        },
+        {
+          "Name": "LoaiQuy",
+          "Data": [
+            { "truong": "TIENMAT", "value": 63800 },
+            { "truong": "TIENTHANHTOAN", "value": 63800 }
+          ]
+        }
+      ],
+      "CustomPost": {
+        "MODEQUANLY": 0,
+        "GioClient": "<LOCAL_PAYMENT_DATETIME>",
+        "DVOUCHERID": null,
+        "XUATHOADON": false
+      }
+    },
+    "response": {
+      "code": 1,
+      "Tag": {
+        "detail": {},
+        "ID": "<INVOICE_ID>",
+        "LASTSAVEID": "<FINAL_LASTSAVE_ID>"
+      }
+    },
+    "meaning": "Thanh toán, đóng bill, giải phóng phòng và ghi hóa đơn vào danh sách."
+  },
+  "verifiedOutcome": {
+    "roomReleased": true,
+    "invoiceVisibleInList": true,
+    "invoiceNumber": "<INVOICE_NUMBER>",
+    "grandTotal": 63800,
+    "paymentMethod": "TM",
+    "electronicInvoiceIssued": false
+  },
+  "security": {
+    "containsCookie": false,
+    "containsAuthorization": false,
+    "containsProxyAuthorization": false,
+    "allIdentifiersSanitized": true
+  }
+}

@@ -8,9 +8,26 @@ const accountingTargets = solver.deriveInvoiceTargets(1675300, 588000, 10);
 assert.deepStrictEqual(accountingTargets, {
   preTaxTarget: 1523000,
   vatTarget: 152300,
+  grandReachable: true,
+  calculatedGrand: 1675300,
+  reachableAlternatives: [1675300, 1675299],
   currentHour: 588000,
   goodsTarget: 935000
 });
+
+// Tổng sao kê đã gồm VAT: chia ngược 1,1 rồi tính VAT trên tổng trước thuế.
+assert.strictEqual(solver.statementVat(3000000, 10), 272727);
+assert.deepStrictEqual(solver.deriveInvoiceTargets(3000000, 600000, 10), {
+  preTaxTarget: 2727273,
+  vatTarget: 272727,
+  grandReachable: true,
+  calculatedGrand: 3000000,
+  reachableAlternatives: [3000000, 2999999],
+  currentHour: 600000,
+  goodsTarget: 2127273
+});
+assert.strictEqual(solver.deriveInvoiceTargets(2800000, 0, 10).grandReachable, false);
+assert.deepStrictEqual(solver.deriveInvoiceTargets(2800000, 0, 10).reachableAlternatives, [2799999, 2800001]);
 
 const exact = solver.solveQuantities([
   { code: "A", name: "A", price: 400000, qty: 1 },

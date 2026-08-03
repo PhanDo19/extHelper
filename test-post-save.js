@@ -18,7 +18,15 @@ function extractFunction(name) {
 
 const context = { structuredClone };
 vm.createContext(context);
-vm.runInContext(`${extractFunction("verifySnapshotAgainstPlan")}
+// formatMoney khai báo dạng arrow const nên không dùng extractFunction được.
+function extractConst(name) {
+  const match = source.match(new RegExp(`const ${name} = [^;]+;`));
+  if (!match) throw new Error(`Missing const ${name}`);
+  return match[0];
+}
+
+vm.runInContext(`${extractConst("formatMoney")}
+${extractFunction("verifySnapshotAgainstPlan")}
 ${extractFunction("deductVerifiedStock")}
 ${extractFunction("restoreVerifiedStock")}
 ${extractFunction("reconcileBatchPlanStatus")}

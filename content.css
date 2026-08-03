@@ -171,12 +171,35 @@
 #it-statement-admin table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
 #it-statement-admin th, #it-statement-admin td { border-bottom: 1px solid #e4e9f0; padding: 8px; text-align: left; vertical-align: middle; }
 #it-statement-admin th { position: sticky; top: 0; z-index: 2; background: #eef3f9; }
-#it-statement-admin th:nth-child(1) { width: 16%; }
-#it-statement-admin th:nth-child(2) { width: 43%; }
-#it-statement-admin th:nth-child(3) { width: 14%; text-align: right; }
-#it-statement-admin th:nth-child(4) { width: 12%; }
-#it-statement-admin th:nth-child(5) { width: 15%; }
+#it-statement-admin th:nth-child(1) { width: 15%; }
+#it-statement-admin th:nth-child(2) { width: 27%; }
+#it-statement-admin th:nth-child(3) { width: 16%; }
+#it-statement-admin th:nth-child(4) { width: 13%; text-align: right; }
+#it-statement-admin th:nth-child(5) { width: 14%; }
+#it-statement-admin th:nth-child(6) { width: 15%; }
 #it-statement-admin td.it-money { text-align: right; font-weight: 700; white-space: nowrap; }
+/* Diễn giải chỉ cần đọc lướt; nội dung đầy đủ đã có ở tooltip title. Cắt trên
+   từng dòng con vì ô có cả mô tả lẫn mã tham chiếu. */
+#it-statement-admin td.it-statement-description span,
+#it-statement-admin td.it-statement-description small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#it-statement-admin td.it-statement-description small { color: #61708a; }
+#it-statement-admin td.it-statement-invoice { white-space: normal; }
+#it-statement-admin td.it-statement-invoice small { color: #61708a; }
+#it-statement-admin button.it-open-invoice { margin: 4px 0 0; padding: 4px 8px; font-size: 11px; }
+/* Giao dịch không thể lập hóa đơn: nêu rõ lý do ngay trên dòng. */
+#it-statement-admin tr.it-blocked { background: #fff8f7; }
+#it-statement-admin small.it-blocked-note {
+  display: block;
+  margin-top: 4px;
+  color: #9a241b;
+  line-height: 1.35;
+  white-space: normal;
+}
 #it-statement-admin button { margin: 2px; padding: 7px 9px; white-space: nowrap; font-size: 11px; }
 .it-bank-status { display: inline-block; padding: 3px 7px; border-radius: 999px; background: #edf2f7; font-size: 11px; }
 .it-bank-status.pending { color: #805600; background: #fff3d6; }

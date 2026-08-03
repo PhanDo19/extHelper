@@ -1,5 +1,138 @@
 # Changelog
 
+## 1.14.5 (2026-08-03)
+
+- Sửa lỗi Batch API dừng với `Không tìm thấy phiếu chưa xuất <số phiếu>` dù phiếu vẫn nằm trên grid: danh sách số phiếu "đã dùng" chỉ loại theo `transaction.id`, trong khi số phiếu Batch Review vừa gán mới chỉ nằm ở `plan.invoiceNo` (chỉ được ghi vào `transaction.invoiceNo` SAU khi lưu thành công), nên dòng đang xử lý tự chặn chính nó.
+- Gom số phiếu của các dòng khác từ đủ ba nguồn `invoiceNo`, `pendingPlan.invoiceNo` và `batchApprovedPlan.invoiceNo`, đồng thời luôn loại số phiếu của chính dòng đang xử lý.
+- Áp dụng chung cho cả ba luồng mở lại phiếu: đối soát sau lưu, `Mở và áp dụng phương án`, và `Lưu API & đối soát`.
+- Sàn Tiền giờ danh nghĩa 30/50 phút trong `newInvoicePlanValidationError` cũng bị kẹp theo trần 35%; trước đó phương án vừa tính hợp lệ lại bị chính hàm kiểm tra loại và giao dịch quay về `Lỗi`.
+
+## 1.14.4 (2026-08-03)
+
+- Sửa lỗi hóa đơn từ 500.000đ đến ~942.000đ và sao kê từ 1.000.001đ đến ~1.571.000đ luôn báo `Phương án không có Tiền giờ`: sàn phút (30/50 phút) và trần 35% tổng trước VAT mâu thuẫn nhau trong các dải này nên không còn giá trị Tiền giờ nào hợp lệ.
+- Nền Tiền giờ nay bị kẹp theo trần 35% thay vì cố định theo mốc phút; trần cơ cấu được giữ nguyên vì đây là ràng buộc hình dạng hóa đơn.
+- Áp cùng phép kẹp cho **phiếu đã có sẵn**: nền lấy từ Tiền giờ trên form (ví dụ 600.000đ cho hóa đơn 560.000đ, 900.000đ cho hóa đơn 1.180.000đ) thuộc hóa đơn cũ nên thường vượt trần ngay từ đầu, khiến mọi tổ hợp đều vỡ cả hai điều kiện của cổng kiểm tra cuối.
+- Sàn mềm `maxGoodsAmount` (tỷ lệ tự nhiên 0,8) phải nhường trần 35% khi hai mốc loại trừ nhau, tránh làm rỗng cửa sổ tiền hàng.
+- Sàn phút của khoảng giờ vào/ra đi theo nền đã kẹp, không còn loại oan phiếu chỉ cần ~23 phút.
+- Sửa lỗi solver: tổ hợp có tiền hàng vượt tổng trước VAT (Tiền giờ âm) từng được chấm `hourRangeViolation = 0` và thắng mọi phương án hợp lệ.
+- Phương án trả thêm `hourBaseClamped` và `hourMinuteBase` để đối soát biết vì sao số phút thấp hơn mốc danh nghĩa.
+- Không đổi `CALCULATION_VERSION`; các phương án đã Accept không bị hủy.
+
+## 1.14.3 (2026-08-03)
+
+- Giao dịch có tổng nhỏ hơn 500.000đ dùng quy tắc riêng: đúng 2 chai bia, phần trước VAT còn lại là Tiền giờ.
+- Ưu tiên mã bia đã cấu hình trong rule; nếu chưa có thì tự chọn mã bia đủ tồn và đủ giới hạn 2 chai/hóa đơn.
+- Không áp sàn 30 phút hoặc tỷ lệ Tiền giờ/Tiền hàng thông thường cho nhánh hóa đơn nhỏ; mốc đúng 500.000đ vẫn dùng công thức chung.
+- Không chọn nhầm phụ kiện có chữ bia như `BÌNH RÓT BIA`.
+
+## 1.14.1 (2026-08-02)
+
+- Nâng giới hạn bù Tiền giờ thông thường từ 10% lên 20% so với Tiền giờ nền.
+- Khi phần bù vượt 20%, vẫn chấp nhận phương án nếu Tiền giờ cuối không vượt 35% tổng trước VAT.
+- Đồng bộ rule mới vào solver Batch Review, kiểm tra cuối và màn hình duyệt một phiếu; các phương án theo công thức cũ phải được tính lại.
+
+## 1.14.0 (2026-08-02)
+
+- Nút lưu Batch API xử lý tuần tự cả phiếu hiện có và phiếu cần tạo mới.
+- Phiếu mới chạy trong một tab worker do background mở, không phụ thuộc popup của trang.
+- Tab Batch Review chính chờ giao dịch chuyển `Đã xử lý` rồi mới chạy phiếu kế tiếp, bảo toàn thứ tự reservation tồn kho.
+- Tab worker tự đóng sau khi lưu, đọc lại hóa đơn, đối soát và cập nhật kho thành công.
+- Nếu worker lỗi hoặc quá 90 giây, batch dừng và giữ tab lỗi để người dùng kiểm tra; các phiếu sau chưa được gửi.
+
+## 1.13.1 (2026-08-02)
+
+- Sau khi API hai bước lưu thành công, tự đóng form, mở lại đúng số phiếu từ danh sách và đối soát.
+- Chỉ khi tổng tiền, giờ, VAT và chi tiết hàng khớp mới chuyển giao dịch sang `Đã xử lý` và trừ tồn kho extension.
+- Nếu hậu kiểm thất bại, giữ `Chờ lưu/đối soát`, không trừ kho và cảnh báo không chạy lại API.
+- Bổ sung nút `Đối soát sau lưu & cập nhật kho` cho cả phiếu mới đã lưu ở phiên bản trước.
+
+## 1.13.0 (2026-08-02)
+
+- Tích hợp flow API đã trace: `DoSave mode=0` tạo phiên, sau đó `DoSave mode=2` thanh toán và đóng bill.
+- Truyền tiếp chính xác `Tag.ID`, `Tag.NAME`, `Tag.LASTSAVEID` và ánh xạ ID từng dòng hàng từ phản hồi bước 1 sang bước 2.
+- Đọc danh mục hàng qua API website và chặn khi thiếu ID/đơn vị/giá hoặc tổng chi tiết không khớp phương án.
+- Tiền mặt, khách đưa và tiền thanh toán bằng tổng cộng; trả lại bằng 0; không giảm giá; không phát hành HĐĐT.
+- Ưu tiên `window.formData` ID rỗng của form mới hơn GUID cũ còn trong script trang cha.
+- Chỉ trừ tồn kho và đánh dấu sao kê sau khi đọc lại hóa đơn từ server khớp hoàn toàn.
+
+## 1.10.9 (2026-08-02)
+
+- Sửa công thức VAT theo website: tổng sao kê là giá đã gồm VAT; tổng trước VAT được suy ngược từ `sao kê / 1,1`, VAT bằng `round((tiền hàng + tiền giờ) × 10%)`.
+- Solver chỉ lập phương án khi `tiền hàng + tiền giờ + VAT` khớp tuyệt đối sao kê; tổng không thể biểu diễn do làm tròn được chặn và đưa ra mức gần nhất.
+- Vô hiệu hóa toàn bộ phương án đã Accept theo công thức VAT cũ để bắt buộc tính lại.
+
+## 1.10.8 (2026-08-02)
+
+- Sau khi website tính giờ/mặt hàng xong, đồng bộ lớp hiển thị Tiền giờ, VAT và Tổng cộng theo đúng payload Batch API mà không phát lại change/blur gây website ghi đè.
+- Form phiếu mới vì vậy hiển thị đúng công thức kế toán trước khi gửi: `Tiền hàng + Tiền giờ + VAT 10% sao kê = Tổng sao kê`.
+
+## 1.10.7 (2026-08-02)
+
+- Sửa phiếu mới báo `ID phiếu trong request không hợp lệ`: ưu tiên `window.formData` đang hoạt động và xếp hạng các khối dữ liệu theo RecordID/LASTSAVEID hợp lệ thay vì lấy nhầm formData cũ của trang cha.
+- Không tự sinh GUID giả; nếu website thực sự chưa cấp ID phiếu tạm, extension dừng trước API và hiển thị nguồn ứng viên để trace chính xác.
+
+## 1.10.6 (2026-08-02)
+
+- Phiếu mới chọn khoảng phút mà website thực sự biểu diễn được theo bước 0,01 giờ (6.000đ), thay vì suy giờ ra bằng phép chia có thể rơi vào mức tiền không đạt được trên form.
+- Batch Review hiển thị rõ giờ vào, giờ ra, tổng phút, tiền sinh từ thời gian và phần bù trực tiếp để người dùng kiểm tra trước khi Accept.
+- Tăng phiên bản công thức để các phương án phiếu mới đã Accept bằng cách tính cũ phải được tính lại trước khi lưu.
+- Sửa trạng thái treo khi API lưu phiếu mới thất bại: chỉ đánh dấu đã áp dụng sau khi website trả `code = 1`; lỗi vẫn hiện rõ và phiên có thể thử lại.
+
+## 1.10.5 (2026-08-02)
+
+- Khi tạo phiếu cho giao dịch quá khứ, Batch API đồng bộ ngày hóa đơn, giờ vào, giờ ra và ngày thực hiện trên toàn bộ dòng hàng thay vì giữ ngày hiện tại của form mới.
+- Chỉ dùng `ID` và `LASTSAVEID` lấy từ đúng phiếu nháp vừa mở; chặn payload cũ hoặc thiếu token trước khi gửi để tránh lỗi "HÓA ĐƠN ĐÃ THAY ĐỔI".
+- Giữ `GioClient` là thời điểm gửi request thực tế và bổ sung kiểm tra ngày/giờ bắt buộc trước khi gọi API.
+
+## 1.10.4 (2026-08-02)
+
+- Phiếu mới được phép dùng phần bù tiền giờ nhỏ không quá một bước 6.000đ; giờ vào/ra vẫn phải sinh ra mốc tiền giờ hợp lệ của website.
+- Sau khi người dùng Accept và chọn tạo phiếu mới, extension tự áp dụng mặt hàng rồi gọi API `AddEdit/DoSave` với tổng, VAT và tiền mặt chính xác.
+- API xác nhận thành công thì form được tự đóng; giao dịch giữ trạng thái chờ đối soát để chỉ ghi tồn kho sau khi tìm lại phiếu đã lưu.
+
+## 1.10.3 (2026-08-02)
+
+- Hủy tự động phương án phiếu mới cũ khi tiền giờ không khớp số tiền suy ra từ giờ vào/ra hoặc không theo bước 6.000đ của website.
+- Chặn lại ở ba điểm: khôi phục phiên, dựng Batch Review và trước khi mở tab Bán hàng, nên phương án lỗi không thể tiếp tục áp dụng vào form.
+- Tăng phiên bản công thức để toàn bộ phương án phiếu mới đã Accept trước đây được tính lại thay vì tái sử dụng dữ liệu không khả thi.
+
+## 1.10.2 (2026-08-01)
+
+- Batch Review cho phiếu mới chỉ Accept phương án có tiền giờ khớp đúng bước 6.000đ mà website có thể biểu diễn từ giờ vào/ra.
+- Ngăn trường hợp phương án khớp trong extension nhưng website làm tròn tiền giờ (ví dụ 596.100đ thành 600.000đ) khiến form mới lệch tổng.
+- Giữ mức tối thiểu 50 phút cho sao kê trên 1.000.000đ và 30 phút cho các giao dịch còn lại.
+
+## 1.10.1 (2026-08-01)
+
+- Phiếu mới có tổng sao kê trên 1.000.000đ dùng tiền hát nền tối thiểu 50 phút; tổng từ 1.000.000đ trở xuống giữ mốc 30 phút.
+- Tăng phiên bản công thức để các phương án Batch Review cũ chưa lưu được tự động tính lại theo rule mới.
+
+## 1.10.0 (2026-08-01)
+
+- Đổi công thức kế toán: VAT cố định bằng 10% tổng tiền sao kê; tiền hàng và tiền hát chia phần còn lại của tổng.
+- Giữ tiền hát nền của phiếu hiện có; phiếu mới dùng mốc tối thiểu 30 phút (300.000đ với đơn giá 600.000đ/giờ).
+- Solver ưu tiên tổ hợp hàng khiến tiền hát gần mốc nền nhất và chỉ cho bù tối đa 10% tiền hát nền (không thấp hơn một bước giờ); vượt giới hạn phải tính tổ hợp khác.
+- Xóa luồng lỗi làm tròn VAT 1 đồng/đề xuất đổi tổng sao kê vì không còn phù hợp với VAT cố định theo sao kê.
+- Batch API kiểm tra thêm chính xác trường VAT trước khi gửi request, bên cạnh tiền hàng, tiền hát, tổng và tiền mặt.
+
+## 1.9.12 (2026-08-01)
+
+- Sửa tra cứu mã hàng trong Kendo catalog: đối chiếu mọi trường mã hợp lệ và dùng `data-uid` của dòng DOM làm fallback khi schema model không đầy đủ.
+- Tăng thời gian chờ mỗi trang danh mục từ 1,5 lên 2,5 giây và bổ sung tổng số hàng/trang vào thông báo nếu mã thực sự không tồn tại.
+- Xác nhận thực tế mã `1100019` có ở trang 5/8 của danh mục; Batch API vẫn dừng trước request lưu nếu không dựng được đầy đủ mặt hàng.
+
+## 1.9.11 (2026-08-01)
+
+- Sửa lỗi `Cannot set properties of null (setting 'innerHTML')` khi tạo Batch Review trước khi người dùng từng mở màn hình Giao dịch ngân hàng.
+- Việc đồng bộ trạng thái giao dịch giờ là no-op an toàn khi bảng sao kê chưa được render; phương án Batch Review không còn bị báo đỏ sau khi đã tính xong.
+- Ghi stack trace có nhãn vào console nếu Batch Review gặp lỗi khác để lần kiểm tra sau xác định đúng nguồn ngay lập tức.
+
+## 1.9.10 (2026-08-01)
+
+- Chặn đúng cảnh báo Kendo bất đồng bộ `kendoDropDownList before it is initialized` trong suốt vòng đời trang, thay vì chỉ chặn trong lúc đổi bộ lọc.
+- Chuyển cảnh báo kỹ thuật này thành trạng thái nội tuyến trong extension để Batch Review không bị treo; mọi alert nghiệp vụ khác của website vẫn được giữ nguyên.
+- Bổ sung kiểm thử nhận diện đúng lỗi Kendo và bảo đảm alert hợp lệ không bị chặn.
+
 ## 1.9.0 (2026-07-30)
 
 - Thêm `Lưu API & đối soát` cho từng phương án đã Accept và nút chạy toàn bộ hàng đợi đã Accept.
@@ -296,3 +429,9 @@
 - Đồng bộ ngay trạng thái giao dịch đã đối soát sang Batch Review.
 - Khi extension được tải lại, trạng thái Batch Review được đối chiếu lại với trạng thái sao kê để không hiển thị sai `Đã Accept` cho giao dịch đã hoàn tất.
 - Bổ sung kiểm thử hồi quy cho luồng `Đã Accept` → `Đã xử lý`.
+# 1.14.2
+
+- Luồng **Lưu API** cho phiếu đã Accept không còn thay mặt hàng hoặc tiền giờ qua Kendo UI trước khi lưu.
+- Mở phiếu chỉ để lấy đúng ID/LASTSAVEID; danh mục sản phẩm được đọc trực tiếp qua API và toàn bộ `detail` được dựng trong bộ nhớ trước khi gọi `DoSave`.
+- Nếu dựng payload hoặc gọi API thất bại, form được đóng và trạng thái quay lại **Đã Accept**; không trừ kho, không đánh dấu sao kê đã xử lý.
+- Chỉ chuyển sang **Chờ lưu/đối soát** sau khi website xác nhận lưu API thành công.
