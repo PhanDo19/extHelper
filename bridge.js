@@ -2552,6 +2552,9 @@
       else if (detail.action === "createAndPayFreshInvoiceViaApi") result = await createAndPayFreshInvoiceViaApi(detail);
       else if (detail.action === "armApiTrace") result = armApiTrace();
       else if (detail.action === "getApiTrace") result = getApiTrace();
+      // Cho content script biết trang hiện tại đã có grid danh sách phiếu chưa,
+      // để nó tự điều hướng về màn hình danh sách trước khi đối soát sau lưu.
+      else if (detail.action === "hasInvoiceList") result = { present: Boolean(invoiceListElement()) };
       else throw new Error("Thao tác không được hỗ trợ.");
       window.dispatchEvent(new CustomEvent(RESPONSE, { detail: { id: detail.id, ok: true, result } }));
     } catch (error) {

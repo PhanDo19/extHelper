@@ -304,6 +304,26 @@
     return "";
   }
 
+  // Phiếu mới được tạo từ sơ đồ phòng (màn hình Bán hàng), nhưng bước đối soát
+  // sau lưu lại cần grid "danh sách Bán hàng" để mở lại phiếu từ server. Hai màn
+  // hình này khác nhau: sau khi lưu xong, tab worker vẫn đứng ở sơ đồ phòng nên
+  // findInvoiceCandidates ném "Hãy mở màn hình danh sách Bán hàng trước." và
+  // giao dịch kẹt ở trạng thái Chờ lưu/đối soát dù hóa đơn đã lưu thành công.
+  async function ensureInvoiceListScreen(timeout = 12000) {
+    if (await request("hasInvoiceList").then(r => r?.present).catch(() => false)) return true;
+    const listAnchor = Array.from(document.querySelectorAll("a"))
+      .find(anchor => /^Bán hàng$/i.test((anchor.innerText || "").trim()) && anchor.href);
+    if (!listAnchor) return false;
+    listAnchor.click();
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const present = await request("hasInvoiceList").then(r => r?.present).catch(() => false);
+      if (present) return true;
+    }
+    return false;
+  }
+
   async function autoOpenIdleRoomInvoiceForm() {
     if (!pendingNewInvoice || !isSalesWorkspacePage()) return { opened: false, roomName: "" };
     const bookings = roomBookingsOnDate(pendingNewInvoice.transactionDate, pendingNewInvoice.transactionId);
@@ -409,6 +429,18 @@
     }
 
     await new Promise(resolve => setTimeout(resolve, 450));
+    // Tab worker vừa tạo phiếu từ sơ đồ phòng nên chưa có grid danh sách. Phải
+    // chuyển về màn hình danh sách Bán hàng thì bước đọc lại từ server bên dưới
+    // mới chạy được.
+    const listReady = await ensureInvoiceListScreen();
+    if (!listReady) {
+      setStatus(
+        `Da luu ${apiSaved.invoiceNo} nhung chua mo duoc man hinh danh sach Ban hang de doc lai. ` +
+        "Hay mo danh sach Ban hang roi bam Doi soat sau luu; khong chay lai API.",
+        "warn"
+      );
+      return true;
+    }
     const apiBatchIndex = batchPlans.findIndex(entry =>
       String(entry.transactionId) === String(transaction.id)
     );
@@ -2968,6 +3000,9 @@
       // Do not trust the form that happens to be open: reopen the invoice
       // from the list so reconciliation only commits data already persisted
       // by the website's own Lưu HĐ action.
+      if (!await ensureInvoiceListScreen()) {
+        throw new Error("Chưa mở được màn hình danh sách Bán hàng để đọc lại phiếu; hãy mở danh sách rồi thử lại.");
+      }
       const usedInvoiceNos = otherRowsInvoiceNos(transaction, plan);
       const found = await request("findInvoiceCandidates", {
         dateKey: transaction.transactionDate,

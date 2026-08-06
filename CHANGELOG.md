@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.14.6 (2026-08-03)
+
+- Sửa lỗi sau khi `Lưu API ... phiếu đã Accept` tạo phiếu mới xong thì không tự mở danh sách hóa đơn để đối soát: phiếu mới được tạo từ **sơ đồ phòng**, còn bước đọc lại từ server cần grid **danh sách Bán hàng** — hai màn hình khác nhau và không có bước chuyển giữa chúng.
+- Thêm `ensureInvoiceListScreen()` tự điều hướng về màn hình danh sách rồi chờ grid dựng xong trước khi đối soát; nếu không tới được thì báo rõ thay vì ném `Hãy mở màn hình danh sách Bán hàng trước.`
+- Áp dụng cho cả luồng đối soát tự động sau lưu API lẫn nút `Đối soát sau lưu` thủ công.
+- Bridge nhận thêm action `hasInvoiceList` để content script kiểm tra trạng thái màn hình hiện tại.
+
 ## 1.14.5 (2026-08-03)
 
 - Sửa lỗi Batch API dừng với `Không tìm thấy phiếu chưa xuất <số phiếu>` dù phiếu vẫn nằm trên grid: danh sách số phiếu "đã dùng" chỉ loại theo `transaction.id`, trong khi số phiếu Batch Review vừa gán mới chỉ nằm ở `plan.invoiceNo` (chỉ được ghi vào `transaction.invoiceNo` SAU khi lưu thành công), nên dòng đang xử lý tự chặn chính nó.

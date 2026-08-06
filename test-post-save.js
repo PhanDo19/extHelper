@@ -123,4 +123,56 @@ if (context.reconcileBatchPlanStatus("needs_new_invoice", "pending") !== "needs_
   throw new Error("Non-final transaction status overwrote the Batch Review planning status");
 }
 
-console.log("post-save verification: OK");
+// Phiếu mới được tạo từ sơ đồ phòng, còn bước đối soát sau lưu cần grid danh
+// sách Bán hàng. Nếu không tự điều hướng thì findInvoiceCandidates ném "Hãy mở
+// màn hình danh sách Bán hàng trước." và giao dịch kẹt ở Chờ lưu/đối soát dù
+// hóa đơn đã lưu thành công.
+const navBox = { setTimeout, console };
+vm.createContext(navBox);
+// extractFunction cắt từ "function <tên>(" nên mất tiền tố async; thêm lại.
+vm.runInContext(`async ${extractFunction("ensureInvoiceListScreen")}
+this.ensureInvoiceListScreen = ensureInvoiceListScreen;`, navBox);
+
+async function checkInvoiceListNavigation() {
+  // Trường hợp 1: đang ở sơ đồ phòng, có link "Bán hàng" -> phải bấm và chờ grid.
+  let clicked = 0;
+  let listPresent = false;
+  navBox.request = async action => {
+    if (action !== "hasInvoiceList") throw new Error(`Unexpected action ${action}`);
+    return { present: listPresent };
+  };
+  navBox.document = {
+    querySelectorAll: () => [{
+      innerText: "Bán hàng",
+      href: "http://example/list",
+      click() { clicked += 1; listPresent = true; }
+    }]
+  };
+  if (!(await navBox.ensureInvoiceListScreen(3000))) {
+    throw new Error("Phải điều hướng được về màn hình danh sách Bán hàng.");
+  }
+  if (clicked !== 1) throw new Error(`Phải bấm đúng một lần vào link Bán hàng, đang là ${clicked}.`);
+
+  // Trường hợp 2: đã ở sẵn danh sách -> không được điều hướng lại.
+  clicked = 0;
+  listPresent = true;
+  if (!(await navBox.ensureInvoiceListScreen(3000))) {
+    throw new Error("Đang ở sẵn danh sách thì phải trả về true ngay.");
+  }
+  if (clicked !== 0) throw new Error("Đã ở danh sách rồi thì không được bấm điều hướng lại.");
+
+  // Trường hợp 3: không có link nào -> báo thất bại thay vì treo.
+  clicked = 0;
+  listPresent = false;
+  navBox.document = { querySelectorAll: () => [] };
+  if (await navBox.ensureInvoiceListScreen(1000)) {
+    throw new Error("Không tìm thấy link Bán hàng thì phải trả về false.");
+  }
+}
+
+checkInvoiceListNavigation().then(() => {
+  console.log("post-save verification: OK");
+}, error => {
+  console.error(error);
+  process.exit(1);
+});
