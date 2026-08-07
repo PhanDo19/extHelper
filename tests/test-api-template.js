@@ -1,7 +1,8 @@
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 
-const source = fs.readFileSync("api-template.js", "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "api-template.js"), "utf8");
 const context = { URL, URLSearchParams };
 context.globalThis = context;
 vm.createContext(context);

@@ -1,5 +1,6 @@
 const assert = require("assert");
-const solver = require("./solver.js");
+const path = require("path");
+const solver = require(path.join(__dirname, "..", "solver.js"));
 
 assert.strictEqual(solver.deriveGoodsTarget(935000, 1675300, 1675300, 10), 935000);
 assert.strictEqual(solver.deriveGoodsTarget(935000, 1675300, 1785300, 10), 1035000);
@@ -156,8 +157,8 @@ assert.strictEqual(
   "realistic plan must still reconcile exactly before VAT"
 );
 
-require("./inventory-data.js");
-const mappingEngine = require("./mapping-engine.js");
+require(path.join(__dirname, "..", "inventory-data.js"));
+const mappingEngine = require(path.join(__dirname, "..", "mapping-engine.js"));
 const realCandidates = mappingEngine.buildInventory(global.InvoiceInventoryData)
   .map(stock => {
     const stockQty = Math.max(0, Math.floor(Number(stock.availableQty) || 0));

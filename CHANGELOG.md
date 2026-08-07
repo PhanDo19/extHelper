@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.16.0 (2026-08-07)
+
+- **Xuất kho đã phát hành nay ra file Excel** thay cho JSON, để kế toán mở và quản lý trực tiếp. Cột: `Mã phiếu`, `Ngày`, `Số hóa đơn`, `Mã hàng`, `Tên hàng`, `Tên hàng kho`, `Số lượng`, `Giá tiền`, `Thành tiền` — mỗi dòng hàng một dòng Excel.
+- Thêm `xlsx-writer.js`: ghi `.xlsx` thật (không phải CSV đổi đuôi) mà **không cần thư viện ngoài** — CSP của extension chặn CDN. XLSX là ZIP chứa XML; dùng phương thức `stored` nên chỉ cần CRC32, không cần bộ nén. `Số lượng`/`Giá tiền`/`Thành tiền` ghi dưới dạng ô số nên Excel tự tính tổng; dòng tiêu đề được cố định và bật sẵn AutoFilter.
+- Cột `Tên hàng kho` lấy từ ánh xạ kho ↔ web (chỉ ánh xạ `confirmed`). Mã web nhận tồn từ **nhiều dòng kho** (ví dụ `1000010` gom từ `DECUOI70`, `DECUOI60`, `HATDECUOIRM`) được ghép tất cả tên kho vào một ô và **giữ nguyên số lượng** — extension không biết hóa đơn thực tế trừ từ dòng kho nào, nên không chia nhỏ số lượng theo phỏng đoán; tổng luôn khớp hóa đơn và kế toán tự quyết định trừ ở đâu.
+- Hóa đơn chưa có mặt hàng không sinh dòng nào trong file, nhưng được đếm và cảnh báo sau khi xuất. Nếu *tất cả* hóa đơn đều thiếu mặt hàng thì báo lỗi thay vì tạo file rỗng.
+- Thêm kênh `invoiceTarget.downloadBinary` cho file nhị phân (thông điệp tới background chỉ chuyển được JSON thuần nên nội dung đi qua base64). Kênh này có allowlist tên file riêng và kiểm tra chuỗi base64 hợp lệ; tên file lạ hay dữ liệu sai định dạng đều bị chặn.
+- Bỏ `XuatKho_PhatHanh_*.json` khỏi allowlist của kênh JSON vì luồng đó không còn dùng.
+- Thêm `test-xlsx-writer.js` (gồm kiểm tra CRC32 theo vector chuẩn, ZIP hợp lệ, XML cân bằng thẻ và escape đúng).
+
+## 1.15.3 (2026-08-07)
+
+- **Sửa lỗi nút "Xuất kho đã phát hành" luôn báo `Không xuất được file hạch toán: Tên file trạng thái tồn không hợp lệ.`** dù sổ phát hành đã có dữ liệu. Lỗi có từ 1.15.0, tức là nút này chưa từng chạy được.
+- Nguyên nhân: `background.js` chỉ cho tải xuống tên file khớp `TonKho_ParisKimGiang_*.json` hoặc `invoice-api-trace-*.json`. Khi thêm tính năng xuất file hạch toán ở 1.15.0, `content.js` gửi tên `XuatKho_PhatHanh_<ngày>_<giờ>.json` nhưng allowlist không được mở rộng theo, nên service worker chặn mọi lần xuất. Bản thân sổ phát hành và payload đều đúng — chỉ bước tải xuống bị chặn.
+- Thêm `XuatKho_PhatHanh_[0-9_-]+\.json` vào allowlist. Allowlist vẫn giữ nguyên vai trò chặn path traversal (`../bad.json`) và tên file tùy ý.
+- Thông báo lỗi nêu luôn tên file bị từ chối, thay vì chỉ nói "tên file trạng thái tồn" — vốn gây hiểu nhầm vì kênh tải xuống này nay dùng chung cho ba loại file.
+- `test-background.js` thêm ca kiểm tra tên file `XuatKho_PhatHanh_*` qua được allowlist.
+
+## 1.15.2 (2026-08-06)
+
+- `AddEdit/DoSave` nay gui kem `PHUONGTHUCTT: "TM/CK"` thay cho `"TM"`: phiếu do extension lập đều bắt nguồn từ giao dịch chuyển khoản trong sao kê.
+- Áp dụng cho **cả hai** luồng lưu: sửa phiếu có sẵn (`buildCurrentSavePayload` trước đây không đặt trường này nên giữ nguyên giá trị cũ của form) và tạo phiếu mới (`createAndPayFreshInvoiceViaApi`).
+- `validateSavePayload` chặn payload sai phương thức, nhưng chỉ với payload do extension dựng (`expectsPaymentMethod`). Payload bắt được từ nút **Lưu** của website là do website tạo và vẫn mang `"TM"`, không bị chặn nhầm.
+- Thêm `test-payment-method.js`.
+
+## 1.15.1 (2026-08-06)
+
+- **Sửa lỗi treo ở "đang phát hành"**: hóa đơn phát hành thành công trên website nhưng extension không nhận được phản hồi và không cập nhật gì. Bridge chạy ở MAIN world còn content script ở isolated world, nên `detail` của `CustomEvent` bị structured-clone khi đi qua ranh giới; giá trị không clone được (dòng lưới Kendo còn giữ hàm) làm `dispatchEvent` **ném lỗi ngay trong khối `try`** của handler — không phản hồi nào được gửi và `await request(...)` treo cho tới khi hết thời gian chờ.
+- Thêm `respond()`: làm sạch payload bằng `plainClone()` trước khi gửi, và có nhánh dự phòng gửi lỗi mô tả được nếu vẫn không gửi được. Không request nào còn có thể không có phản hồi.
+- Mất phản hồi **không** còn bị coi là chưa phát hành: sau mỗi hóa đơn lỗi, extension đọc lại danh sách để lấy trạng thái thật; nếu server đã phát hành thì ghi sổ và báo rõ, tránh người dùng bấm phát hành lại một hóa đơn đã có.
+- Thông báo hết thời gian chờ nêu rõ thao tác và số giây thay vì `Trang không phản hồi.`
+- Thêm nút **Đồng bộ hóa đơn đã phát hành**: ghi bổ sung vào sổ hạch toán các hóa đơn đã phát hành trên website nhưng chưa có trong sổ (phát hành tay, hoặc do lần phát hành trước mất phản hồi).
+- Danh sách phát hành **chỉ hiện hóa đơn thuộc danh sách giao dịch** (đã gắn với một dòng sao kê qua `invoiceNo`, `pendingPlan` hoặc `batchApprovedPlan`). Phiếu ngoài giao dịch thuộc nghiệp vụ khác nên bị ẩn mặc định; muốn xem phải tích ô `Hiện N phiếu ngoài giao dịch`, và khi chọn chúng thì hộp thoại xác nhận nêu rõ số phiếu ngoài giao dịch trước khi phát hành.
+- Chỉ chọn được các dòng đang hiện, tránh phát hành nhầm dòng đã bị ẩn khỏi bộ lọc.
+
+## 1.15.0 (2026-08-06)
+
+- Thêm sub-tab **Phát hành hóa đơn** ngay trong tab **Giao dịch ngân hàng**: tải danh sách hóa đơn điện tử theo khoảng ngày, tích chọn nhiều dòng và phát hành hàng loạt sau **một** hộp thoại xác nhận cho cả lô, thay cho thao tác bấm `PHÁT HÀNH` + 2 hộp thoại cho từng dòng trên website.
+- Mặt hàng để hạch toán lấy từ **sổ đối soát sau lưu** — số liệu này đã được kiểm tra lại với phiếu trên website trước khi trừ tồn, nên không cần mở lại phiếu, không phụ thuộc màn hình đang mở và chạy tức thì. Chỉ hóa đơn không có trong sổ mới phải mở lại phiếu để đọc, và khi đó mới cần màn hình danh sách Bán hàng.
+- Bảng phát hành hiển thị sẵn mặt hàng lấy từ sổ đối soát trước khi phát hành, kèm nhãn nguồn (`sổ đối soát` / `đã ghi sổ`), để thấy ngay hóa đơn nào sẽ thiếu số liệu hạch toán.
+- Thiếu màn hình danh sách Bán hàng không còn chặn cả lô: chỉ cảnh báo trong hộp thoại xác nhận số hóa đơn sẽ không có mặt hàng.
+- Bridge gọi thẳng API website theo đúng thứ tự: `HoaDonDienTu/LayDuLieu` → `kiemTraThongTin?is_ajax=1` → `phatHanhHoaDon?is_ajax=1`.
+- Hai API phát hành trả HTTP 200 cả khi nghiệp vụ từ chối, nên kết quả được đọc theo `code`/`message` trong body giống `DoSave`; body thành công nhưng thiếu Số HĐ sẽ được xác nhận lại bằng cách đọc lại danh sách thay vì báo thành công mơ hồ.
+- `kiemTraThongTin` cùng dạng `code/message`, `Tag` là HTML xem trước thông tin người mua. Với khách lẻ toàn bộ trường để trống nhưng vẫn `code: 1` — đây là hợp lệ và không được chặn, nếu không mọi hóa đơn khách lẻ đều không phát hành được. Bước kiểm tra chỉ chặn khi `code != 1`.
+- `phatHanhHoaDon` trả `Tag` là **chuỗi HTML** để đổ thẳng vào hộp thoại của website (`"Số HĐ: 2036</br>Mã CQT: …</br>Ký hiệu: …</br>Mã tra cứu: …</br>Link tra cứu: …"`), không phải object. `parseIssuedInvoiceTagHtml()` tách theo nhãn (bỏ dấu) nên không phụ thuộc thứ tự dòng, và lấy lại nguyên URL vì nhãn `Link tra cứu:` bị cắt ở dấu `:` đầu tiên. Vẫn chấp nhận `Tag` dạng object phòng khi website đổi kiểu trả về.
+- Mặt hàng + số lượng của hóa đơn được đọc **trước** khi phát hành: nếu bước đọc hỏng thì chưa có gì thay đổi trên hệ thống, và số liệu hạch toán không phụ thuộc vào phiếu đã bị khóa sau phát hành.
+- Khi phải đọc lại từ phiếu, dùng đúng đường extension đã mở phiếu từ trước: nhấp đúp dòng trên danh sách Bán hàng → `scan()` đọc lưới Kendo đang mở → đóng form. Không fetch HTML trang `AddEdit` vì trang đó được dựng bằng script client nên HTML thô không chứa sẵn dòng hàng.
+- Tách `openInvoiceRowForReading()` khỏi `openInvoiceCandidate()`: luồng chỉ-đọc dùng lại phần thao tác mở phiếu mà **không** nới lỏng ràng buộc "Chưa xuất hóa đơn" vốn để bảo vệ luồng lập/sửa phương án.
+- Phiếu mở ra để đọc luôn được đóng lại trong `finally`, kể cả khi đọc lỗi; nếu website mở nhầm số phiếu khác thì dừng ngay thay vì ghi nhầm số liệu.
+- `hasInvoiceList` chỉ được gọi khi thực sự có hóa đơn thiếu trong sổ đối soát, nên luồng thường gặp (hóa đơn do extension lập) không cần màn hình nào khác.
+- Mỗi hóa đơn phát hành xong được ghi sổ ngay (`invoiceTargetIssuedInvoices`), nên lô dừng giữa chừng vẫn giữ đủ số liệu phần đã chạy. Sổ khóa theo `invoiceId`: phát hành lại hoặc chạy lại lô chỉ ghi đè, không cộng dồn số lượng.
+- Hóa đơn đã có Số HĐ hoặc đã hủy không thể được chọn để phát hành lại.
+- Tab Kho có nút **Xuất kho đã phát hành**: xuất JSON gồm tổng số lượng theo mã hàng và chi tiết từng hóa đơn để kế toán hạch toán. File không chứa sao kê, ánh xạ hay danh mục web.
+- Nút **Thử đọc mặt hàng** cho phép kiểm tra riêng bước đọc chi tiết trước khi phát hành thật; hóa đơn chưa đọc được mặt hàng được cảnh báo cả khi phát hành lẫn khi xuất file.
+- Gom logic chuyển màn hình của panel vào `applyPanelScreen()`; trước đó mỗi màn hình tự ẩn/hiện các màn hình còn lại nên thêm màn hình mới phải sửa ở 4 chỗ.
+- Thêm `issued-invoices.js` + `test-issued-invoices.js`.
+
 ## 1.14.6 (2026-08-03)
 
 - Sửa lỗi sau khi `Lưu API ... phiếu đã Accept` tạo phiếu mới xong thì không tự mở danh sách hóa đơn để đối soát: phiếu mới được tạo từ **sơ đồ phòng**, còn bước đọc lại từ server cần grid **danh sách Bán hàng** — hai màn hình khác nhau và không có bước chuyển giữa chúng.

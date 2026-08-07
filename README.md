@@ -52,6 +52,36 @@ Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
 8. Với dòng `needs_new_invoice`, bấm **Mở tab Bán hàng mới để tạo phiếu**. Tab danh sách được giữ nguyên; tab mới tự khôi phục ngày, tổng mục tiêu, diễn giải giao dịch và Batch Review.
 9. Xử lý tuần tự từng dòng đã Accept: extension mở đúng phiếu, áp dụng phương án; người dùng kiểm tra rồi bấm **Lưu HĐ**.
 10. Mở lại phiếu và đối soát sau lưu để trừ tồn kho chính thức.
+11. Vào tab **Giao dịch ngân hàng** → sub-tab **Phát hành hóa đơn**, chọn khoảng ngày, tích các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô.
+12. Sang tab Kho bấm **Xuất kho đã phát hành** để lấy file JSON hạch toán gửi kế toán.
+
+## Phát hành hóa đơn điện tử
+
+Sub-tab **Phát hành hóa đơn** nằm trong tab **Giao dịch ngân hàng**, thay cho thao tác thủ công trên website (bấm `PHÁT HÀNH` rồi xác nhận hai hộp thoại cho từng dòng).
+
+- Danh sách **chỉ hiện hóa đơn thuộc danh sách giao dịch** (đã gắn với một dòng sao kê). Phiếu ngoài giao dịch là của nghiệp vụ khác nên bị ẩn; muốn xem thì tích ô `Hiện N phiếu ngoài giao dịch`, và nếu chọn chúng thì hộp thoại xác nhận sẽ nêu rõ.
+- Mỗi hóa đơn chạy đúng thứ tự website dùng: lấy mặt hàng → `kiemTraThongTin` → `phatHanhHoaDon`.
+- Mặt hàng lấy từ **sổ đối soát sau lưu** (bước 10). Số liệu này đã được kiểm tra lại với phiếu trên website trước khi trừ tồn, nên không cần mở lại phiếu và không phụ thuộc màn hình đang mở. Bảng hiển thị sẵn mặt hàng kèm nhãn nguồn để bạn kiểm tra trước khi phát hành.
+- Hóa đơn **không có trong sổ đối soát** (không do extension lập) sẽ được mở lại để đọc mặt hàng — bước này cần màn hình danh sách Bán hàng đúng ngày. Nếu chưa mở, extension vẫn phát hành nhưng cảnh báo trước rằng các hóa đơn đó sẽ thiếu số liệu hạch toán.
+- Nút **Thử đọc mặt hàng** kiểm tra riêng bước lấy mặt hàng, không phát hành gì.
+- Nút **Đồng bộ hóa đơn đã phát hành** ghi bổ sung vào sổ hạch toán những hóa đơn đã phát hành trên website nhưng chưa có trong sổ (phát hành tay, hoặc lần phát hành trước bị mất phản hồi).
+- Nếu một hóa đơn báo lỗi, extension đọc lại danh sách để xác nhận: server đã phát hành thì vẫn ghi sổ và báo rõ, nên **đừng bấm phát hành lại** khi thấy báo lỗi — hãy xem dòng chi tiết bên dưới trước.
+- Chỉ hóa đơn chưa có Số HĐ và chưa hủy mới chọn được. Hóa đơn đã phát hành không thể phát hành lại từ extension, và extension không tự hủy hóa đơn.
+- Lô chạy tuần tự; hóa đơn lỗi được liệt kê riêng và không chặn các hóa đơn còn lại.
+- Mỗi hóa đơn thành công được ghi sổ ngay, nên dừng giữa chừng vẫn giữ đủ số liệu phần đã chạy.
+- Sổ phát hành khóa theo ID hóa đơn: chạy lại lô chỉ ghi đè, không cộng dồn số lượng.
+
+## File hạch toán (Excel)
+
+Nút **Xuất kho đã phát hành (Excel)** ở tab Kho tạo file `.xlsx`, mỗi dòng hàng một dòng:
+
+| Mã phiếu | Ngày | Số hóa đơn | Mã hàng | Tên hàng | Tên hàng kho | Số lượng | Giá tiền | Thành tiền |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+- `Số lượng`, `Giá tiền`, `Thành tiền` là ô số nên Excel tự tính tổng; dòng tiêu đề được cố định và có sẵn AutoFilter.
+- `Tên hàng kho` lấy từ ánh xạ kho ↔ web đã xác nhận. Mã web nhận tồn từ nhiều dòng kho sẽ ghép tất cả tên kho vào một ô và **giữ nguyên số lượng** — extension không biết hóa đơn thực tế trừ từ dòng kho nào, nên tổng luôn khớp hóa đơn và kế toán tự quyết định trừ ở đâu.
+- Hóa đơn chưa có mặt hàng không xuất ra dòng nào nhưng được cảnh báo sau khi xuất.
+- File chỉ chứa số liệu hạch toán: không có sao kê, ánh xạ hay danh mục web.
 
 ## Quy tắc dữ liệu
 
@@ -65,32 +95,59 @@ Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
 - Trần mặc định: hoa quả 1, rượu vang 1, thuốc lá 2, đồ khô 2–4, nước 6, bia 12; riêng Mắc Ca tối đa 2 hộp.
 - Accept chỉ cập nhật form website, chưa thay đổi tồn. Nếu sửa lại phiếu đã ghi sổ, lần Đối soát sau lưu kế tiếp sẽ hoàn phương án cũ rồi trừ phương án mới trong cùng một giao dịch lưu.
 
+## Cấu trúc thư mục
+
+Toàn bộ file nguồn của extension nằm ở thư mục gốc, đúng như `manifest.json`
+tham chiếu. Các thư mục con chỉ chứa thứ không được đóng gói vào extension:
+
+```
+.                 file nguồn extension (manifest.json, content.js, bridge.js, ...)
+tests/            test chạy bằng node; `node tests/run-all.js` chạy tất cả
+docs/             tài liệu luồng nghiệp vụ và báo cáo
+fixtures/         dữ liệu mẫu đã ẩn danh dùng cho test
+scripts/          tiện ích Python dựng/kiểm tra workbook đối chiếu
+data/             dữ liệu thật (sao kê, tồn kho, trace API) — không commit
+.archive/         bản backup và log cũ — không commit
+```
+
+`data/` và `.archive/` được liệt kê trong `.gitignore` vì chứa dữ liệu khách hàng.
+
 ## Cấu trúc mã
 
 - `xlsx-reader.js`: đọc trực tiếp XLSX trong Chrome, không cần backend.
 - `mapping-store.js`: lưu snapshot và ánh xạ đã duyệt.
 - `mapping-engine.js`: chuẩn hóa, đề xuất, kiểm tra và tổng hợp tồn theo mã web.
 - `solver.js`: tìm tổ hợp số lượng trong giới hạn tồn.
-- `bridge.js`: đọc dữ liệu phiếu từ trang/Kendo Grid.
+- `bridge.js`: đọc dữ liệu phiếu từ trang/Kendo Grid và gọi API phát hành hóa đơn điện tử.
+- `issued-invoices.js`: sổ hóa đơn đã phát hành và tổng hợp mặt hàng cho file hạch toán.
+- `xlsx-writer.js`: ghi file `.xlsx` trực tiếp trong Chrome, không cần thư viện ngoài.
 - `content.js`: giao diện nhập kho, duyệt ánh xạ và tính phương án.
 - `PROJECT_SPEC.md`: yêu cầu nghiệp vụ bắt buộc cho các bước phát triển tiếp theo.
 
 ## Kiểm thử
+
+Chạy toàn bộ test:
+
+```powershell
+node tests/run-all.js
+```
+
+Chạy riêng một test (chạy được từ thư mục bất kỳ):
+
+```powershell
+node tests/test-solver.js
+```
+
+Kiểm tra cú pháp các file nguồn:
 
 ```powershell
 node --check content.js
 node --check xlsx-reader.js
 node --check mapping-store.js
 node --check mapping-engine.js
-node test-mapping.js
-node test-solver.js
-node test-bank-statement.js
-node test-post-save.js
-node test-batch-review.js
-node test-ui-session.js
 ```
 
-Chi tiết Batch Review xem tại `BATCH_REVIEW.md`.
+Chi tiết Batch Review xem tại `docs/BATCH_REVIEW.md`.
 
 ## Bước tiếp theo
 

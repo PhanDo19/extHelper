@@ -1,7 +1,8 @@
 const fs = require("fs");
 const vm = require("vm");
+const path = require("path");
 
-const source = fs.readFileSync("bridge.js", "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 
 for (const alertGuard of [
   "function isKnownTransientKendoAlert(message)",

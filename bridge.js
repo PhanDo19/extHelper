@@ -1477,12 +1477,20 @@
   }
 
   async function openInvoiceCandidate(uid, invoiceNo) {
+    const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
+      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Chưa xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
+    // Luồng lập/sửa phương án chỉ được chạm vào phiếu chưa xuất hóa đơn.
+    if (!unissuedRadio?.checked) throw new Error('Chỉ được tự mở khi bộ lọc "Chưa xuất hóa đơn" đang được chọn.');
+    return openInvoiceRowForReading(uid, invoiceNo);
+  }
+
+  // Phần thao tác mở phiếu, tách riêng để luồng chỉ-đọc (đọc mặt hàng trước khi
+  // phát hành) dùng lại mà không phải nới lỏng ràng buộc "Chưa xuất hóa đơn"
+  // của luồng lập phương án.
+  async function openInvoiceRowForReading(uid, invoiceNo) {
     const initial = await waitForInvoiceListRow(invoiceNo, uid);
     const grid = initial.grid;
     if (!grid) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
-    const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
-      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Chưa xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
-    if (!unissuedRadio?.checked) throw new Error('Chỉ được tự mở khi bộ lọc "Chưa xuất hóa đơn" đang được chọn.');
     const row = initial.row;
     if (!row) throw new Error("Phiếu không còn trong danh sách hiện tại. Hãy tìm lại.");
     await new Promise(resolve => setTimeout(resolve, 350));
@@ -1607,6 +1615,9 @@
     return { changed, snapshot: scan() };
   }
 
+  // Phieu do extension lap deu bat nguon tu giao dich chuyen khoan trong sao ke,
+  // nen phuong thuc thanh toan ghi la TM/CK thay vi TM.
+  const INVOICE_PAYMENT_METHOD = "TM/CK";
   const SALES_TABLE_ID = "d56b4b85-68c8-44c1-947d-9f3899e55a7c";
   const PRODUCT_GRID_TABLE_ID = "c07a4b54-e177-40d9-b077-c140fd4641d9";
   const SALES_FORM_ID = "aaf252bb-ed11-4077-8852-5e453a6881a3";
@@ -1935,6 +1946,12 @@
         money(fields.TRALAI) !== 0) {
       throw new Error("Tien mat/khach dua/tien thanh toan chua bang tong cong.");
     }
+    // Chi kiem tra voi payload do extension tu dung. Payload bat duoc tu nut Luu
+    // cua website la do website tao nen giu nguyen phuong thuc cua no.
+    if (expected?.expectsPaymentMethod &&
+        String(fields.PHUONGTHUCTT || "") !== INVOICE_PAYMENT_METHOD) {
+      throw new Error(`Phuong thuc thanh toan trong request la "${fields.PHUONGTHUCTT || "trong"}", phai la "${INVOICE_PAYMENT_METHOD}".`);
+    }
 
     const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey);
     const expectedCheckIn = parseDateTime(expected?.checkIn);
@@ -2012,7 +2029,9 @@
       TIENMAT: grand,
       KHACHDUA: grand,
       TIENTHANHTOAN: grand,
-      TRALAI: 0
+      TRALAI: 0,
+      // Phieu tu phuong an deu la khach chuyen khoan roi doi soat qua sao ke.
+      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD
     };
     if (invoiceDateKey && checkIn && checkOut) {
       overrides.NGAY = localMidnightIso(invoiceDateKey);
@@ -2063,7 +2082,9 @@
       targetGrand: grand,
       targetGoods: goods,
       targetHour: hour,
-      targetTax: tax
+      targetTax: tax,
+      // Payload nay do extension tu dung nen bat buoc dung PHUONGTHUCTT.
+      expectsPaymentMethod: true
     });
     return { payload, verified };
   }
@@ -2427,7 +2448,7 @@
       TIENGIOPHONGCUOI: hour,
       TIENTHUE: tax,
       TONGCONG: grand,
-      PHUONGTHUCTT: "TM",
+      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD,
       SOHD: "",
       MODE: 1
     };
@@ -2521,12 +2542,339 @@
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Phat hanh hoa don dien tu (man hinh HoaDonDienTu)
+  //
+  // Website chay 4 buoc: LayDuLieu -> kiemTraThongTin -> phatHanhHoaDon -> reload.
+  // Hai hop thoai xac nhan cua website chi la UI; extension da hoi nguoi dung mot
+  // lan cho ca lo nen goi thang API. Tat ca deu POST JSON cung origin, dung
+  // cookie phien hien tai.
+  // ---------------------------------------------------------------------------
+
+  const EINVOICE_LIST_TAKE = 200;
+
+  function shopBasePath() {
+    return location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+  }
+
+  async function postEInvoiceApi(action, payload) {
+    const endpoint = `${location.origin}/${shopBasePath()}/HoaDonDienTu/${action}`;
+    const response = await window.fetch(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json;utf-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify(payload)
+    });
+    const responseText = await response.text().catch(() => "");
+    if (!response.ok) {
+      throw new Error(`Website tu choi ${action} (HTTP ${response.status}).`);
+    }
+    let body = null;
+    try { body = JSON.parse(responseText); } catch (_) {}
+    return { body, responseText: responseText.slice(0, 4000), httpStatus: response.status };
+  }
+
+  // /Date(1780246800000)/ -> yyyy-mm-dd theo gio local, dung chung dinh dang voi
+  // normalizeDateKey de loc theo ngay giao dich.
+  function eInvoiceDateKey(value) {
+    const match = /\/Date\((-?\d+)\)\//.exec(String(value || ""));
+    if (!match) return normalizeDateKey(value) || "";
+    const date = new Date(Number(match[1]));
+    if (!Number.isFinite(date.getTime())) return "";
+    const part = number => String(number).padStart(2, "0");
+    return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}`;
+  }
+
+  function parseInvoiceData(value) {
+    if (!value) return null;
+    if (typeof value === "object") return value;
+    try { return JSON.parse(String(value)); } catch (_) { return null; }
+  }
+
+  // Mot dong duoc coi la "da phat hanh" khi co so hoa don thuc te tu CQT.
+  function eInvoiceRow(row) {
+    const invoiceData = parseInvoiceData(row?.INVOICEDATA);
+    const soHoaDon = String(row?.SOHOADON ?? invoiceData?.SOHOADON ?? "").trim();
+    return {
+      id: String(row?.ID || ""),
+      invoiceNo: String(row?.NAME || ""),
+      dateKey: eInvoiceDateKey(row?.NGAY),
+      grandTotal: Math.round(Number(row?.TONGCONG) || 0),
+      buyer: String(row?.NGUOIMUAHANG || ""),
+      paymentMethod: String(row?.PHUONGTHUCTT || ""),
+      soHoaDon,
+      soKyHieu: String(row?.SOKYHIEU ?? invoiceData?.SOKYHIEU ?? "").trim(),
+      maCQThue: String(row?.MACQTHUE ?? invoiceData?.MACQTHUE ?? "").trim(),
+      maTraCuu: String(invoiceData?.MATRACUU || "").trim(),
+      linkTraCuu: String(invoiceData?.LINKTRACUU || "").trim(),
+      cancelled: Number(row?.DAHUY ?? invoiceData?.DAHUY ?? 0) === 1,
+      issued: Boolean(soHoaDon)
+    };
+  }
+
+  // Bo loc TuNgay/DenNgay cua man hinh nay dung dinh dang MM/dd/yyyy, khac voi
+  // o loc dd/MM/yyyy cua danh sach Ban hang.
+  function eInvoiceFilterDate(dateKey) {
+    const normalized = normalizeDateKey(dateKey);
+    if (!normalized) throw new Error(`Ngay loc hoa don dien tu khong hop le: ${dateKey}`);
+    const [year, month, day] = normalized.split("-");
+    return `${month}/${day}/${year}`;
+  }
+
+  async function fetchEInvoiceList(options) {
+    const fromDate = eInvoiceFilterDate(options?.fromDate || options?.dateKey);
+    const toDate = eInvoiceFilterDate(options?.toDate || options?.dateKey);
+    const rows = [];
+    let page = 1;
+    let total = 0;
+    // Danh sach mot ngay thuong duoi 200 dong, nhung van phan trang de khong bo sot.
+    while (page <= 20) {
+      const { body } = await postEInvoiceApi("LayDuLieu", {
+        filters: {},
+        skip: (page - 1) * EINVOICE_LIST_TAKE,
+        take: EINVOICE_LIST_TAKE,
+        page,
+        pageSize: EINVOICE_LIST_TAKE,
+        sort: [{ field: "NAME", dir: "asc" }],
+        customData: {
+          DKHACHHANGID: "",
+          TRANGTHAI: 0,
+          TuNgay: fromDate,
+          DenNgay: toDate
+        },
+        quickFilter: ""
+      });
+      const data = Array.isArray(body?.Data) ? body.Data : [];
+      total = Number(body?.Total) || total;
+      rows.push(...data);
+      if (!data.length || rows.length >= total) break;
+      page += 1;
+    }
+    return { rows: rows.map(eInvoiceRow), total: total || rows.length, fromDate, toDate };
+  }
+
+  // Doc chi tiet mat hang bang dung duong ma extension da dung de mo phieu:
+  // nhap doi tren dong danh sach Ban hang -> scan() doc luoi Kendo dang mo ->
+  // dong form. Man hinh hoa don dien tu khong tra ve dong hang.
+  //
+  // Khong dung fetch AddEdit: trang do duoc website dung bang script client nen
+  // HTML tho khong chua san dong hang.
+  async function readInvoiceItemsViaUi(invoiceNo) {
+    const wanted = String(invoiceNo || "").trim();
+    if (!wanted) throw new Error("Thieu so phieu de doc mat hang.");
+    if (!invoiceListElement()) throw new Error("Hay mo man hinh danh sach Ban hang truoc.");
+
+    // Neu dang co form phieu mo san thi dong lai de khong doc nham phieu khac.
+    if (invoiceUiState().detailVisible) await closeInvoiceDetail();
+
+    const found = await waitForInvoiceListRow(wanted, "");
+    if (!found.row) {
+      throw new Error(`Khong thay phieu ${wanted} trong danh sach hien tai; hay loc dung ngay cua phieu.`);
+    }
+    await openInvoiceRowForReading(found.row.getAttribute("data-uid") || "", wanted);
+    try {
+      const deadline = Date.now() + 10000;
+      let snapshot = null;
+      while (Date.now() < deadline) {
+        snapshot = scan();
+        if (snapshot.ready) break;
+        await wait(200);
+      }
+      if (!snapshot?.ready) {
+        throw new Error(snapshot?.reason || `Khong doc duoc dong hang cua phieu ${wanted}.`);
+      }
+      // scan() tra ve so phieu dang mo; kiem tra de chac chan khong doc nham.
+      const openedNo = String(snapshot.invoiceNo || "").trim();
+      if (openedNo && openedNo !== wanted) {
+        throw new Error(`Website mo phieu ${openedNo} thay vi ${wanted}; da dung de tranh ghi nham so lieu.`);
+      }
+      return (snapshot.items || []).map(item => ({
+        code: String(item.code || "").trim(),
+        name: String(item.name || "").trim(),
+        unit: String(item.unit || "").trim(),
+        qty: Math.round(Number(item.qty) || 0),
+        price: Math.round(Number(item.price) || 0),
+        amount: Math.round((Number(item.qty) || 0) * (Number(item.price) || 0))
+      })).filter(item => item.code && item.qty > 0);
+    } finally {
+      // Luon dong form va tra man hinh ve danh sach de hoa don ke tiep chay duoc.
+      await closeInvoiceDetail().catch(() => {});
+      await waitForInvoiceListReady().catch(() => {});
+    }
+  }
+
+  async function readInvoiceItems(detail) {
+    return readInvoiceItemsViaUi(detail?.invoiceNo);
+  }
+
+  // kiemTraThongTin + phatHanhHoaDon deu tra HTTP 200 ke ca khi nghiep vu tu choi,
+  // nen phai doc code/message trong body giong DoSave.
+  function eInvoiceFailureReason(body, responseText) {
+    if (!body || typeof body !== "object") {
+      return responseText ? `Website tra ve du lieu khong doc duoc: ${responseText.slice(0, 200)}` : "Website khong tra ve du lieu.";
+    }
+    const code = Number(body.code ?? body.Code);
+    const message = String(body.message ?? body.Message ?? body.strData ?? "").trim();
+    if (Number.isFinite(code) && code !== 1) {
+      return message || `Website tu choi phat hanh (code ${code}).`;
+    }
+    if (body.success === false || body.Success === false) {
+      return message || "Website tu choi phat hanh.";
+    }
+    return "";
+  }
+
+  // Khi phat hanh thanh cong, Tag KHONG phai object ma la chuoi HTML dung de do
+  // thang vao hop thoai cua website:
+  //   "So HD: 2036</br>Ma CQT: M1-...</br>Ky hieu: 1C26MVN</br>Ma tra cuu: ...</br>
+  //    Link tra cuu: https://..."
+  // Tach theo nhan (khong dau) de khong phu thuoc thu tu cac dong.
+  function parseIssuedInvoiceTagHtml(tag) {
+    const text = String(tag || "")
+      .replace(/<\/?br\s*\/?>/gi, "\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/gi, " ");
+    const fields = new Map();
+    for (const line of text.split("\n")) {
+      const separator = line.indexOf(":");
+      if (separator < 0) continue;
+      const label = normalizedVietnameseText(line.slice(0, separator));
+      const value = line.slice(separator + 1).trim();
+      if (label && value) fields.set(label, value);
+    }
+    const pick = (...labels) => {
+      for (const label of labels) {
+        const found = fields.get(label);
+        if (found) return found;
+      }
+      return "";
+    };
+    return {
+      // "Link tra cuu: https://..." bi cat o dau ":" dau tien nen phai noi lai.
+      SOHOADON: pick("SO HD", "SO HOA DON"),
+      MACQTHUE: pick("MA CQT", "MA CQ THUE", "MA CQTHUE"),
+      SOKYHIEU: pick("KY HIEU", "KI HIEU"),
+      MATRACUU: pick("MA TRA CUU"),
+      LINKTRACUU: (text.match(/https?:\/\/\S+/) || [""])[0]
+    };
+  }
+
+  async function issueEInvoice(detail) {
+    const id = String(detail?.id || "").trim();
+    if (!isGuid(id)) throw new Error(`ID hoa don dien tu khong hop le: ${id || "trong"}`);
+
+    // Mat hang uu tien lay tu so doi soat do content script gui sang; so lieu do
+    // da duoc kiem tra lai voi phieu tren website khi tru ton. Chi khi khong co
+    // moi phai mo lai phieu de doc, va viec do can man hinh danh sach Ban hang.
+    //
+    // Doc TRUOC khi phat hanh: sau khi phat hanh phieu bi khoa, va neu buoc doc
+    // that bai thi chua co gi thay doi tren he thong.
+    let items = Array.isArray(detail?.knownItems) ? detail.knownItems : [];
+    let itemsError = "";
+    if (!items.length) {
+      if (detail?.canReadItems === false) {
+        itemsError = "Phieu khong co trong so doi soat va man hinh danh sach Ban hang chua mo.";
+      } else {
+        try {
+          items = await readInvoiceItemsViaUi(detail?.invoiceNo);
+        } catch (error) {
+          itemsError = error.message;
+        }
+      }
+    }
+
+    const check = await postEInvoiceApi("kiemTraThongTin?is_ajax=1", { id });
+    const checkFailure = eInvoiceFailureReason(check.body, check.responseText);
+    if (checkFailure) throw new Error(`Kiem tra thong tin that bai: ${checkFailure}`);
+
+    const issue = await postEInvoiceApi("phatHanhHoaDon?is_ajax=1", { id });
+    const issueFailure = eInvoiceFailureReason(issue.body, issue.responseText);
+    if (issueFailure) throw new Error(issueFailure);
+
+    const rawTag = issue.body?.Tag ?? issue.body?.data ?? null;
+    // Tag la chuoi HTML khi phat hanh thanh cong; van chap nhan dang object
+    // phong khi website doi kieu tra ve.
+    const tag = typeof rawTag === "string"
+      ? parseIssuedInvoiceTagHtml(rawTag)
+      : (rawTag && typeof rawTag === "object" ? rawTag : {});
+    const invoiceData = parseInvoiceData(tag.INVOICEDATA) || tag;
+    const result = {
+      id,
+      soHoaDon: String(invoiceData.SOHOADON ?? tag.SOHOADON ?? "").trim(),
+      soKyHieu: String(invoiceData.SOKYHIEU ?? tag.SOKYHIEU ?? "").trim(),
+      maCQThue: String(invoiceData.MACQTHUE ?? tag.MACQTHUE ?? "").trim(),
+      maTraCuu: String(invoiceData.MATRACUU ?? tag.MATRACUU ?? "").trim(),
+      linkTraCuu: String(invoiceData.LINKTRACUU ?? tag.LINKTRACUU ?? "").trim(),
+      httpStatus: issue.httpStatus,
+      items,
+      itemsError
+    };
+    if (!result.soHoaDon) {
+      // Body thanh cong nhung thieu so hoa don: doc lai danh sach de xac nhan
+      // thay vi bao thanh cong mo ho.
+      const confirmed = detail?.dateKey
+        ? (await fetchEInvoiceList({ dateKey: detail.dateKey })).rows.find(row => row.id === id)
+        : null;
+      if (!confirmed?.issued) {
+        throw new Error("Website bao thanh cong nhung khong tra ve so hoa don; hay kiem tra lai tren website.");
+      }
+      Object.assign(result, {
+        soHoaDon: confirmed.soHoaDon,
+        soKyHieu: confirmed.soKyHieu,
+        maCQThue: confirmed.maCQThue,
+        maTraCuu: confirmed.maTraCuu,
+        linkTraCuu: confirmed.linkTraCuu
+      });
+    }
+    return result;
+  }
+
   async function saveCurrentInvoiceViaApi(expected) {
     const formData = currentFormData({ allowBlankRecordId: Boolean(expected?.requiresFreshDraft) });
     if (expected?.requiresFreshDraft && !isGuid(formDataRecordId(formData))) {
       return saveFreshInvoiceThroughOfficialUi(expected);
     }
     return postCurrentInvoiceViaApi(expected);
+  }
+
+  // Bridge chay o MAIN world, content script o isolated world; detail cua
+  // CustomEvent bi structured-clone khi di qua ranh gioi nay. Neu ket qua chua
+  // gia tri khong clone duoc (vi du dong Kendo con giu ham), dispatchEvent NEM
+  // loi. Truoc day loi do xay ra ngay trong khoi try nen content script khong
+  // bao gio nhan duoc phan hoi va bang dieu khien treo o "dang phat hanh".
+  //
+  // Vi vay: luon lam sach payload truoc khi gui, va neu van khong gui duoc thi
+  // gui ve mot loi mo ta duoc. Tuyet doi khong de request nao khong co phan hoi.
+  function plainClone(value) {
+    if (value == null || typeof value !== "object") return value;
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function respond(payload) {
+    const safe = {
+      id: payload.id,
+      ok: Boolean(payload.ok),
+      ...(payload.ok ? { result: plainClone(payload.result) } : { error: String(payload.error || "") })
+    };
+    try {
+      window.dispatchEvent(new CustomEvent(RESPONSE, { detail: safe }));
+    } catch (error) {
+      console.error("[InvoiceTarget bridge] khong gui duoc phan hoi", error);
+      window.dispatchEvent(new CustomEvent(RESPONSE, {
+        detail: {
+          id: payload.id,
+          ok: false,
+          error: `Khong chuyen duoc ket qua ve extension: ${error?.message || error}`
+        }
+      }));
+    }
   }
 
   window.addEventListener(REQUEST, async event => {
@@ -2550,16 +2898,19 @@
       else if (detail.action === "saveCurrentInvoiceViaApi") result = await saveCurrentInvoiceViaApi(detail);
       else if (detail.action === "saveExistingInvoicePlanViaApi") result = await saveExistingInvoicePlanViaApi(detail);
       else if (detail.action === "createAndPayFreshInvoiceViaApi") result = await createAndPayFreshInvoiceViaApi(detail);
+      else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);
+      else if (detail.action === "issueEInvoice") result = await issueEInvoice(detail);
+      else if (detail.action === "readInvoiceItems") result = { items: await readInvoiceItems(detail) };
       else if (detail.action === "armApiTrace") result = armApiTrace();
       else if (detail.action === "getApiTrace") result = getApiTrace();
       // Cho content script biết trang hiện tại đã có grid danh sách phiếu chưa,
       // để nó tự điều hướng về màn hình danh sách trước khi đối soát sau lưu.
       else if (detail.action === "hasInvoiceList") result = { present: Boolean(invoiceListElement()) };
       else throw new Error("Thao tác không được hỗ trợ.");
-      window.dispatchEvent(new CustomEvent(RESPONSE, { detail: { id: detail.id, ok: true, result } }));
+      respond({ id: detail.id, ok: true, result });
     } catch (error) {
       console.error("[InvoiceTarget bridge]", error);
-      window.dispatchEvent(new CustomEvent(RESPONSE, { detail: { id: detail.id, ok: false, error: error.message } }));
+      respond({ id: detail.id, ok: false, error: String(error?.message || error || "Không rõ lỗi.") });
     }
   });
 })();

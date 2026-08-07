@@ -111,8 +111,14 @@
     const text = String(value || "").trim();
     const iso = text.match(/^(\d{4})[-/]?(\d{2})[-/]?(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
     if (iso) return withTime && iso[4] ? `${iso[1]}-${iso[2]}-${iso[3]} ${iso[4]}:${iso[5]}:${iso[6] || "00"}` : `${iso[1]}-${iso[2]}-${iso[3]}`;
-    const vietnamese = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
-    if (vietnamese) return `${vietnamese[3]}-${String(vietnamese[2]).padStart(2, "0")}-${String(vietnamese[1]).padStart(2, "0")}`;
+    // Ban tieng Viet ghi "30/05/2026 14:58:04": phai giu lai gio khi withTime,
+    // neu khong requestedAt mat gio va cac dong cung ngay khong con phan biet duoc.
+    const vietnamese = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+    if (vietnamese) {
+      const day = `${vietnamese[3]}-${String(vietnamese[2]).padStart(2, "0")}-${String(vietnamese[1]).padStart(2, "0")}`;
+      if (!withTime || !vietnamese[4]) return day;
+      return `${day} ${String(vietnamese[4]).padStart(2, "0")}:${vietnamese[5]}:${vietnamese[6] || "00"}`;
+    }
     return "";
   }
 
@@ -121,44 +127,73 @@
     return Math.round(Number(String(value || "").replace(/[^0-9.-]/g, ""))) || 0;
   }
 
+  // Sao ke co hai format: ban tieng Anh (Transaction Date/Credit) va ban tieng
+  // Viet cua ngan hang (Ngay giao dich/So tien gui vao). Nhan dien header phai
+  // chap nhan ca hai, neu khong ban tieng Viet se bao "khong tim thay tieu de".
+  const CREDIT_PATTERNS = ["so tien gui vao", "so tien vao", "ghi co", "phat sinh co"];
+  const DEBIT_PATTERNS = ["so tien rut ra", "so tien ra", "ghi no", "phat sinh no"];
+
+  function findMoneyColumn(headers, englishWord, vietnamesePatterns) {
+    const english = new RegExp(`(^| )${englishWord}($| )`);
+    const index = headers.findIndex(header => english.test(header));
+    if (index >= 0) return index;
+    return headers.findIndex(header => vietnamesePatterns.some(pattern => header.includes(pattern)));
+  }
+
   function parseBankRows(rows) {
+    const hasCreditHeader = headers =>
+      headers.some(value => /(^| )credit($| )/.test(value)) ||
+      headers.some(value => CREDIT_PATTERNS.some(pattern => value.includes(pattern)));
     const headerIndex = rows.findIndex(row => {
       const headers = row.map(normalizedHeader);
-      return headers.some(value => value.includes("transaction date")) && headers.some(value => value.includes("credit"));
+      const hasDate = headers.some(value => value.includes("transaction date") || value.includes("ngay giao dich"));
+      return hasDate && hasCreditHeader(headers);
     });
     if (headerIndex < 0) throw new Error("Không tìm thấy hàng tiêu đề sao kê.");
     const headers = rows[headerIndex].map(normalizedHeader);
     const find = patterns => headers.findIndex(header => patterns.some(pattern => header.includes(pattern)));
     const columns = {
-      requested: find(["requesting date", "ngay kh thuc hien"]),
+      requested: find(["requesting date", "ngay kh thuc hien", "ngay hieu luc"]),
       transaction: find(["transaction date", "ngay giao dich"]),
-      reference: find(["reference number", "so but toan"]),
+      // "So GD" cua ban tieng Viet la so but toan duy nhat, dung lam id on dinh.
+      reference: find(["reference number", "so but toan", "so gd", "so chung tu"]),
       bank: find(["remitter s bank", "ngan hang doi tac"]),
       account: find(["account number", "tai khoan dich"]),
       accountName: find(["account name", "ten tai khoan doi ung"]),
-      description: find(["description", "dien giai"]),
-      debit: headers.findIndex(header => /(^| )debit($| )/.test(header)),
-      credit: headers.findIndex(header => /(^| )credit($| )/.test(header)),
+      description: find(["description", "dien giai", "noi dung giao dich", "noi dung"]),
+      debit: findMoneyColumn(headers, "debit", DEBIT_PATTERNS),
+      credit: findMoneyColumn(headers, "credit", CREDIT_PATTERNS),
       balance: find(["running balance", "so du"]),
-      invoiceCheck: find(["check hd", "hoa don da xuat"])
+      invoiceCheck: find(["check hd", "check da xuat hd", "hoa don da xuat"])
     };
     if (columns.transaction < 0 || columns.credit < 0) throw new Error("Thiếu cột ngày giao dịch hoặc Credit.");
+    // Ban tieng Viet co "Ngay hieu luc" (ky sao ke) lech "Ngay giao dich" (luc
+    // tien thuc chuyen): giao dich 30/05 nam trong sao ke thang 06. Lay ngay
+    // hieu luc lam ngay lap phieu de moi dong deu nam gon trong ky cua file.
+    const effectiveDateColumn = columns.requested >= 0 ? columns.requested : columns.transaction;
     return rows.slice(headerIndex + 1).map((row, index) => {
       const credit = money(row[columns.credit]);
       const description = String(row[columns.description] || "").trim();
-      const transactionDate = dateKey(row[columns.transaction], false);
-      const requestedAt = dateKey(row[columns.requested], true);
+      const transactionDate = dateKey(row[effectiveDateColumn], false) || dateKey(row[columns.transaction], false);
+      const requestedAt = dateKey(row[columns.transaction], true) || dateKey(row[columns.requested], true);
       const reference = String(row[columns.reference] || "").trim();
       const id = reference || `${requestedAt}|${transactionDate}|${credit}|${description}`;
       const transferLike = /chuyen tien|chuyen tie n|chuyen khoan|transfer|qr|mbvcb|ibft|liobank/i.test(normalizedHeader(description));
+      // Cot "Check da xuat HD" duoc dien bang cong thuc VLOOKUP nen o chua khop
+      // tra ve #N/A. Loai cac ma loi Excel de chi giu ghi chu that.
+      const invoiceCheckRaw = String(row[columns.invoiceCheck] ?? "").trim();
+      const invoiceCheck = /^#(N\/A|REF!|VALUE!|NAME\?|DIV\/0!|NULL!|NUM!)$/i.test(invoiceCheckRaw) ? "" : invoiceCheckRaw;
+      const alreadyIssued = Boolean(invoiceCheck);
       return {
         id, rowNumber: headerIndex + index + 2, requestedAt, transactionDate, reference,
         bank: String(row[columns.bank] || "").trim(),
         account: String(row[columns.account] || "").trim(),
         accountName: String(row[columns.accountName] || "").trim(),
         description, debit: money(row[columns.debit]), credit,
-        balance: money(row[columns.balance]), invoiceCheck: String(row[columns.invoiceCheck] || "").trim(),
-        status: credit > 0 && transactionDate ? (transferLike ? "pending" : "review") : "ignored"
+        balance: money(row[columns.balance]), invoiceCheck,
+        status: credit > 0 && transactionDate
+          ? (alreadyIssued ? "ignored" : transferLike ? "pending" : "review")
+          : "ignored"
       };
     }).filter(item => item.credit > 0 && item.transactionDate);
   }

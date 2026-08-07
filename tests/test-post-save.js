@@ -1,7 +1,8 @@
 const fs = require("fs");
 const vm = require("vm");
+const path = require("path");
 
-const source = fs.readFileSync("content.js", "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
 function extractFunction(name) {
   const start = source.indexOf(`function ${name}(`);

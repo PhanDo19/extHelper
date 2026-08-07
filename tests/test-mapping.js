@@ -1,5 +1,6 @@
 const assert = require("assert");
-const engine = require("./mapping-engine.js");
+const path = require("path");
+const engine = require(path.join(__dirname, "..", "mapping-engine.js"));
 
 const dataset = {
   mappings: [

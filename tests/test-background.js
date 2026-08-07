@@ -1,4 +1,5 @@
 const assert = require("assert");
+const path = require("path");
 
 let listener;
 let downloadOptions;
@@ -31,7 +32,7 @@ globalThis.chrome = {
   }
 };
 
-require("./background.js");
+require(path.join(__dirname, "..", "background.js"));
 assert.equal(typeof listener, "function");
 
 let invalidResponse;
@@ -61,6 +62,42 @@ assert.strictEqual(listener({
 }, {}, response => { traceResponse = response; }), true);
 assert.strictEqual(traceResponse.ok, true);
 assert.strictEqual(downloadOptions.filename, "invoice-api-trace-2026-08-02T09-27-16-000Z.json");
+
+// File hach toan "Xuat kho da phat hanh" nay la Excel nen di qua kenh nhi phan.
+let issuedResponse;
+assert.strictEqual(listener({
+  type: "invoiceTarget.downloadBinary",
+  filename: "XuatKho_PhatHanh_2026-08-07_143012.xlsx",
+  mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  base64: "UEsDBBQAAAAIAA=="
+}, {}, response => { issuedResponse = response; }), true);
+assert.strictEqual(issuedResponse.ok, true);
+assert.strictEqual(downloadOptions.filename, "XuatKho_PhatHanh_2026-08-07_143012.xlsx");
+assert.match(downloadOptions.url, /^data:application\/vnd\.openxmlformats/);
+
+// Ten file la va base64 sai dinh dang deu bi chan.
+let rejected;
+listener({
+  type: "invoiceTarget.downloadBinary",
+  filename: "../evil.xlsx",
+  base64: "UEsDBBQ="
+}, {}, response => { rejected = response; });
+assert.strictEqual(rejected.ok, false);
+listener({
+  type: "invoiceTarget.downloadBinary",
+  filename: "XuatKho_PhatHanh_2026-08-07_143012.xlsx",
+  base64: "khong-phai-base64!!"
+}, {}, response => { rejected = response; });
+assert.strictEqual(rejected.ok, false);
+
+// Kenh JSON khong con nhan file .json cua luong phat hanh nua.
+let legacy;
+listener({
+  type: "invoiceTarget.downloadStockState",
+  filename: "XuatKho_PhatHanh_2026-08-07_143012.json",
+  content: "{}"
+}, {}, response => { legacy = response; });
+assert.strictEqual(legacy.ok, false);
 
 let openResponse;
 assert.strictEqual(listener({

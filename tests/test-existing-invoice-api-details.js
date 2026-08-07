@@ -1,7 +1,8 @@
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 
-const source = fs.readFileSync("bridge.js", "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 
 function extractFunction(name) {
   const start = source.indexOf(`function ${name}(`);

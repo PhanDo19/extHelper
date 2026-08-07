@@ -3,9 +3,15 @@
 #it-toggle { width: 52px; height: 52px; border: 0; border-radius: 50%; background: #1769e0; color: #fff; font-size: 25px; box-shadow: 0 7px 24px #0f172a55; cursor: pointer; float: right; }
 #it-toggle:hover { background: #0f5dcc; transform: translateY(-1px); }
 #it-panel { position: relative; width: min(560px, calc(100vw - 28px)); min-width: 430px; min-height: 360px; max-height: calc(100vh - 34px); overflow: auto; background: #fff; border: 1px solid #c4cedc; border-radius: 14px; box-shadow: 0 18px 55px #0f172a45; margin-bottom: 62px; padding: 18px; font-size: 13px; line-height: 1.35; }
-#it-panel.mapping-mode, #it-panel.statement-mode, #it-panel.stock-mode { width: min(1040px, calc(100vw - 28px)); }
+#it-panel.mapping-mode, #it-panel.stock-mode { width: min(1040px, calc(100vw - 28px)); }
+/* Tab Giao dịch chứa cả bảng phát hành hóa đơn nên cần rộng hơn. */
+#it-panel.statement-mode { width: min(1180px, calc(100vw - 28px)); }
 #it-panel.review-mode { width: min(960px, calc(100vw - 28px)); }
 #it-panel.batch-mode { width: min(1180px, calc(100vw - 28px)); }
+.it-subtabs { display: flex; gap: 6px; margin: 12px 0 0; border-bottom: 1px solid #dce4ef; }
+.it-subtabs button { padding: 8px 16px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: transparent; color: #4a5a72; font-size: 12px; font-weight: 600; cursor: pointer; }
+.it-subtabs button:hover { background: #f2f6fc; color: #18365f; }
+.it-subtabs button.active { border-color: #dce4ef; background: #fff; color: #0f52b8; margin-bottom: -1px; }
 #it-panel.is-resizing { cursor: nwse-resize; box-shadow: 0 22px 65px #0f172a66; }
 #it-resize-handle { display: inline-grid; flex: 0 0 34px; width: 34px; height: 34px; margin-right: 8px; place-items: center; color: #fff; border: 1px solid #ffffff66; border-radius: 8px; cursor: nwse-resize; touch-action: none; font-size: 20px; font-weight: 800; line-height: 1; user-select: none; }
 #it-resize-handle:hover { color: #0f52b8; background: #fff; transform: scale(1.04); }
@@ -85,6 +91,15 @@
 #it-mapping-admin { margin-top: 12px; padding: 0; border: 0; background: #fff; }
 #it-mapping-admin[hidden] { display: none !important; }
 .mapping-mode .it-calc-only, .statement-mode .it-calc-only, .batch-mode .it-calc-only, .stock-mode .it-calc-only { display: none !important; }
+#it-einvoice-admin[hidden] { display: none !important; }
+#it-einvoice-admin .it-batch-table { min-width: 900px; }
+#it-einvoice-progress:not(:empty) { margin: 8px 0; padding: 9px 11px; border: 1px solid #f0cfc9; border-radius: 8px; background: #fdf2f0; color: #8c2f24; font-size: 11px; white-space: pre-line; }
+.it-batch-summary-bar { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0; padding: 10px 12px; border: 1px solid #dce4ef; border-radius: 8px; background: #f8fbff; font-size: 11px; }
+.it-batch-summary-bar b { color: #18365f; font-size: 14px; }
+#it-panel .it-batch-summary-bar label { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; }
+#it-panel .it-batch-summary-bar input { width: auto; }
+/* Phiếu không gắn với giao dịch nào trong sao kê. */
+.it-batch-table > tbody > tr.it-outside-statement { background: #fffaf2; }
 #it-stock-admin[hidden] { display: none !important; }
 #it-panel:not(.stock-mode) #it-state-preview { display: none !important; }
 .it-stock-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 190px auto; align-items: center; gap: 10px; margin: 12px 0; }

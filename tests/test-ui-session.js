@@ -1,4 +1,5 @@
 const assert = require("assert");
+const path = require("path");
 
 const values = {};
 globalThis.chrome = {
@@ -17,7 +18,7 @@ globalThis.chrome = {
   }
 };
 
-require("./mapping-store.js");
+require(path.join(__dirname, "..", "mapping-store.js"));
 
 (async () => {
   const session = {

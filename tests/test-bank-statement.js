@@ -1,5 +1,6 @@
 const assert = require("assert");
-require("./xlsx-reader.js");
+const path = require("path");
+require(path.join(__dirname, "..", "xlsx-reader.js"));
 const reader = globalThis.InvoiceXlsxReader;
 
 const rows = [

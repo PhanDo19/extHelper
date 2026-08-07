@@ -1,0 +1,13 @@
+# Dữ liệu thật của khách hàng (sao kê, tồn kho, workbook đối chiếu)
+# Không commit lên repo.
+data/
+
+# Trace API và log chạy thử
+data/traces/
+*.log
+
+# File backup / bản cũ đã lưu trữ
+.archive/
+
+# Node
+node_modules/

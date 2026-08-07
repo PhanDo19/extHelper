@@ -1,7 +1,8 @@
 const fs = require("fs");
+const path = require("path");
 
-const bridge = fs.readFileSync("bridge.js", "utf8");
-const content = fs.readFileSync("content.js", "utf8");
+const bridge = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
+const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
 const start = bridge.indexOf("async function createAndPayFreshInvoiceViaApi");
 const end = bridge.indexOf("window.addEventListener(REQUEST", start);

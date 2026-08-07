@@ -1,7 +1,8 @@
 const fs = require("fs");
 const vm = require("vm");
+const path = require("path");
 
-const source = fs.readFileSync("content.js", "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
 function extractFunction(name) {
   let start = source.indexOf(`async function ${name}(`);
@@ -299,7 +300,7 @@ const tie = sandbox.selectClosestInvoiceCandidate([
 ], 2500000);
 if (tie.invoiceNo !== "HD002") throw new Error("Equal distances must use invoice number as a stable tie-breaker.");
 
-const solver = require("./solver.js");
+const solver = require(path.join(__dirname, "..", "solver.js"));
 const planBox = {
   InvoiceTargetSolver: solver,
   priorityRules: [],

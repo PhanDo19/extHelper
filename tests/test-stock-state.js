@@ -1,6 +1,7 @@
 const assert = require("assert");
+const path = require("path");
 const fs = require("fs");
-const StockState = require("./stock-state.js");
+const StockState = require(path.join(__dirname, "..", "stock-state.js"));
 
 function mappings(qty) {
   return {
@@ -63,8 +64,8 @@ const corruptValidation = StockState.validate(corrupted);
 assert.strictEqual(corruptValidation.valid, false);
 assert.match(corruptValidation.errors.join(" "), /không hợp lệ/);
 
-const contentSource = fs.readFileSync("content.js", "utf8");
-const cssSource = fs.readFileSync("content.css", "utf8");
+const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+const cssSource = fs.readFileSync(path.join(__dirname, "..", "content.css"), "utf8");
 const stockAdminIndex = contentSource.indexOf('id="it-stock-admin"');
 assert(stockAdminIndex >= 0, "Missing stock administration section");
 assert(contentSource.indexOf('id="it-import-stock"', stockAdminIndex) > stockAdminIndex);

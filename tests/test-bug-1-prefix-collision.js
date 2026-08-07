@@ -1,7 +1,8 @@
 const assert = require("assert");
+const path = require("path");
 const fs = require("fs");
 
-const source = fs.readFileSync("bridge.js", "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 const match = source.match(/function suffixInput\(prefix\)\s*\{([\s\S]*?)\n\s*\}/);
 
 assert.ok(match, "bridge.js must define suffixInput(prefix)");

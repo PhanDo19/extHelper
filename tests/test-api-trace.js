@@ -1,14 +1,15 @@
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 
-const bridgeSource = fs.readFileSync("bridge.js", "utf8");
-const contentSource = fs.readFileSync("content.js", "utf8");
+const bridgeSource = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
+const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 const createFixture = JSON.parse(fs.readFileSync(
-  "fixtures/api/create-invoice-init.sanitized.json",
+  path.join(__dirname, "..", "fixtures", "api", "create-invoice-init.sanitized.json"),
   "utf8"
 ));
 const fullFlowFixture = JSON.parse(fs.readFileSync(
-  "fixtures/api/full-create-payment-flow.sanitized.json",
+  path.join(__dirname, "..", "fixtures", "api", "full-create-payment-flow.sanitized.json"),
   "utf8"
 ));
 

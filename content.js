@@ -6,8 +6,15 @@
   const SAVE_CAPTURED = "invoice-target-mvp:save-request-captured";
   const SAVE_BLOCKED = "invoice-target-mvp:save-blocked";
   const RUNTIME_WARNING = "invoice-target-mvp:runtime-warning";
-  const embeddedDataset = globalThis.InvoiceInventoryData || { mappings: [] };
-  const embeddedCatalog = globalThis.InvoiceWebCatalog || { source: "data.xlsx", items: [] };
+  // Moi chi nhanh co bo ma web rieng nen du lieu mac dinh phai chon theo chi
+  // nhanh dang mo, khong duoc dung chung bo cua pariskimgiang.
+  const pageTenantSlug = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+  const embeddedDataset = pageTenantSlug === "parislinhdam"
+    ? (globalThis.InvoiceMappingParisLinhDam || { mappings: [] })
+    : (globalThis.InvoiceInventoryData || { mappings: [] });
+  const embeddedCatalog = pageTenantSlug === "parislinhdam"
+    ? (globalThis.InvoiceWebCatalogParisLinhDam || { source: "jsondataLD.json", items: [] })
+    : (globalThis.InvoiceWebCatalog || { source: "data.xlsx", items: [] });
   const extensionVersion = typeof chrome !== "undefined" && chrome.runtime?.getManifest
     ? chrome.runtime.getManifest().version
     : "";
@@ -30,6 +37,12 @@
   let sequence = 0;
   let latestScan = null;
   let apiTemplate = null;
+  let issuedInvoiceBook = { entries: [] };
+  let eInvoiceRows = [];
+  let eInvoiceSelection = new Set();
+  let issuingInProgress = false;
+  let statementSubtab = "statement";
+  let showEInvoicesOutsideStatement = false;
 
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
@@ -164,6 +177,10 @@
     uiSession = {
       schemaVersion: 1,
       mode: "batch",
+      // Khoảng ngày của màn hình phát hành nằm ngoài phiên Batch Review nhưng
+      // dùng chung một bản ghi, nên phải giữ lại khi Batch Review lưu phiên.
+      eInvoiceFromDate: uiSession?.eInvoiceFromDate || "",
+      eInvoiceToDate: uiSession?.eInvoiceToDate || "",
       panelOpen: panel ? !panel.hidden : Boolean(uiSession?.panelOpen),
       batchLimit: Math.max(1, Math.min(50, limit)),
       batchFromDate: fromDate,
@@ -667,8 +684,17 @@
   function request(action, payload) {
     return new Promise((resolve, reject) => {
       const id = `it-${Date.now()}-${sequence += 1}`;
-      const timeoutMs = ["replaceInvoiceItems", "applyInvoicePlan"].includes(action) ? 90000 : ["findInvoiceCandidates", "findIssuedInvoiceByAmount"].includes(action) ? 28000 : 5000;
-      const timeout = setTimeout(() => reject(new Error("Trang không phản hồi.")), timeoutMs);
+      const timeoutMs = ["replaceInvoiceItems", "applyInvoicePlan"].includes(action) ? 90000
+        // Phát hành phải mở phiếu trên giao diện để đọc mặt hàng, đóng lại,
+        // rồi mới kiểm tra + phát hành qua cơ quan thuế.
+        : action === "issueEInvoice" ? 90000
+        : action === "readInvoiceItems" ? 45000
+        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList"].includes(action) ? 28000
+        : 5000;
+      const timeout = setTimeout(
+        () => reject(new Error(`Trang không phản hồi sau ${Math.round(timeoutMs / 1000)}s (${action}).`)),
+        timeoutMs
+      );
       const listener = event => {
         if (!event.detail || event.detail.id !== id) return;
         window.removeEventListener(RESPONSE, listener);
@@ -737,6 +763,7 @@
               <button id="it-import-stock" type="button">Nhập KhoT5.xlsx</button>
               <button id="it-import-state" type="button">Nhập trạng thái tồn</button>
               <button id="it-export-state" type="button">Xuất trạng thái tồn</button>
+              <button id="it-export-issued" type="button" title="Xuất Excel mặt hàng đã phát hành hóa đơn để hạch toán">Xuất kho đã phát hành (Excel)</button>
             </div>
           </div>
           <div id="it-stock-kpis" class="it-stock-kpis"></div>
@@ -767,7 +794,7 @@
         <div id="it-batch-review" hidden></div>
         <div id="it-summary"></div>
         <div id="it-result"></div>
-        <p class="it-warning">Toàn bộ hàng cũ được coi là cần thay thế. Chưa tự xóa/thêm dòng và không tự bấm Lưu HĐ, Hủy HĐ hoặc Phát hành.</p>
+        <p class="it-warning">Toàn bộ hàng cũ được coi là cần thay thế. Chưa tự xóa/thêm dòng và không tự bấm Lưu HĐ hoặc Hủy HĐ. Việc phát hành hóa đơn chỉ chạy ở màn hình <b>Phát hành hóa đơn</b> sau khi bạn xác nhận.</p>
       </section>`;
   }
 
@@ -812,6 +839,7 @@
     root.querySelector("#it-import-state").addEventListener("click", () => root.querySelector("#it-state-file").click());
     root.querySelector("#it-state-file").addEventListener("change", previewStockStateFile);
     root.querySelector("#it-export-state").addEventListener("click", exportStockState);
+    root.querySelector("#it-export-issued").addEventListener("click", exportIssuedInvoices);
     root.querySelector("#it-manage-stock").addEventListener("click", toggleStockAdmin);
     root.querySelector("#it-stock-search").addEventListener("input", renderStockRows);
     root.querySelector("#it-stock-filter").addEventListener("change", renderStockRows);
@@ -1028,6 +1056,19 @@
     const date = value ? new Date(value) : new Date();
     const part = number => String(number).padStart(2, "0");
     return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}_${part(date.getHours())}${part(date.getMinutes())}${part(date.getSeconds())}`;
+  }
+
+  // File nhị phân (xlsx) phải đi qua base64 vì thông điệp tới background chỉ
+  // chuyển được dữ liệu JSON thuần.
+  async function downloadBase64(base64, filename, mimeType) {
+    const response = await chrome.runtime.sendMessage({
+      type: "invoiceTarget.downloadBinary",
+      filename,
+      mimeType,
+      base64
+    });
+    if (!response?.ok) throw new Error(response?.error || "Chrome không tạo được file tải xuống.");
+    return response.downloadId;
   }
 
   async function downloadJson(payload, filename) {
@@ -1341,46 +1382,42 @@
     setStockMode(node.hidden);
   }
 
-  function setStockMode(enabled) {
+  // Mỗi màn hình quản lý là một section độc lập; chỉ một section được mở tại một
+  // thời điểm. Bảng này giữ nhãn mặc định của nút để không lặp lại ở từng hàm.
+  const PANEL_SCREENS = [
+    { mode: "stock-mode", section: "it-stock-admin", button: "it-manage-stock", label: "Quản lý tồn kho" },
+    { mode: "mapping-mode", section: "it-mapping-admin", button: "it-manage-mapping", label: "Duyệt ánh xạ" },
+    { mode: "statement-mode", section: "it-statement-admin", button: "it-manage-statement", label: "Giao dịch ngân hàng" },
+    { mode: "batch-mode", section: "it-batch-review", button: "it-manage-batch", label: "Batch Review" }
+  ];
+
+  function applyPanelScreen(activeMode) {
     const panel = document.getElementById("it-panel");
-    const node = document.getElementById("it-stock-admin");
-    if (!panel || !node) return;
-    node.hidden = !enabled;
-    panel.classList.toggle("stock-mode", enabled);
-    panel.classList.remove("mapping-mode", "statement-mode", "batch-mode", "review-mode");
-    document.getElementById("it-mapping-admin").hidden = true;
-    document.getElementById("it-statement-admin").hidden = true;
-    document.getElementById("it-batch-review").hidden = true;
-    document.getElementById("it-manage-stock").textContent = enabled ? "Quay lại tính toán" : "Quản lý tồn kho";
-    document.getElementById("it-manage-mapping").textContent = "Duyệt ánh xạ";
-    document.getElementById("it-manage-statement").textContent = "Giao dịch ngân hàng";
-    document.getElementById("it-manage-batch").textContent = "Batch Review";
+    if (!panel) return false;
+    panel.classList.remove("review-mode", ...PANEL_SCREENS.map(screen => screen.mode));
+    if (activeMode) panel.classList.add(activeMode);
+    for (const screen of PANEL_SCREENS) {
+      const active = screen.mode === activeMode;
+      const section = document.getElementById(screen.section);
+      if (section) section.hidden = !active;
+      const button = document.getElementById(screen.button);
+      if (button) button.textContent = active ? "Quay lại tính toán" : screen.label;
+    }
+    return true;
+  }
+
+  function setStockMode(enabled) {
+    if (!applyPanelScreen(enabled ? "stock-mode" : null)) return;
     if (enabled) renderStockAdmin();
   }
 
   function toggleMappingAdmin() {
-    const node = document.getElementById("it-mapping-admin");
-    node.hidden = !node.hidden;
-    setMappingMode(!node.hidden);
-    if (!node.hidden) renderMappingAdmin();
+    setMappingMode(Boolean(document.getElementById("it-mapping-admin")?.hidden));
   }
 
   function setMappingMode(enabled) {
-    const panel = document.getElementById("it-panel");
-    const button = document.getElementById("it-manage-mapping");
-    if (!panel) return;
-    panel.classList.toggle("mapping-mode", enabled);
-    panel.classList.remove("review-mode");
-    panel.classList.remove("batch-mode");
-    panel.classList.remove("statement-mode");
-    panel.classList.remove("stock-mode");
-    document.getElementById("it-stock-admin").hidden = true;
-    document.getElementById("it-statement-admin").hidden = true;
-    document.getElementById("it-batch-review").hidden = true;
-    if (button) button.textContent = enabled ? "Quay lại tính toán" : "Duyệt ánh xạ";
-    document.getElementById("it-manage-statement").textContent = "Giao dịch ngân hàng";
-    document.getElementById("it-manage-batch").textContent = "Batch Review";
-    document.getElementById("it-manage-stock").textContent = "Quản lý tồn kho";
+    if (!applyPanelScreen(enabled ? "mapping-mode" : null)) return;
+    if (enabled) renderMappingAdmin();
   }
 
   function toggleStatementAdmin() {
@@ -1389,23 +1426,7 @@
   }
 
   function setStatementMode(enabled) {
-    const panel = document.getElementById("it-panel");
-    const node = document.getElementById("it-statement-admin");
-    const button = document.getElementById("it-manage-statement");
-    if (!panel || !node) return;
-    node.hidden = !enabled;
-    panel.classList.toggle("statement-mode", enabled);
-    panel.classList.remove("review-mode");
-    panel.classList.remove("batch-mode");
-    panel.classList.remove("mapping-mode");
-    panel.classList.remove("stock-mode");
-    document.getElementById("it-stock-admin").hidden = true;
-    document.getElementById("it-mapping-admin").hidden = true;
-    document.getElementById("it-batch-review").hidden = true;
-    if (button) button.textContent = enabled ? "Quay lại tính toán" : "Giao dịch ngân hàng";
-    document.getElementById("it-manage-mapping").textContent = "Duyệt ánh xạ";
-    document.getElementById("it-manage-batch").textContent = "Batch Review";
-    document.getElementById("it-manage-stock").textContent = "Quản lý tồn kho";
+    if (!applyPanelScreen(enabled ? "statement-mode" : null)) return;
     if (enabled) renderStatementAdmin();
   }
 
@@ -1423,22 +1444,11 @@
   }
 
   function showBatchReviewMode(enabled, openPanel) {
-    const node = document.getElementById("it-batch-review");
-    const panel = document.getElementById("it-panel");
-    if (!node || !panel) return;
-    node.hidden = !enabled;
-    panel?.classList.toggle("batch-mode", enabled);
-    panel?.classList.remove("mapping-mode", "statement-mode", "review-mode", "stock-mode");
-    document.getElementById("it-stock-admin").hidden = true;
-    document.getElementById("it-mapping-admin").hidden = true;
-    document.getElementById("it-statement-admin").hidden = true;
-    document.getElementById("it-manage-mapping").textContent = "Duyệt ánh xạ";
-    document.getElementById("it-manage-statement").textContent = "Giao dịch ngân hàng";
-    document.getElementById("it-manage-batch").textContent = enabled ? "Quay lại tính toán" : "Batch Review";
-    document.getElementById("it-manage-stock").textContent = "Quản lý tồn kho";
+    if (!applyPanelScreen(enabled ? "batch-mode" : null)) return;
     if (enabled) renderBatchReview();
-    if (openPanel != null) panel.hidden = !openPanel;
+    if (openPanel != null) document.getElementById("it-panel").hidden = !openPanel;
   }
+
 
   function pendingNewInvoiceContextHtml() {
     if (!pendingNewInvoice) return "";
@@ -1523,17 +1533,558 @@
     if (batchPlans.length) renderBatchPlans();
   }
 
+  // ---------------------------------------------------------------------------
+  // Phát hành hóa đơn điện tử
+  //
+  // Website bắt kế toán bấm PHÁT HÀNH rồi xác nhận hai hộp thoại cho từng dòng.
+  // Màn hình này gọi thẳng API của website cho nhiều hóa đơn đã chọn, sau mỗi
+  // lần phát hành thành công thì ghi lại mặt hàng + số lượng để tab Kho xuất
+  // file hạch toán.
+  // ---------------------------------------------------------------------------
+
+  function todayDateKey() {
+    const now = new Date();
+    const part = number => String(number).padStart(2, "0");
+    return `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}`;
+  }
+
+  // Sổ đối soát sau lưu đã giữ sẵn mặt hàng + số lượng của đúng phiếu đó, và số
+  // liệu này đã được kiểm tra lại với phiếu trên website trước khi trừ tồn. Dùng
+  // lại nó thay vì mở lại phiếu để đọc: không phụ thuộc màn hình đang mở, không
+  // có nguy cơ đọc nhầm phiếu, và chạy tức thì.
+  function ledgerItemsForInvoiceNo(invoiceNo) {
+    const wanted = String(invoiceNo || "").trim();
+    if (!wanted) return null;
+    const entry = (verificationLedger.entries || [])
+      .filter(item => String(item.invoiceNo || "").trim() === wanted)
+      .sort((a, b) => String(b.verifiedAt || "").localeCompare(String(a.verifiedAt || "")))[0];
+    if (!entry || !Array.isArray(entry.items) || !entry.items.length) return null;
+    return entry.items.map(item => {
+      const qty = Math.round(Number(item.qty ?? item.newQty) || 0);
+      const price = Math.round(Number(item.price) || 0);
+      const product = webCatalog.find(row => String(row.code) === String(item.code));
+      return {
+        code: String(item.code || "").trim(),
+        name: String(item.name || product?.name || "").trim(),
+        unit: String(item.unit || product?.unit || "").trim(),
+        qty,
+        price,
+        amount: qty * price
+      };
+    }).filter(item => item.code && item.qty > 0);
+  }
+
+  function renderEInvoiceAdmin() {
+    const node = document.getElementById("it-einvoice-admin");
+    if (!node) return;
+    const fromDate = uiSession?.eInvoiceFromDate || todayDateKey();
+    const toDate = uiSession?.eInvoiceToDate || fromDate;
+    node.innerHTML = `<div class="it-batch-toolbar">
+      <div><b>Phát hành hóa đơn điện tử</b><br><small>Chọn các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small></div>
+      <label>Từ ngày<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
+      <label>Đến ngày<input id="it-einvoice-to-date" type="date" value="${escapeHtml(toDate)}"></label>
+      <button id="it-load-einvoice" type="button" class="primary">Tải danh sách</button>
+    </div>
+    <div id="it-einvoice-summary"></div>
+    <div id="it-einvoice-table"></div>`;
+    node.querySelector("#it-load-einvoice")?.addEventListener("click", () => {
+      loadEInvoiceList().catch(error => setStatus(error.message, "error"));
+    });
+    renderEInvoiceRows();
+  }
+
+  function renderEInvoiceRows() {
+    const summary = document.getElementById("it-einvoice-summary");
+    const table = document.getElementById("it-einvoice-table");
+    if (!summary || !table) return;
+    if (!eInvoiceRows.length) {
+      summary.innerHTML = "";
+      table.innerHTML = "<p>Chưa có dữ liệu. Hãy chọn khoảng ngày rồi bấm <b>Tải danh sách</b>.</p>";
+      return;
+    }
+    const pending = eInvoiceRows.filter(row => !row.issued && !row.cancelled);
+    const issued = eInvoiceRows.filter(row => row.issued);
+    const linked = statementInvoiceNos();
+    const outsideCount = eInvoiceRows.filter(row => !isStatementInvoice(row, linked)).length;
+    // Mặc định chỉ hiện phiếu thuộc danh sách giao dịch; phiếu ngoài giao dịch
+    // vẫn xem được nhưng phải chủ động bật.
+    const visibleRows = showEInvoicesOutsideStatement
+      ? eInvoiceRows
+      : eInvoiceRows.filter(row => isStatementInvoice(row, linked));
+    const selectable = new Set(
+      visibleRows.filter(row => !row.issued && !row.cancelled).map(row => row.id));
+    // Bỏ khỏi lựa chọn những dòng không còn phát hành được (hoặc đã bị ẩn).
+    eInvoiceSelection = new Set(Array.from(eInvoiceSelection).filter(id => selectable.has(id)));
+    summary.innerHTML = `<div class="it-batch-summary-bar">
+      <span><b>${visibleRows.length}</b>/${eInvoiceRows.length} hóa đơn</span>
+      <span><b>${pending.length}</b> chưa phát hành</span>
+      <span><b>${issued.length}</b> đã phát hành</span>
+      <span>Đang chọn: <b id="it-einvoice-selected-count">${eInvoiceSelection.size}</b></span>
+      ${outsideCount ? `<label title="Phiếu không gắn với giao dịch nào trong sao kê">
+        <input id="it-einvoice-show-outside" type="checkbox" ${showEInvoicesOutsideStatement ? "checked" : ""}>
+        Hiện ${outsideCount} phiếu ngoài giao dịch</label>` : ""}
+    </div>`;
+    summary.querySelector("#it-einvoice-show-outside")?.addEventListener("change", event => {
+      showEInvoicesOutsideStatement = event.target.checked;
+      renderEInvoiceRows();
+    });
+    if (!visibleRows.length) {
+      table.innerHTML = eInvoiceRows.length
+        ? `<p>Không có hóa đơn nào thuộc danh sách giao dịch trong khoảng ngày này.${
+          outsideCount ? ` Có ${outsideCount} phiếu ngoài giao dịch — tích ô ở trên để xem.` : ""}</p>`
+        : "<p>Chưa có dữ liệu. Hãy chọn khoảng ngày rồi bấm <b>Tải danh sách</b>.</p>";
+      return;
+    }
+    const rows = visibleRows.map(row => {
+      const recorded = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
+      const statusHtml = row.cancelled
+        ? '<span class="it-bank-status skipped">Đã hủy</span>'
+        : row.issued
+          ? `<span class="it-bank-status done">Đã phát hành</span><br><small>Số ${escapeHtml(row.soHoaDon)}${row.soKyHieu ? ` · ${escapeHtml(row.soKyHieu)}` : ""}</small>`
+          : '<span class="it-bank-status pending">Chưa phát hành</span>';
+      // Chưa phát hành thì xem trước mặt hàng lấy từ sổ đối soát, để biết ngay
+      // hóa đơn nào sẽ thiếu số liệu hạch toán trước khi bấm phát hành.
+      const preview = recorded?.items?.length ? recorded.items : ledgerItemsForInvoiceNo(row.invoiceNo);
+      const source = recorded?.items?.length ? "đã ghi sổ" : preview ? "sổ đối soát" : "";
+      const itemsHtml = preview?.length
+        ? `<details><summary>${preview.length} mã${source ? ` · ${source}` : ""}</summary><table><thead><tr><th>Mã</th><th>Tên</th><th>SL</th></tr></thead><tbody>${
+          preview.map(item => `<tr><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.name)}</td><td>${formatMoney(item.qty)}</td></tr>`).join("")
+        }</tbody></table></details>`
+        : recorded?.itemsError
+          ? `<small class="it-blocked-note" title="${escapeHtml(recorded.itemsError)}">⚠ chưa đọc được mặt hàng</small>`
+          : '<small class="it-blocked-note">chưa có trong sổ đối soát</small>';
+      const selectable = !row.issued && !row.cancelled;
+      const outside = !isStatementInvoice(row, linked);
+      return `<tr data-einvoice-id="${escapeHtml(row.id)}" class="${outside ? "it-outside-statement" : ""}">
+        <td>${selectable
+          ? `<input class="it-einvoice-select" type="checkbox" ${eInvoiceSelection.has(row.id) ? "checked" : ""}>`
+          : ""}</td>
+        <td><b>${escapeHtml(row.invoiceNo)}</b><br><small>${escapeHtml(row.dateKey)}</small>${
+          outside ? '<br><small class="it-blocked-note">ngoài giao dịch</small>' : ""}</td>
+        <td class="it-money">${formatMoney(row.grandTotal)}</td>
+        <td>${escapeHtml(row.buyer || "—")}</td>
+        <td>${statusHtml}</td>
+        <td>${itemsHtml}</td>
+      </tr>`;
+    }).join("");
+    table.innerHTML = `<div class="it-batch-actions">
+      <label><input id="it-einvoice-select-all" type="checkbox"> Chọn tất cả chưa phát hành</label>
+      <span>
+        <button id="it-test-read-items" type="button" title="Chỉ đọc mặt hàng của các hóa đơn đã chọn, không phát hành">Thử đọc mặt hàng</button>
+        <button id="it-sync-issued" type="button" title="Ghi sổ các hóa đơn đã phát hành trên website nhưng chưa có trong sổ hạch toán">Đồng bộ hóa đơn đã phát hành</button>
+        <button id="it-issue-einvoices" type="button" class="primary" ${eInvoiceSelection.size && !issuingInProgress ? "" : "disabled"}>Phát hành hóa đơn đã chọn</button>
+      </span>
+    </div>
+    <div id="it-einvoice-progress"></div>
+    <div class="it-table-wrap"><table class="it-batch-table"><thead><tr><th></th><th>Phiếu</th><th>Tổng cộng</th><th>Người mua</th><th>Trạng thái</th><th>Mặt hàng đã ghi</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    table.querySelector("#it-einvoice-select-all")?.addEventListener("change", event => {
+      table.querySelectorAll(".it-einvoice-select").forEach(input => { input.checked = event.target.checked; });
+      updateEInvoiceSelection();
+    });
+    table.querySelectorAll(".it-einvoice-select").forEach(input =>
+      input.addEventListener("change", updateEInvoiceSelection));
+    table.querySelector("#it-issue-einvoices")?.addEventListener("click", () => {
+      issueSelectedEInvoices().catch(error => setStatus(error.message, "error"));
+    });
+    table.querySelector("#it-test-read-items")?.addEventListener("click", () => {
+      testReadInvoiceItems().catch(error => setStatus(error.message, "error"));
+    });
+    table.querySelector("#it-sync-issued")?.addEventListener("click", () => {
+      syncIssuedInvoices().catch(error => setStatus(error.message, "error"));
+    });
+  }
+
+  // Hóa đơn đã phát hành trên website nhưng chưa có trong sổ hạch toán — do phát
+  // hành tay, hoặc do lần phát hành trước mất phản hồi. Ghi bổ sung để file xuất
+  // kho không bị thiếu.
+  async function syncIssuedInvoices() {
+    // Chỉ đồng bộ phiếu thuộc danh sách giao dịch, trừ khi người dùng đang chủ
+    // động xem cả phiếu ngoài giao dịch.
+    const linked = statementInvoiceNos();
+    const issued = eInvoiceRows.filter(row =>
+      row.issued && !row.cancelled &&
+      (showEInvoicesOutsideStatement || isStatementInvoice(row, linked)));
+    const missing = issued.filter(row => !InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id));
+    if (!missing.length) {
+      return setStatus(
+        issued.length
+          ? `Cả ${issued.length} hóa đơn đã phát hành đều có trong sổ hạch toán.`
+          : "Không có hóa đơn đã phát hành nào trong khoảng ngày này.",
+        "ok"
+      );
+    }
+    let withItems = 0;
+    for (const row of missing) {
+      const items = ledgerItemsForInvoiceNo(row.invoiceNo);
+      if (items) withItems += 1;
+      issuedInvoiceBook = InvoiceIssuedBook.record(issuedInvoiceBook, {
+        invoiceId: row.id,
+        invoiceNo: row.invoiceNo,
+        dateKey: row.dateKey,
+        issuedAt: new Date().toISOString(),
+        grandTotal: row.grandTotal,
+        soHoaDon: row.soHoaDon,
+        soKyHieu: row.soKyHieu,
+        maCQThue: row.maCQThue,
+        maTraCuu: row.maTraCuu,
+        linkTraCuu: row.linkTraCuu,
+        itemsError: items ? "" : "Không có trong sổ đối soát; cần nhập mặt hàng thủ công khi hạch toán.",
+        items: items || []
+      });
+    }
+    await InvoiceMappingStore.saveIssuedInvoices(issuedInvoiceBook);
+    renderEInvoiceRows();
+    setStatus(
+      `Đã ghi sổ ${missing.length} hóa đơn đã phát hành; ${withItems} có mặt hàng từ sổ đối soát` +
+      (missing.length - withItems ? `, ${missing.length - withItems} còn thiếu mặt hàng.` : "."),
+      missing.length - withItems ? "warn" : "ok"
+    );
+  }
+
+  // Kiểm tra riêng bước đọc mặt hàng trước khi phát hành thật: chỉ gọi API đọc,
+  // không đụng tới kiemTraThongTin/phatHanhHoaDon nên không thay đổi gì.
+  async function testReadInvoiceItems() {
+    const targets = eInvoiceRows.filter(row => eInvoiceSelection.has(row.id));
+    const sample = targets.length ? targets : eInvoiceRows.slice(0, 1);
+    if (!sample.length) return setStatus("Chưa có hóa đơn nào để thử đọc.", "error");
+    const progress = document.getElementById("it-einvoice-progress");
+    const lines = [];
+    let listReady = null;
+    setStatus(`Đang thử đọc mặt hàng của ${sample.length} hóa đơn…`, "warn");
+    const describe = items => items.map(item => `${item.code} x${item.qty}`).join(", ");
+    for (const row of sample) {
+      const fromLedger = ledgerItemsForInvoiceNo(row.invoiceNo);
+      if (fromLedger) {
+        lines.push(`${row.invoiceNo}: ${fromLedger.length} mã (sổ đối soát) — ${describe(fromLedger)}`);
+        continue;
+      }
+      // Chỉ hóa đơn không có trong sổ mới phải mở lại phiếu trên website.
+      if (listReady == null) {
+        listReady = await request("hasInvoiceList").catch(() => ({ present: false }));
+      }
+      if (!listReady?.present) {
+        lines.push(`${row.invoiceNo}: chưa có trong sổ đối soát, và màn hình danh sách Bán hàng chưa mở nên không đọc được.`);
+        continue;
+      }
+      try {
+        const result = await request("readInvoiceItems", { id: row.id, invoiceNo: row.invoiceNo });
+        const items = result.items || [];
+        lines.push(`${row.invoiceNo}: ${items.length} mã (đọc từ phiếu) — ${describe(items) || "không có dòng hàng"}`);
+      } catch (error) {
+        lines.push(`${row.invoiceNo}: LỖI — ${error.message}`);
+      }
+    }
+    if (progress) progress.textContent = lines.join("\n");
+    const failed = lines.filter(line => line.includes("LỖI") || line.includes("không đọc được")).length;
+    setStatus(
+      failed
+        ? `${failed}/${sample.length} hóa đơn chưa có mặt hàng; xem chi tiết bên dưới trước khi phát hành.`
+        : `Đã có mặt hàng cho cả ${sample.length} hóa đơn. Có thể phát hành.`,
+      failed ? "error" : "ok"
+    );
+  }
+
+  function updateEInvoiceSelection() {
+    const table = document.getElementById("it-einvoice-table");
+    if (!table) return;
+    eInvoiceSelection = new Set(Array.from(table.querySelectorAll(".it-einvoice-select"))
+      .filter(input => input.checked)
+      .map(input => input.closest("tr").dataset.einvoiceId));
+    const count = document.getElementById("it-einvoice-selected-count");
+    if (count) count.textContent = String(eInvoiceSelection.size);
+    const button = document.getElementById("it-issue-einvoices");
+    if (button) button.disabled = !eInvoiceSelection.size || issuingInProgress;
+  }
+
+  async function loadEInvoiceList() {
+    const fromDate = document.getElementById("it-einvoice-from-date")?.value || todayDateKey();
+    const toDate = document.getElementById("it-einvoice-to-date")?.value || fromDate;
+    if (toDate < fromDate) throw new Error("Đến ngày phải bằng hoặc sau Từ ngày.");
+    setStatus("Đang tải danh sách hóa đơn điện tử…", "warn");
+    const result = await request("fetchEInvoiceList", { fromDate, toDate });
+    eInvoiceRows = result.rows || [];
+    uiSession = { ...(uiSession || {}), eInvoiceFromDate: fromDate, eInvoiceToDate: toDate };
+    // Chỉ ghi xuống storage khi đã có phiên Batch Review hợp lệ; nếu chưa thì
+    // giữ trong bộ nhớ để không tạo ra bản ghi phiên sai schema.
+    if (uiSession.schemaVersion === 1 && uiSession.mode === "batch") {
+      await InvoiceMappingStore.saveUiSession(uiSession)
+        .catch(error => console.error("Không lưu được khoảng ngày phát hành", error));
+    }
+    renderEInvoiceRows();
+    const pending = eInvoiceRows.filter(row => !row.issued && !row.cancelled).length;
+    setStatus(`Đã tải ${eInvoiceRows.length} hóa đơn; ${pending} hóa đơn chưa phát hành.`, pending ? "ok" : "warn");
+  }
+
+  // Số phiếu đã gắn với một giao dịch trong sao kê. Chỉ những phiếu này mới phát
+  // sinh từ luồng của extension; phiếu ngoài danh sách giao dịch là của nghiệp vụ
+  // khác nên mặc định không đưa vào lô phát hành.
+  function statementInvoiceNos() {
+    const numbers = new Set();
+    for (const transaction of statementDataset.transactions || []) {
+      for (const value of [
+        transaction.invoiceNo,
+        transaction.pendingPlan?.invoiceNo,
+        transaction.batchApprovedPlan?.invoiceNo
+      ]) {
+        const invoiceNo = String(value || "").trim();
+        if (invoiceNo) numbers.add(invoiceNo);
+      }
+    }
+    return numbers;
+  }
+
+  function isStatementInvoice(row, linked) {
+    return linked.has(String(row.invoiceNo || "").trim());
+  }
+
+  // Sau khi một hóa đơn báo lỗi, đọc lại đúng dòng đó trên website để biết thực
+  // sự đã phát hành hay chưa. Trả về null nếu không xác định được.
+  async function confirmIssuedAfterFailure(row) {
+    try {
+      const result = await request("fetchEInvoiceList", {
+        fromDate: row.dateKey,
+        toDate: row.dateKey
+      });
+      const found = (result.rows || []).find(item => item.id === row.id);
+      return found?.issued ? found : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function issueSelectedEInvoices() {
+    if (issuingInProgress) return;
+    const targets = eInvoiceRows.filter(row => eInvoiceSelection.has(row.id) && !row.issued && !row.cancelled);
+    if (!targets.length) return setStatus("Chưa chọn hóa đơn nào để phát hành.", "error");
+    // Mặt hàng lấy từ sổ đối soát; chỉ hóa đơn không có trong sổ mới cần đọc lại
+    // từ màn hình danh sách Bán hàng. Cảnh báo trước để người dùng biết hóa đơn
+    // nào sẽ thiếu số liệu hạch toán, thay vì chặn cả lô.
+    const withoutLedger = targets.filter(row => !ledgerItemsForInvoiceNo(row.invoiceNo));
+    const listReady = withoutLedger.length
+      ? await request("hasInvoiceList").catch(() => ({ present: false }))
+      : { present: true };
+    // Phiếu ngoài danh sách giao dịch không thuộc luồng của extension; chỉ phát
+    // hành khi người dùng đã chủ động hiện và chọn, và phải nêu rõ trong xác nhận.
+    const linkedNos = statementInvoiceNos();
+    const outside = targets.filter(row => !isStatementInvoice(row, linkedNos));
+    const total = targets.reduce((sum, row) => sum + row.grandTotal, 0);
+    const outsideWarning = outside.length
+      ? `\n\n⚠ ${outside.length} phiếu KHÔNG thuộc danh sách giao dịch: ` +
+        `${outside.slice(0, 5).map(row => row.invoiceNo).join(", ")}${outside.length > 5 ? "…" : ""}`
+      : "";
+    const warning = withoutLedger.length
+      ? `\n\n⚠ ${withoutLedger.length}/${targets.length} hóa đơn chưa có trong sổ đối soát` +
+        (listReady?.present
+          ? "; extension sẽ mở từng phiếu để đọc mặt hàng (chậm hơn)."
+          : " và màn hình danh sách Bán hàng chưa mở, nên sẽ KHÔNG có mặt hàng để hạch toán.")
+      : "";
+    const confirmed = window.confirm(
+      `Phát hành ${targets.length} hóa đơn với tổng tiền ${formatMoney(total)} đ?\n\n` +
+      `Từ ${targets[0].invoiceNo} đến ${targets[targets.length - 1].invoiceNo}.\n` +
+      "Hóa đơn đã phát hành không thể tự hủy trong extension." + outsideWarning + warning
+    );
+    if (!confirmed) return setStatus("Đã hủy thao tác phát hành.", "warn");
+
+    const progress = document.getElementById("it-einvoice-progress");
+    const button = document.getElementById("it-issue-einvoices");
+    const showProgress = message => { if (progress) progress.textContent = message; };
+    issuingInProgress = true;
+    if (button) button.disabled = true;
+    let succeeded = 0;
+    const failures = [];
+    try {
+      for (const [index, row] of targets.entries()) {
+        showProgress(`Đang phát hành ${index + 1}/${targets.length}: ${row.invoiceNo}…`);
+        setStatus(`Đang phát hành ${row.invoiceNo} (${index + 1}/${targets.length})…`, "warn");
+        try {
+          const ledgerItems = ledgerItemsForInvoiceNo(row.invoiceNo);
+          const result = await request("issueEInvoice", {
+            id: row.id,
+            invoiceNo: row.invoiceNo,
+            dateKey: row.dateKey,
+            // Có sẵn mặt hàng thì bridge khỏi phải mở lại phiếu để đọc.
+            knownItems: ledgerItems || null,
+            canReadItems: Boolean(listReady?.present)
+          });
+          // Ghi sổ ngay sau từng hóa đơn: nếu lô dừng giữa chừng thì phần đã
+          // phát hành vẫn có số liệu hạch toán.
+          issuedInvoiceBook = InvoiceIssuedBook.record(issuedInvoiceBook, {
+            invoiceId: row.id,
+            invoiceNo: row.invoiceNo,
+            dateKey: row.dateKey,
+            issuedAt: new Date().toISOString(),
+            grandTotal: row.grandTotal,
+            soHoaDon: result.soHoaDon,
+            soKyHieu: result.soKyHieu,
+            maCQThue: result.maCQThue,
+            maTraCuu: result.maTraCuu,
+            linkTraCuu: result.linkTraCuu,
+            itemsError: result.itemsError,
+            items: result.items
+          });
+          await InvoiceMappingStore.saveIssuedInvoices(issuedInvoiceBook);
+          Object.assign(row, {
+            issued: true,
+            soHoaDon: result.soHoaDon,
+            soKyHieu: result.soKyHieu,
+            maCQThue: result.maCQThue,
+            maTraCuu: result.maTraCuu,
+            linkTraCuu: result.linkTraCuu
+          });
+          succeeded += 1;
+          eInvoiceSelection.delete(row.id);
+          renderEInvoiceRows();
+        } catch (error) {
+          // Hết thời gian chờ hoặc mất phản hồi KHÔNG có nghĩa là chưa phát hành:
+          // server có thể đã phát hành xong. Đọc lại danh sách để lấy trạng thái
+          // thật, tránh báo lỗi sai rồi người dùng bấm phát hành lại.
+          const actual = await confirmIssuedAfterFailure(row);
+          if (actual?.issued) {
+            issuedInvoiceBook = InvoiceIssuedBook.record(issuedInvoiceBook, {
+              invoiceId: row.id,
+              invoiceNo: row.invoiceNo,
+              dateKey: row.dateKey,
+              issuedAt: new Date().toISOString(),
+              grandTotal: row.grandTotal,
+              soHoaDon: actual.soHoaDon,
+              soKyHieu: actual.soKyHieu,
+              maCQThue: actual.maCQThue,
+              maTraCuu: actual.maTraCuu,
+              linkTraCuu: actual.linkTraCuu,
+              itemsError: ledgerItemsForInvoiceNo(row.invoiceNo) ? "" : `Mất phản hồi khi phát hành: ${error.message}`,
+              items: ledgerItemsForInvoiceNo(row.invoiceNo) || []
+            });
+            await InvoiceMappingStore.saveIssuedInvoices(issuedInvoiceBook);
+            Object.assign(row, actual);
+            succeeded += 1;
+            eInvoiceSelection.delete(row.id);
+            failures.push(`${row.invoiceNo}: mất phản hồi nhưng hóa đơn ĐÃ phát hành (Số ${actual.soHoaDon}); đã ghi sổ.`);
+          } else {
+            failures.push(`${row.invoiceNo}: ${error.message}`);
+          }
+          renderEInvoiceRows();
+        }
+      }
+    } finally {
+      // Luôn mở khóa nút, kể cả khi vòng lặp hỏng giữa chừng.
+      issuingInProgress = false;
+      renderEInvoiceRows();
+    }
+    const missingItems = targets.filter(row => {
+      const entry = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
+      return entry && !entry.items.length;
+    }).length;
+    showProgress(failures.length ? `Thất bại ${failures.length} hóa đơn:\n${failures.join("\n")}` : "");
+    setStatus(
+      `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` +
+      (failures.length ? ` ${failures.length} hóa đơn lỗi, xem chi tiết bên dưới.` : "") +
+      (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : ""),
+      failures.length ? "error" : "ok"
+    );
+  }
+
+  // Một mã web có thể nhận tồn từ nhiều dòng kho; gộp tên kho theo mã web để
+  // cột "Tên hàng kho" nêu đủ nguồn mà không phải chia nhỏ số lượng.
+  function stockNameByWebCode() {
+    const names = new Map();
+    for (const row of mappingDataset.mappings || []) {
+      const webCode = String(row.webCode || "").trim();
+      const stockCode = String(row.stockCode || "").trim();
+      if (!webCode || !stockCode || row.status !== "confirmed") continue;
+      const label = `${stockCode}${row.stockName ? ` - ${row.stockName}` : ""}`;
+      const current = names.get(webCode);
+      names.set(webCode, current ? `${current}; ${label}` : label);
+    }
+    return names;
+  }
+
+  async function exportIssuedInvoices() {
+    try {
+      const entries = issuedInvoiceBook.entries || [];
+      if (!entries.length) {
+        return setStatus("Chưa có hóa đơn nào được phát hành qua extension để xuất.", "error");
+      }
+      const fromDate = uiSession?.eInvoiceFromDate || "";
+      const toDate = uiSession?.eInvoiceToDate || "";
+      const scoped = InvoiceIssuedBook.filterEntries(issuedInvoiceBook, { fromDate, toDate });
+      if (!scoped.length) {
+        return setStatus(
+          `Không có hóa đơn nào trong khoảng ${fromDate || "…"} → ${toDate || "…"}.`,
+          "error"
+        );
+      }
+      const withoutItems = scoped.filter(entry => !entry.items.length);
+      if (withoutItems.length === scoped.length) {
+        return setStatus(
+          `Cả ${scoped.length} hóa đơn đều chưa có mặt hàng nên không xuất được. ` +
+          "Hãy đối soát sau lưu hoặc dùng Thử đọc mặt hàng trước.",
+          "error"
+        );
+      }
+      const sheets = InvoiceIssuedBook.buildWorkbook({
+        book: issuedInvoiceBook,
+        fromDate,
+        toDate,
+        stockNameByWebCode: stockNameByWebCode()
+      });
+      const bytes = InvoiceXlsxWriter.build(sheets);
+      const exportedAt = new Date().toISOString();
+      await downloadBase64(
+        InvoiceXlsxWriter.toBase64(bytes),
+        `XuatKho_PhatHanh_${localTimestamp(exportedAt)}.xlsx`,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      const lineCount = sheets[0].rows.length;
+      const totalQty = sheets[0].rows.reduce((sum, row) => sum + Number(row[6] || 0), 0);
+      setStatus(
+        `Đã xuất Excel: ${scoped.length - withoutItems.length} hóa đơn · ${lineCount} dòng hàng · ` +
+        `${formatMoney(totalQty)} đơn vị.` +
+        (withoutItems.length
+          ? ` Cảnh báo: ${withoutItems.length} hóa đơn chưa có mặt hàng nên không nằm trong file.`
+          : ""),
+        withoutItems.length ? "warn" : "ok"
+      );
+    } catch (error) {
+      setStatus(`Không xuất được file hạch toán: ${error.message}`, "error");
+    }
+  }
+
   function renderStatementAdmin() {
     const node = document.getElementById("it-statement-admin");
     if (!node) return;
     const statementTransactions = statementDataset.transactions || [];
     const statementTotal = statementTransactions.reduce((sum, item) => sum + Number(item.credit || 0), 0);
-    node.innerHTML = `<div class="it-statement-toolbar"><b>Sao kê: ${escapeHtml(statementDataset.source || "chưa nhập")}</b>
-      <div class="it-statement-total"><small>Tổng tiền sao kê</small><strong>${formatMoney(statementTotal)} đ</strong><span id="it-statement-visible-total"></span></div>
-      <select id="it-statement-filter"><option value="open">Chưa xử lý</option><option value="all">Tất cả</option><option value="pending">Chờ xử lý</option><option value="review">Cần kiểm tra</option><option value="done">Đã xử lý</option></select></div>
-      <div class="it-table-wrap"><table class="it-statement-table"><thead><tr><th>Ngày GD</th><th>Diễn giải</th><th>Phiếu</th><th>Credit</th><th>Trạng thái</th><th></th></tr></thead><tbody id="it-statement-body"></tbody></table></div>`;
+    node.innerHTML = `<div class="it-subtabs">
+        <button id="it-subtab-statement" type="button" class="active">Giao dịch</button>
+        <button id="it-subtab-einvoice" type="button">Phát hành hóa đơn</button>
+      </div>
+      <div id="it-statement-view">
+        <div class="it-statement-toolbar"><b>Sao kê: ${escapeHtml(statementDataset.source || "chưa nhập")}</b>
+        <div class="it-statement-total"><small>Tổng tiền sao kê</small><strong>${formatMoney(statementTotal)} đ</strong><span id="it-statement-visible-total"></span></div>
+        <select id="it-statement-filter"><option value="open">Chưa xử lý</option><option value="all">Tất cả</option><option value="pending">Chờ xử lý</option><option value="review">Cần kiểm tra</option><option value="done">Đã xử lý</option></select></div>
+        <div class="it-table-wrap"><table class="it-statement-table"><thead><tr><th>Ngày GD</th><th>Diễn giải</th><th>Phiếu</th><th>Credit</th><th>Trạng thái</th><th></th></tr></thead><tbody id="it-statement-body"></tbody></table></div>
+      </div>
+      <div id="it-einvoice-admin" hidden></div>`;
     node.querySelector("#it-statement-filter").addEventListener("change", renderStatementRows);
+    node.querySelector("#it-subtab-statement").addEventListener("click", () => showStatementSubtab("statement"));
+    node.querySelector("#it-subtab-einvoice").addEventListener("click", () => showStatementSubtab("einvoice"));
     renderStatementRows();
+    showStatementSubtab(statementSubtab);
+  }
+
+  // Phát hành hóa đơn là một bước của luồng giao dịch nên nằm ngay trong tab
+  // Giao dịch ngân hàng, không tách thành màn hình riêng.
+  function showStatementSubtab(name) {
+    statementSubtab = name === "einvoice" ? "einvoice" : "statement";
+    const statementView = document.getElementById("it-statement-view");
+    const eInvoiceView = document.getElementById("it-einvoice-admin");
+    if (!statementView || !eInvoiceView) return;
+    const showEInvoice = statementSubtab === "einvoice";
+    statementView.hidden = showEInvoice;
+    eInvoiceView.hidden = !showEInvoice;
+    document.getElementById("it-subtab-statement")?.classList.toggle("active", !showEInvoice);
+    document.getElementById("it-subtab-einvoice")?.classList.toggle("active", showEInvoice);
+    if (showEInvoice) renderEInvoiceAdmin();
   }
 
   function renderStatementRows() {
@@ -3908,6 +4459,29 @@
     setStatus(predictedGrand === targetGrand ? "Đã khớp tổng bằng cách bù phần lệch tiền hàng vào tiền giờ." : "Đã tìm phương án gần nhất trong giới hạn tồn.", predictedGrand === targetGrand ? "ok" : "warn");
   }
 
+  // Website phan biet chi nhanh bang cookie `shop` dung chung cho ca domain,
+  // khong phai bang URL. Mo tab chi nhanh khac se ghi de cookie nay, khien cac
+  // lenh luu dang chay ghi vao sai chi nhanh ma URL van trong nhu binh thuong.
+  // Chi canh bao cho nguoi dung biet, khong chan thao tac.
+  function activeShopFromCookie() {
+    const match = String(document.cookie || "").match(/(?:^|;\s*)shop=([^;]*)/);
+    if (!match) return "";
+    return decodeURIComponent(match[1]).replace(/^\/+|\/+$/g, "").toLowerCase();
+  }
+
+  function warnOnTenantMismatch() {
+    const pageTenant = String(InvoiceMappingStore.currentTenant() || "").toLowerCase();
+    const cookieTenant = activeShopFromCookie();
+    if (!cookieTenant || !pageTenant || cookieTenant === pageTenant) return false;
+    setStatus(
+      `CẢNH BÁO: trang này là "${pageTenant}" nhưng trình duyệt đang hoạt động ở chi nhánh "${cookieTenant}". ` +
+      "Có thể bạn đang mở hai chi nhánh cùng lúc — phiếu lưu từ tab này có thể vào nhầm chi nhánh. " +
+      "Hãy tải lại trang trước khi tạo phiếu.",
+      "error"
+    );
+    return true;
+  }
+
   async function init() {
     catalogDataset = await InvoiceMappingStore.loadCatalog(embeddedCatalog);
     webCatalog = catalogDataset.items || [];
@@ -3915,6 +4489,7 @@
     statementDataset = await InvoiceMappingStore.loadStatement();
     verificationLedger = await InvoiceMappingStore.loadLedger();
     stockStateMeta = await InvoiceMappingStore.loadStockStateMeta();
+    issuedInvoiceBook = await InvoiceMappingStore.loadIssuedInvoices();
     priorityRules = await InvoiceMappingStore.loadPriorityRules();
     apiTemplate = await InvoiceMappingStore.loadApiTemplate();
     if (apiTemplate) {
@@ -3926,6 +4501,11 @@
     refreshMappingState();
     mount();
     await restoreUiSession();
+    // Cookie `shop` co the bi tab khac ghi de bat ky luc nao sau khi panel da mo,
+    // nen phai kiem tra lai dinh ky chu khong chi mot lan luc khoi tao.
+    if (!warnOnTenantMismatch()) {
+      setInterval(warnOnTenantMismatch, 15000);
+    }
   }
 
   init().catch(error => console.error("Invoice Target MVP init failed", error));
