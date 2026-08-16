@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.21.0 (2026-08-16)
+
+- Thêm kiểm tra sẵn sàng chốt kỳ với 6 điều kiện: danh mục web, tồn kho vật lý, ánh xạ, sao kê trong kỳ, giao dịch tồn đọng và hóa đơn điện tử chưa phát hành.
+- Hiển thị từng điều kiện đạt/chưa đạt và cho phép đi thẳng tới màn hình xử lý tương ứng.
+- Thêm xuất Excel đối soát theo kỳ gồm 3 sheet: tổng quan, giao dịch và tồn đọng; dữ liệu được tạo trực tiếp trong extension, không cần backend.
+- Báo cáo vẫn có thể xuất khi kỳ chưa sẵn sàng để kế toán kiểm tra ngoại lệ, nhưng trạng thái chưa đủ điều kiện được thể hiện rõ trên giao diện.
+
+## 1.20.0 (2026-08-16)
+
+- Bổ sung dashboard kế toán ngay tại màn hình quy trình, có bộ lọc từ ngày/đến ngày và hiển thị rõ cơ sở đang thao tác.
+- Thêm KPI tổng tiền sao kê, đã đối soát, chưa hoàn tất, số việc cần xử lý và tỷ lệ hóa đơn điện tử đã phát hành.
+- Thêm hàng đợi ngoại lệ tổng hợp lỗi dữ liệu, tồn kho, ánh xạ và giao dịch; mỗi dòng có nút đưa kế toán thẳng tới màn hình xử lý phù hợp.
+- Bộ lọc kỳ chỉ thay đổi phần tổng quan, không sửa trạng thái sao kê, tồn kho hay kết quả Batch Review hiện có.
+
 ## 1.19.41 (2026-08-15)
 
 - Sửa đối chiếu ngày riêng cho Kim Giang: dùng `Ngày giao dịch/Transaction date` làm ngày hóa đơn, không còn dùng nhầm `Ngày KH thực hiện/Requesting date`.

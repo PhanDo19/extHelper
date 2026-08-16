@@ -55,6 +55,12 @@ Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
 11. Vào tab **Giao dịch ngân hàng** → sub-tab **Phát hành hóa đơn**, chọn khoảng ngày, tích các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô.
 12. Sang tab Kho bấm **Xuất kho đã phát hành** để lấy file JSON hạch toán gửi kế toán.
 
+## Dashboard kế toán
+
+Màn hình đầu hiển thị tổng quan theo kỳ cho đúng cơ sở đang mở: tổng sao kê, số tiền đã đối soát, số tiền chưa hoàn tất, số ngoại lệ và số hóa đơn điện tử đã phát hành. Khu vực **Việc cần xử lý** gom các lỗi dữ liệu, tồn kho, ánh xạ và giao dịch, đồng thời đưa người dùng tới đúng bước cần sửa.
+
+Dashboard chỉ đọc trạng thái hiện có. Việc đổi khoảng ngày không tự động sửa sao kê, trừ tồn kho, lưu hoặc phát hành hóa đơn.
+
 ## Phát hành hóa đơn điện tử
 
 Sub-tab **Phát hành hóa đơn** nằm trong tab **Giao dịch ngân hàng**, thay cho thao tác thủ công trên website (bấm `PHÁT HÀNH` rồi xác nhận hai hộp thoại cho từng dòng).

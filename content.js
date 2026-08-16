@@ -901,6 +901,339 @@
     return OPEN_STATEMENT_STATUSES.has(String(item?.status || "pending"));
   }
 
+  function statementDateRange() {
+    const dates = (statementDataset.transactions || [])
+      .map(item => String(item.transactionDate || ""))
+      .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))
+      .sort();
+    return {
+      fromDate: dates[0] || "",
+      toDate: dates[dates.length - 1] || ""
+    };
+  }
+
+  function accountingDashboardPeriod() {
+    const fallback = statementDateRange();
+    return {
+      fromDate: document.getElementById("it-accounting-from")?.value || fallback.fromDate,
+      toDate: document.getElementById("it-accounting-to")?.value || fallback.toDate
+    };
+  }
+
+  function isInAccountingPeriod(item, period) {
+    const date = String(item?.transactionDate || "");
+    if (!date) return false;
+    return (!period.fromDate || date >= period.fromDate) && (!period.toDate || date <= period.toDate);
+  }
+
+  function accountingIssueAction(item) {
+    const status = String(item?.status || "pending");
+    if (Number(mappingSummary.review || 0) + Number(mappingSummary.unmatched || 0) > 0) {
+      return { action: "mapping", label: "Kiểm tra ánh xạ" };
+    }
+    if (["error", "needs_new_invoice", "batch_ready", "planned", "already_issued"].includes(status) || item?.blockedNote) {
+      return { action: "batch", label: "Mở Batch Review" };
+    }
+    return { action: "statement", label: "Kiểm tra giao dịch" };
+  }
+
+  function accountingIssueText(item) {
+    if (item?.blockedNote) return String(item.blockedNote);
+    return {
+      error: "Giao dịch đang lỗi và cần kiểm tra lại phương án.",
+      review: "Giao dịch cần kế toán kiểm tra.",
+      needs_new_invoice: "Chưa có phiếu phù hợp; cần tạo phiếu mới.",
+      planned: "Phiếu đã áp dụng nhưng chưa đối soát thành công.",
+      batch_ready: "Phương án đã Accept nhưng chưa được lưu.",
+      already_issued: "Đã thấy hóa đơn khớp; cần xác nhận liên kết.",
+      pending: "Giao dịch chưa được lập phương án."
+    }[String(item?.status || "pending")] || "Giao dịch chưa hoàn tất.";
+  }
+
+  function accountingDashboardSnapshot() {
+    const period = accountingDashboardPeriod();
+    const transactions = (statementDataset.transactions || []).filter(item => isInAccountingPeriod(item, period));
+    const open = transactions.filter(isOpenStatementTransaction);
+    const done = transactions.filter(item => item.status === "done");
+    const ignored = transactions.filter(item => ["ignored", "skipped"].includes(item.status));
+    const waitingSave = transactions.filter(item => ["batch_ready", "planned"].includes(item.status));
+    const issues = open.filter(item =>
+      item.blockedNote || ["error", "review", "needs_new_invoice", "planned", "batch_ready", "already_issued"].includes(String(item.status))
+    );
+    const linkedInvoiceNos = new Set(done.map(item => String(item.invoiceNo || "")).filter(Boolean));
+    const issuedInvoiceNos = new Set((issuedInvoiceBook.entries || [])
+      .map(item => String(item.invoiceNo || ""))
+      .filter(invoiceNo => linkedInvoiceNos.has(invoiceNo)));
+    const unissued = done.filter(item => !issuedInvoiceNos.has(String(item.invoiceNo || "")));
+    const total = rows => rows.reduce((sum, item) => sum + Number(item.credit || 0), 0);
+    return {
+      period,
+      transactions,
+      open,
+      done,
+      ignored,
+      waitingSave,
+      issues,
+      issued: issuedInvoiceNos.size,
+      issuedInvoiceNos,
+      unissued,
+      totalAmount: total(transactions),
+      openAmount: total(open),
+      doneAmount: total(done)
+    };
+  }
+
+  function accountingCloseSnapshot() {
+    const state = accountingDashboardSnapshot();
+    const mappingPending = Number(mappingSummary.review || 0) + Number(mappingSummary.unmatched || 0);
+    const checks = [
+      {
+        key: "catalog",
+        ok: webCatalog.length > 0 && catalogDataset.source === "Website API",
+        label: "Danh mục website",
+        detail: webCatalog.length
+          ? `${webCatalog.length} mã · ${catalogDataset.source || "chưa rõ nguồn"}`
+          : "Chưa có danh mục mặt hàng",
+        action: "stock"
+      },
+      {
+        key: "stock",
+        ok: sharedWarehouse.initialized && inventory.length > 0,
+        label: "Tồn kho vật lý",
+        detail: sharedWarehouse.initialized
+          ? `${inventory.length} mã trong kho dùng chung`
+          : "Chưa khởi tạo tồn kho dùng chung",
+        action: "stock"
+      },
+      {
+        key: "mapping",
+        ok: mappingPending === 0,
+        label: "Ánh xạ mặt hàng",
+        detail: mappingPending ? `${mappingPending} mã còn cần duyệt` : "Không còn mã chờ xử lý",
+        action: "mapping"
+      },
+      {
+        key: "statement",
+        ok: state.transactions.length > 0,
+        label: "Sao kê trong kỳ",
+        detail: state.transactions.length
+          ? `${state.transactions.length} giao dịch · ${formatMoney(state.totalAmount)} đ`
+          : "Không có giao dịch trong khoảng ngày đã chọn",
+        action: "statement"
+      },
+      {
+        key: "reconciliation",
+        ok: state.open.length === 0,
+        label: "Đối soát giao dịch",
+        detail: state.open.length
+          ? `${state.open.length} giao dịch chưa hoàn tất · ${formatMoney(state.openAmount)} đ`
+          : `${state.done.length} giao dịch đã hoàn tất`,
+        action: "batch"
+      },
+      {
+        key: "issuance",
+        ok: state.done.length === 0 || state.unissued.length === 0,
+        label: "Hóa đơn điện tử",
+        detail: state.unissued.length
+          ? `${state.unissued.length} phiếu đã đối soát chưa có HĐĐT trong sổ extension`
+          : `${state.issued}/${state.done.length} phiếu đã phát hành`,
+        action: "einvoice"
+      }
+    ];
+    return {
+      ...state,
+      checks,
+      blockers: checks.filter(item => !item.ok),
+      ready: checks.every(item => item.ok)
+    };
+  }
+
+  function accountingStatusLabel(item) {
+    return {
+      pending: "Chờ xử lý",
+      review: "Cần kiểm tra",
+      planned: "Chờ lưu/đối soát",
+      batch_ready: "Đã Accept",
+      needs_new_invoice: "Cần tạo phiếu",
+      already_issued: "Chờ liên kết HĐ",
+      error: "Lỗi",
+      done: "Đã đối soát",
+      ignored: "Bỏ qua",
+      skipped: "Bỏ qua"
+    }[String(item?.status || "pending")] || String(item?.status || "Chưa rõ");
+  }
+
+  function renderAccountingCloseStatus() {
+    const node = document.getElementById("it-accounting-close-status");
+    if (!node) return;
+    const state = accountingCloseSnapshot();
+    node.className = `it-accounting-close-status ${state.ready ? "ready" : "blocked"}`;
+    node.innerHTML = `<div class="it-accounting-close-head"><div><b>${state.ready ? "Sẵn sàng chốt kỳ" : `Chưa thể chốt kỳ · ${state.blockers.length} mục cần xử lý`}</b><span>${escapeHtml(state.period.fromDate || "…")} → ${escapeHtml(state.period.toDate || "…")} · ${escapeHtml(pageTenantLabel)}</span></div><span class="it-close-badge">${state.ready ? "ĐỦ ĐIỀU KIỆN" : "CẦN HOÀN TẤT"}</span></div>
+      <div class="it-accounting-check-list">${state.checks.map(check => `<button type="button" data-action="${check.action}" class="${check.ok ? "ok" : "warn"}"><i>${check.ok ? "✓" : "!"}</i><span><b>${escapeHtml(check.label)}</b><small>${escapeHtml(check.detail)}</small></span></button>`).join("")}</div>`;
+    node.querySelectorAll("button[data-action]").forEach(button => button.addEventListener("click", openAccountingDashboardAction));
+  }
+
+  function accountingReportSheets() {
+    const state = accountingCloseSnapshot();
+    const issuedByInvoiceNo = new Map((issuedInvoiceBook.entries || [])
+      .map(entry => [String(entry.invoiceNo || ""), entry]));
+    const periodLabel = `${state.period.fromDate || "…"} → ${state.period.toDate || "…"}`;
+    const summaryRows = [
+      ["Cơ sở", pageTenantLabel],
+      ["Kỳ đối soát", periodLabel],
+      ["Trạng thái chốt kỳ", state.ready ? "Sẵn sàng" : "Chưa sẵn sàng"],
+      ["Tổng giao dịch", state.transactions.length],
+      ["Tổng tiền sao kê", state.totalAmount],
+      ["Đã đối soát", state.done.length],
+      ["Tiền đã đối soát", state.doneAmount],
+      ["Chưa hoàn tất", state.open.length],
+      ["Tiền chưa hoàn tất", state.openAmount],
+      ["Đã bỏ qua", state.ignored.length],
+      ["HĐĐT đã phát hành", state.issued],
+      ["Phiếu chưa phát hành HĐĐT", state.unissued.length],
+      ["Kết luận", state.ready ? "Đủ điều kiện chốt kỳ" : `Còn ${state.blockers.length} nhóm dữ liệu cần xử lý`]
+    ];
+    const transactionRows = state.transactions.map(item => {
+      const invoiceNo = String(item.invoiceNo || "");
+      const issued = issuedByInvoiceNo.get(invoiceNo);
+      return [
+        item.transactionDate || "",
+        item.requestedAt || "",
+        item.reference || "",
+        item.description || "",
+        Number(item.credit || 0),
+        accountingStatusLabel(item),
+        invoiceNo,
+        item.reconciledAt || "",
+        issued ? "Đã phát hành" : (item.status === "done" ? "Chưa phát hành" : "—"),
+        issued?.soHoaDon || "",
+        issued?.soKyHieu || "",
+        item.blockedNote || item.reconciledNote || ""
+      ];
+    });
+    const issueRows = [
+      ...state.blockers.map(item => ["Toàn hệ thống", item.label, item.detail, item.ok ? "Đạt" : "Cần xử lý"]),
+      ...state.issues.map(item => [
+        item.transactionDate || "",
+        item.invoiceNo || item.reference || "Chưa có phiếu",
+        accountingIssueText(item),
+        accountingStatusLabel(item)
+      ])
+    ];
+    return {
+      state,
+      sheets: [
+        {
+          name: "Tong quan",
+          columns: [{ header: "Chỉ tiêu", width: 30 }, { header: "Giá trị", width: 34 }],
+          rows: summaryRows
+        },
+        {
+          name: "Giao dich",
+          columns: [
+            { header: "Ngày đối soát", width: 15 }, { header: "Ngày KH thực hiện", width: 22 },
+            { header: "Số tham chiếu", width: 18 }, { header: "Diễn giải", width: 48 },
+            { header: "Credit", width: 16 }, { header: "Trạng thái", width: 20 },
+            { header: "Số phiếu", width: 18 }, { header: "Đối soát lúc", width: 24 },
+            { header: "HĐĐT", width: 18 }, { header: "Số hóa đơn", width: 16 },
+            { header: "Ký hiệu", width: 16 }, { header: "Ghi chú", width: 52 }
+          ],
+          rows: transactionRows
+        },
+        {
+          name: "Ton dong",
+          columns: [
+            { header: "Ngày/Phạm vi", width: 18 }, { header: "Phiếu/Hạng mục", width: 28 },
+            { header: "Nội dung cần xử lý", width: 68 }, { header: "Trạng thái", width: 20 }
+          ],
+          rows: issueRows
+        }
+      ]
+    };
+  }
+
+  async function exportAccountingReport() {
+    try {
+      const report = accountingReportSheets();
+      if (!report.state.transactions.length) {
+        return setStatus("Không có giao dịch trong kỳ đã chọn để xuất báo cáo.", "error");
+      }
+      const bytes = InvoiceXlsxWriter.build(report.sheets);
+      const exportedAt = new Date().toISOString();
+      await downloadBase64(
+        InvoiceXlsxWriter.toBase64(bytes),
+        `DoiSoat_${pageTenantFileLabel}_${report.state.period.fromDate || "all"}_${report.state.period.toDate || "all"}_${localTimestamp(exportedAt)}.xlsx`,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      setStatus(
+        `Đã xuất báo cáo đối soát ${report.state.transactions.length} giao dịch. ` +
+        (report.state.ready ? "Kỳ này đủ điều kiện chốt." : `Còn ${report.state.blockers.length} nhóm dữ liệu cần xử lý.`),
+        report.state.ready ? "ok" : "warn"
+      );
+    } catch (error) {
+      setStatus(`Không xuất được báo cáo đối soát: ${error.message}`, "error");
+    }
+  }
+
+  function openAccountingDashboardAction(event) {
+    const action = event.target.closest("button")?.dataset.action;
+    if (action === "stock") setStockMode(true);
+    else if (action === "mapping") setMappingMode(true);
+    else if (action === "statement") setStatementMode(true);
+    else if (action === "batch") showBatchReviewMode(true, true);
+    else if (action === "einvoice") openEInvoiceAdmin().catch(error => setStatus(error.message, "error"));
+  }
+
+  function refreshAccountingDashboard() {
+    const fromInput = document.getElementById("it-accounting-from");
+    const toInput = document.getElementById("it-accounting-to");
+    if (fromInput?.value && toInput?.value && fromInput.value > toInput.value) {
+      const previousFrom = fromInput.value;
+      fromInput.value = toInput.value;
+      toInput.value = previousFrom;
+    }
+    renderAccountingDashboard();
+  }
+
+  function renderAccountingDashboard() {
+    const kpis = document.getElementById("it-accounting-kpis");
+    const queue = document.getElementById("it-accounting-queue");
+    if (!kpis || !queue) return;
+    const range = statementDateRange();
+    const fromInput = document.getElementById("it-accounting-from");
+    const toInput = document.getElementById("it-accounting-to");
+    if (fromInput && !fromInput.value) fromInput.value = range.fromDate;
+    if (toInput && !toInput.value) toInput.value = range.toDate;
+    const state = accountingDashboardSnapshot();
+    kpis.innerHTML = `
+      <div><small>Tổng sao kê</small><strong>${formatMoney(state.totalAmount)} đ</strong><span>${state.transactions.length} giao dịch trong kỳ</span></div>
+      <div class="ok"><small>Đã đối soát</small><strong>${formatMoney(state.doneAmount)} đ</strong><span>${state.done.length} giao dịch</span></div>
+      <div class="warn"><small>Chưa hoàn tất</small><strong>${formatMoney(state.openAmount)} đ</strong><span>${state.open.length} giao dịch</span></div>
+      <div class="${state.issues.length ? "error" : "ok"}"><small>Cần xử lý</small><strong>${state.issues.length}</strong><span>${state.waitingSave.length} đang chờ lưu/đối soát</span></div>
+      <div><small>HĐĐT đã phát hành</small><strong>${state.issued}/${state.done.length}</strong><span>${state.ignored.length} giao dịch đã bỏ qua</span></div>`;
+    const globalIssues = [];
+    if (!webCatalog.length || catalogDataset.source !== "Website API") {
+      globalIssues.push({ text: "Danh mục website chưa được đồng bộ mới nhất.", action: "stock", label: "Chuẩn bị dữ liệu" });
+    }
+    if (!sharedWarehouse.initialized || !inventory.length) {
+      globalIssues.push({ text: "Chưa có tồn kho vật lý khả dụng.", action: "stock", label: "Kiểm tra tồn kho" });
+    }
+    const mappingPending = Number(mappingSummary.review || 0) + Number(mappingSummary.unmatched || 0);
+    if (mappingPending) {
+      globalIssues.push({ text: `${mappingPending} mặt hàng chưa hoàn tất ánh xạ.`, action: "mapping", label: "Kiểm tra ánh xạ" });
+    }
+    const issueRows = state.issues.slice(0, 12).map(item => {
+      const next = accountingIssueAction(item);
+      return `<tr><td>${escapeHtml(item.transactionDate || "—")}</td><td><b>${escapeHtml(item.invoiceNo || "Chưa có phiếu")}</b><small title="${escapeHtml(item.description || "")}">${escapeHtml(item.description || "Không có diễn giải")}</small></td><td class="it-money">${formatMoney(item.credit)}</td><td>${escapeHtml(accountingIssueText(item))}</td><td><button type="button" data-action="${next.action}">${next.label}</button></td></tr>`;
+    }).join("");
+    const globalRows = globalIssues.map(item => `<tr class="it-accounting-global-issue"><td>Toàn hệ thống</td><td colspan="2">${escapeHtml(item.text)}</td><td>Cần hoàn tất trước khi xử lý hàng loạt.</td><td><button type="button" data-action="${item.action}">${item.label}</button></td></tr>`).join("");
+    queue.innerHTML = globalRows || issueRows
+      ? `<div class="it-accounting-queue-head"><div><b>Việc cần xử lý</b><span>${globalIssues.length + state.issues.length} mục cần chú ý trong kỳ</span></div>${state.issues.length > 12 ? `<small>Đang hiện 12/${state.issues.length} giao dịch</small>` : ""}</div><div class="it-table-wrap"><table class="it-accounting-table"><thead><tr><th>Ngày</th><th>Giao dịch/Phiếu</th><th>Số tiền</th><th>Nguyên nhân</th><th>Tiếp theo</th></tr></thead><tbody>${globalRows}${issueRows}</tbody></table></div>`
+      : `<div class="it-accounting-empty"><b>Không có việc tồn đọng trong kỳ đã chọn</b><span>Các giao dịch đã được đối soát hoặc bỏ qua.</span></div>`;
+    queue.querySelectorAll("button[data-action]").forEach(button => button.addEventListener("click", openAccountingDashboardAction));
+    renderAccountingCloseStatus();
+  }
+
   function workflowSnapshot() {
     const transactions = statementDataset.transactions || [];
     const pendingTransactions = transactions.filter(isOpenStatementTransaction).length;
@@ -961,6 +1294,7 @@
       !statementReady ? "Hoàn tất bước 3 trước" : state.pendingTransactions ? `${state.pendingTransactions} giao dịch đang chờ xử lý` : `${state.doneTransactions} đã đối soát${state.ignoredTransactions ? ` · ${state.ignoredTransactions} đã bỏ qua` : ""}`);
     setWorkflowStep("einvoice", issuanceFinished ? "done" : state.doneTransactions ? "ready" : "waiting",
       !state.doneTransactions ? "Chưa có hóa đơn đã đối soát" : `${state.issuedTransactions}/${state.doneTransactions} hóa đơn đã phát hành qua extension`);
+    renderAccountingDashboard();
   }
 
   function panelHtml() {
@@ -982,6 +1316,25 @@
             <div><span class="it-eyebrow">QUY TRÌNH DÀNH CHO KẾ TOÁN</span><h2>Xuất hóa đơn theo sao kê</h2><p>Làm lần lượt từ bước 1 đến bước 5. Extension sẽ báo rõ bước nào đã sẵn sàng và bước nào cần xử lý.</p></div>
             <span class="it-branch-badge">${escapeHtml(pageTenantLabel)}</span>
           </div>
+          <section class="it-accounting-dashboard">
+            <div class="it-accounting-toolbar">
+              <div><span class="it-eyebrow">TỔNG QUAN KẾ TOÁN</span><h3>Tình hình xử lý trong kỳ</h3></div>
+              <div class="it-accounting-filters">
+                <label>Cơ sở<select id="it-accounting-tenant" disabled><option>${escapeHtml(pageTenantLabel)}</option></select></label>
+                <label>Từ ngày<input id="it-accounting-from" type="date"></label>
+                <label>Đến ngày<input id="it-accounting-to" type="date"></label>
+                <button id="it-accounting-refresh" type="button">Cập nhật</button>
+              </div>
+            </div>
+            <div id="it-accounting-kpis" class="it-accounting-kpis"></div>
+            <div class="it-accounting-close-actions">
+              <div><b>Kiểm tra và chốt kỳ</b><span>Kiểm tra toàn bộ điều kiện trước khi bàn giao số liệu cho kế toán.</span></div>
+              <button id="it-accounting-close-check" type="button">Kiểm tra sẵn sàng</button>
+              <button id="it-accounting-export" type="button" class="primary">Xuất Excel đối soát</button>
+            </div>
+            <div id="it-accounting-close-status" class="it-accounting-close-status"></div>
+            <div id="it-accounting-queue" class="it-accounting-queue"></div>
+          </section>
           <div id="it-workflow-progress" class="it-workflow-progress"></div>
           <div class="it-workflow-list">
             <article class="it-workflow-card" data-workflow-step="data">
@@ -1130,6 +1483,18 @@
       root.querySelector("#it-stock-file-name").textContent = "Chưa chọn file";
     }));
     root.querySelector("#it-sync-web").addEventListener("click", syncLatestWebCatalog);
+    root.querySelector("#it-accounting-refresh").addEventListener("click", refreshAccountingDashboard);
+    root.querySelector("#it-accounting-from").addEventListener("change", refreshAccountingDashboard);
+    root.querySelector("#it-accounting-to").addEventListener("change", refreshAccountingDashboard);
+    root.querySelector("#it-accounting-close-check").addEventListener("click", () => {
+      renderAccountingCloseStatus();
+      const close = accountingCloseSnapshot();
+      setStatus(
+        close.ready ? "Kỳ đang chọn đã đủ điều kiện chốt." : `Còn ${close.blockers.length} nhóm dữ liệu cần hoàn tất trước khi chốt kỳ.`,
+        close.ready ? "ok" : "warn"
+      );
+    });
+    root.querySelector("#it-accounting-export").addEventListener("click", exportAccountingReport);
     root.querySelector("#it-import-web").addEventListener("click", () => root.querySelector("#it-web-file").click());
     root.querySelector("#it-web-file").addEventListener("change", importWebFile);
     root.querySelector("#it-stock-file").addEventListener("change", importStockFile);

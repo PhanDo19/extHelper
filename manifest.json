@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Khớp tổng tiền hóa đơn - MVP",
-  "version": "1.19.41",
+  "version": "1.21.0",
   "description": "Lập phương án stock-first, lưu tuần tự bằng API chính thức và chỉ ghi sao kê/tồn kho sau khi đọc lại phiếu khớp hoàn toàn. Phát hành hóa đơn điện tử hàng loạt sau khi người dùng xác nhận và ghi lại mặt hàng để xuất file hạch toán.",
   "permissions": ["storage", "downloads"],
   "background": {

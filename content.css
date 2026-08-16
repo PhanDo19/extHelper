@@ -35,6 +35,65 @@
 .it-welcome-card p { max-width: 520px; margin: 0; color: #deebff; font-size: 12px; line-height: 1.5; }
 .it-eyebrow { color: #bcd8ff; font-size: 9px; font-weight: 800; letter-spacing: .13em; }
 .it-branch-badge { flex: 0 0 auto; padding: 6px 9px; border: 1px solid #ffffff55; border-radius: 999px; background: #ffffff18; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.it-accounting-dashboard { overflow: hidden; border: 1px solid #d5e0ee; border-radius: 12px; background: #fff; box-shadow: 0 4px 16px #17345f0c; }
+.it-accounting-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding: 13px 14px; border-bottom: 1px solid #e1e8f1; background: #f8fbff; }
+.it-accounting-toolbar h3 { margin: 2px 0 0; color: #193b68; font-size: 15px; }
+.it-accounting-toolbar .it-eyebrow { color: #4c78af; }
+.it-accounting-filters { display: grid; grid-template-columns: 130px 124px 124px auto; align-items: end; gap: 7px; }
+#it-panel .it-accounting-filters label { margin: 0; color: #5d6e84; font-size: 9px; text-transform: uppercase; }
+#it-panel .it-accounting-filters input, #it-panel .it-accounting-filters select { min-height: 32px; margin-top: 3px; padding: 5px 7px; font-size: 11px; text-transform: none; }
+#it-panel .it-accounting-filters select:disabled { color: #344b69; background: #edf2f8; opacity: 1; }
+#it-panel .it-accounting-filters button { min-height: 32px; padding: 6px 10px; color: #fff; border-color: #1769e0; background: #1769e0; white-space: nowrap; }
+.it-accounting-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: #dfe7f1; }
+.it-accounting-kpis > div { display: grid; min-width: 0; gap: 3px; padding: 11px 12px; background: #fff; }
+.it-accounting-kpis small { overflow: hidden; color: #65758a; font-size: 9px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.it-accounting-kpis strong { overflow: hidden; color: #183a67; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.it-accounting-kpis span { color: #748196; font-size: 9px; line-height: 1.35; }
+.it-accounting-kpis .ok strong { color: #17703b; }
+.it-accounting-kpis .warn strong { color: #996300; }
+.it-accounting-kpis .error strong { color: #ae2d24; }
+.it-accounting-close-actions { display: flex; align-items: center; gap: 8px; padding: 10px 13px; border-top: 1px solid #e1e8f1; background: #f8fbff; }
+.it-accounting-close-actions > div { display: grid; min-width: 0; flex: 1; gap: 2px; }
+.it-accounting-close-actions b { color: #213d62; }
+.it-accounting-close-actions span { color: #718096; font-size: 9px; }
+#it-panel .it-accounting-close-actions button { padding: 7px 10px; white-space: nowrap; }
+.it-accounting-close-status { display: grid; gap: 9px; padding: 11px 13px; border-top: 1px solid #e1e8f1; }
+.it-accounting-close-status.ready { background: #f3fbf6; }
+.it-accounting-close-status.blocked { background: #fffaf0; }
+.it-accounting-close-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.it-accounting-close-head > div { display: grid; gap: 2px; }
+.it-accounting-close-head b { color: #213d62; }
+.it-accounting-close-head span { color: #718096; font-size: 9px; }
+.it-close-badge { padding: 4px 8px; border-radius: 999px; color: #8a5a00 !important; background: #ffedc1; font-size: 8px !important; font-weight: 800; white-space: nowrap; }
+.it-accounting-close-status.ready .it-close-badge { color: #176b3a !important; background: #dff5e7; }
+.it-accounting-check-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+#it-panel .it-accounting-check-list button { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 8px; text-align: left; background: #fff; }
+.it-accounting-check-list button i { display: grid; width: 22px; height: 22px; flex: 0 0 22px; place-items: center; border-radius: 50%; color: #8a5a00; background: #ffedc1; font-style: normal; font-weight: 900; }
+.it-accounting-check-list button.ok i { color: #176b3a; background: #dff5e7; }
+.it-accounting-check-list button span { display: grid; min-width: 0; gap: 2px; }
+.it-accounting-check-list button b, .it-accounting-check-list button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.it-accounting-check-list button b { color: #273f5e; font-size: 10px; }
+.it-accounting-check-list button small { color: #728197; font-size: 8px; }
+.it-accounting-queue { border-top: 1px solid #e1e8f1; }
+.it-accounting-queue-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; }
+.it-accounting-queue-head > div { display: grid; gap: 2px; }
+.it-accounting-queue-head b { color: #213d62; }
+.it-accounting-queue-head span, .it-accounting-queue-head small { color: #718096; font-size: 9px; }
+.it-accounting-queue .it-table-wrap { max-height: 235px; border: 0; border-top: 1px solid #e1e8f1; border-radius: 0; }
+.it-accounting-table { width: 100%; min-width: 690px; border-collapse: collapse; table-layout: fixed; font-size: 10px; }
+.it-accounting-table th { position: sticky; top: 0; z-index: 1; padding: 7px 8px; color: #52657d; background: #eef3f9; text-align: left; white-space: nowrap; }
+.it-accounting-table td { padding: 8px; border-top: 1px solid #edf1f6; color: #34465d; vertical-align: top; overflow-wrap: anywhere; }
+.it-accounting-table th:nth-child(1) { width: 78px; }
+.it-accounting-table th:nth-child(2) { width: 190px; }
+.it-accounting-table th:nth-child(3) { width: 92px; }
+.it-accounting-table th:nth-child(5) { width: 125px; }
+.it-accounting-table td small { display: block; overflow: hidden; margin-top: 2px; color: #718096; text-overflow: ellipsis; white-space: nowrap; }
+.it-accounting-table .it-money { text-align: right; font-weight: 800; white-space: nowrap; }
+.it-accounting-table button { width: 100%; padding: 6px 7px !important; color: #164f91 !important; border-color: #9eb7d7 !important; background: #f7faff !important; font-size: 9px; }
+.it-accounting-global-issue { background: #fff9e8; }
+.it-accounting-empty { display: grid; place-items: center; gap: 3px; padding: 24px; color: #62748a; text-align: center; }
+.it-accounting-empty b { color: #18703c; }
+.it-accounting-empty span { font-size: 10px; }
 .it-workflow-progress { padding: 11px 14px; border: 1px solid #d9e4f2; border-radius: 10px; background: #fff; }
 .it-workflow-progress > div:first-child { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .it-workflow-progress b { color: #183b69; }
@@ -76,6 +135,12 @@
   .it-step-actions { grid-column: 2; width: 100%; }
   .it-home-secondary { grid-template-columns: 1fr; }
   .it-home-secondary details, .it-help-box { grid-column: 1 !important; }
+  .it-accounting-toolbar { display: grid; }
+  .it-accounting-filters { grid-template-columns: 1fr 1fr; }
+  .it-accounting-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .it-accounting-close-actions { align-items: stretch; flex-wrap: wrap; }
+  .it-accounting-close-actions > div { flex-basis: 100%; }
+  .it-accounting-check-list { grid-template-columns: 1fr 1fr; }
 }
 #it-panel label { display: block; margin: 10px 0; font-weight: 650; }
 #it-panel input:not([type="checkbox"]), #it-panel select { width: 100%; min-height: 38px; border: 1px solid #aebbd0; border-radius: 7px; padding: 8px 10px; margin-top: 4px; font-size: 13px; color: #172033; background: #fff; }

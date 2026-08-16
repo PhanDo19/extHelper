@@ -7,7 +7,7 @@ const content = fs.readFileSync(path.join(root, "content.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "content.css"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 
-assert.equal(manifest.version, "1.19.41");
+assert.equal(manifest.version, "1.21.0");
 assert(content.includes("E_INVOICE_AMOUNT_TOLERANCE = 1"), "Phát hành phải chấp nhận sai số làm tròn tối đa 1 đồng");
 assert(content.includes("function statementInvoiceMatch"), "Danh sách phát hành phải đối chiếu mã phiếu, ngày và tổng tiền với sao kê");
 assert(content.includes("Giao dịch liên kết"), "Danh sách phát hành phải hiển thị giao dịch sao kê liên kết");
@@ -53,11 +53,13 @@ assert(content.includes('bước này chưa phải là lưu thành công'), "Kh�
 for (const id of [
   "it-home-dashboard", "it-workflow-progress", "it-home-back", "it-open-single", "it-sync-web",
   "it-manage-stock", "it-manage-mapping", "it-manage-statement", "it-manage-batch", "it-manage-einvoice",
-  "it-import-web", "it-import-statement", "it-statement-import-button"
+  "it-import-web", "it-import-statement", "it-statement-import-button", "it-accounting-tenant",
+  "it-accounting-from", "it-accounting-to", "it-accounting-refresh", "it-accounting-kpis", "it-accounting-queue"
 ]) {
   assert.equal((content.match(new RegExp(`id=\\"${id}\\"`, "g")) || []).length, 1, `${id} phải tồn tại đúng một lần`);
 }
-for (const fn of ["workflowSnapshot", "renderWorkflowDashboard", "showHomeDashboard", "applyPanelScreen"]) {
+for (const fn of ["workflowSnapshot", "renderWorkflowDashboard", "showHomeDashboard", "applyPanelScreen",
+  "accountingDashboardSnapshot", "renderAccountingDashboard", "refreshAccountingDashboard", "openAccountingDashboardAction"]) {
   assert(content.includes(`function ${fn}(`), `Thiếu ${fn}`);
 }
 assert(content.includes('const ignoredTransactions = transactions.filter'), "Dashboard phải tách giao dịch Bỏ qua khỏi số đã đối soát");
@@ -71,5 +73,10 @@ for (const mode of ["home-mode", "single-mode", "stock-mode", "mapping-mode", "s
 assert(css.includes(".it-workflow-card"));
 assert(css.includes("#it-panel.home-mode"));
 assert(css.includes("#it-panel:not(.home-mode) .it-home-dashboard"));
+assert(css.includes(".it-accounting-dashboard"), "Thiếu khung tổng quan kế toán");
+assert(css.includes(".it-accounting-kpis"), "Thiếu giao diện KPI kế toán");
+assert(css.includes(".it-accounting-queue"), "Thiếu hàng đợi công việc kế toán");
+assert(content.includes("isInAccountingPeriod(item, period)"), "Dashboard phải lọc giao dịch theo kỳ");
+assert(content.includes('data-action="${next.action}"'), "Mỗi lỗi phải có hành động tiếp theo");
 
 console.log("Guided accounting UI tests passed");
