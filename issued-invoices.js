@@ -61,6 +61,9 @@
       maCQThue: String(entry?.maCQThue || ""),
       maTraCuu: String(entry?.maTraCuu || ""),
       linkTraCuu: String(entry?.linkTraCuu || ""),
+      buyer: String(entry?.buyer || ""),
+      buyerAddress: String(entry?.buyerAddress || ""),
+      paymentMethod: String(entry?.paymentMethod || ""),
       itemsError: String(entry?.itemsError || ""),
       items
     };

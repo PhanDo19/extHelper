@@ -4,6 +4,12 @@ const path = require("path");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 
+if (!source.includes("async function verifySavedInvoice(verifiedSnapshot)") ||
+    !source.includes("verifiedSnapshot?.ready") ||
+    !source.includes("verifySavedInvoice(reopened)")) {
+  throw new Error("Batch reconciliation must preserve the reopened invoice list date through stock commit.");
+}
+
 function extractFunction(name) {
   const start = source.indexOf(`function ${name}(`);
   if (start < 0) throw new Error(`Missing ${name}`);
@@ -17,7 +23,7 @@ function extractFunction(name) {
   throw new Error(`Unclosed ${name}`);
 }
 
-const context = { structuredClone };
+const context = { structuredClone, pageTenantSlug: "parislinhdam" };
 vm.createContext(context);
 // formatMoney khai báo dạng arrow const nên không dùng extractFunction được.
 function extractConst(name) {
@@ -26,12 +32,21 @@ function extractConst(name) {
   return match[0];
 }
 
-vm.runInContext(`${extractConst("formatMoney")}
+vm.runInContext(`const pageTenantSlug = this.pageTenantSlug;
+${extractConst("formatMoney")}
+${extractFunction("parseUiDateTime")}
+${extractFunction("uiDateKey")}
+${extractFunction("invoiceBusinessDateKeys")}
+${extractFunction("invoiceMatchesTransactionDate")}
+${extractFunction("isLinhDamFreshApiInvoice")}
+${extractFunction("matchesExpectedInvoiceDate")}
+${extractFunction("pendingPlanFromApproved")}
 ${extractFunction("verifySnapshotAgainstPlan")}
 ${extractFunction("deductVerifiedStock")}
 ${extractFunction("restoreVerifiedStock")}
 ${extractFunction("reconcileBatchPlanStatus")}
 this.verifySnapshotAgainstPlan = verifySnapshotAgainstPlan;
+this.pendingPlanFromApproved = pendingPlanFromApproved;
 this.deductVerifiedStock = deductVerifiedStock;
 this.restoreVerifiedStock = restoreVerifiedStock;
 this.reconcileBatchPlanStatus = reconcileBatchPlanStatus;`, context);
@@ -44,6 +59,8 @@ const plan = {
   tax: 216091,
   taxRate: 10,
   grand: 2377000,
+  checkIn: "30/06/2026 14:00",
+  checkOut: "30/06/2026 15:00",
   items: [
     { code: "1500007", qty: 1, price: 450000 },
     { code: "1000045", qty: 17, price: 65000 }
@@ -59,6 +76,8 @@ const scan = {
   currentTax: 216091,
   taxRate: 10,
   currentGrand: 2377000,
+  checkIn: "30/06/2026 14:00",
+  checkOut: "30/06/2026 15:00",
   items: [
     { code: "1500007", qty: 1, price: 450000 },
     { code: "1000045", qty: 17, price: 65000 }
@@ -67,6 +86,69 @@ const scan = {
 
 if (context.verifySnapshotAgainstPlan(scan, plan).length) throw new Error("Valid saved invoice rejected");
 if (!context.verifySnapshotAgainstPlan({ ...scan, currentGrand: 1 }, plan).length) throw new Error("Invalid total accepted");
+
+// Linh Đàm ghi phiếu API mới vào ngày tạo của server trong danh sách, nhưng
+// chi tiết phiếu vẫn giữ đúng ngày nghiệp vụ/giờ vào-ra của sao kê. Chỉ ca tạo
+// mới đã được API xác nhận mới được dùng ngày chi tiết để đối soát.
+const linhDamFreshPlan = {
+  ...plan,
+  requiresNewInvoice: true,
+  apiSavedRecordId: "saved-record-id"
+};
+const linhDamFreshScan = {
+  ...scan,
+  listDateKey: "2026-08-13",
+  invoiceDateKey: "2026-06-30"
+};
+if (context.verifySnapshotAgainstPlan(linhDamFreshScan, linhDamFreshPlan).length) {
+  throw new Error("Fresh Linh Dam API invoice was rejected because of the server list date.");
+}
+if (!context.verifySnapshotAgainstPlan(linhDamFreshScan, { ...linhDamFreshPlan, apiSavedRecordId: "" })
+    .includes("Sai ngày phiếu.")) {
+  throw new Error("The Linh Dam date exception leaked outside confirmed fresh API invoices.");
+}
+
+const overnightPlan = { ...plan, invoiceDateKey: "2026-06-01" };
+const overnightScan = {
+  ...scan,
+  invoiceDateKey: "2026-05-31",
+  checkIn: "31/05/2026 22:48",
+  checkOut: "01/06/2026 00:30"
+};
+if (context.verifySnapshotAgainstPlan(overnightScan, overnightPlan).includes("Sai ngày phiếu.")) {
+  throw new Error("Overnight invoice ending on the statement date was rejected");
+}
+
+const backdatedUsageScan = {
+  ...scan,
+  listDateKey: "2026-06-01",
+  invoiceDateKey: "2026-04-24",
+  checkIn: "24/04/2026 18:30",
+  checkOut: "24/04/2026 19:15"
+};
+const backdatedUsagePlan = {
+  ...plan,
+  invoiceDateKey: "2026-06-01",
+  checkIn: "24/04/2026 18:30",
+  checkOut: "24/04/2026 19:15"
+};
+if (context.verifySnapshotAgainstPlan(backdatedUsageScan, backdatedUsagePlan).length) {
+  throw new Error("Invoice list date must remain authoritative for a backdated room session.");
+}
+if (!context.verifySnapshotAgainstPlan({ ...backdatedUsageScan, checkOut: "24/04/2026 19:16" }, backdatedUsagePlan)
+    .some(error => error.includes("Sai giờ ra"))) {
+  throw new Error("A changed backdated checkout time was not detected.");
+}
+const persistedBackdatedPlan = context.pendingPlanFromApproved(
+  { ...plan, checkIn: "", checkOut: "" },
+  { transactionDate: "2026-06-01" },
+  backdatedUsageScan
+);
+if (persistedBackdatedPlan.invoiceDateKey !== "2026-06-01" ||
+    persistedBackdatedPlan.checkIn !== "24/04/2026 18:30" ||
+    persistedBackdatedPlan.checkOut !== "24/04/2026 19:15") {
+  throw new Error("Approved plan did not preserve independent invoice and room-session dates.");
+}
 
 const dataset = {
   mappings: [

@@ -84,6 +84,9 @@
   }
 
   function applyBusinessRules(dataset) {
+    // Các mã web đặc biệt dưới đây chỉ đúng ở Kim Giang. Linh Đàm (và cơ sở
+    // mới sau này) phải tự ánh xạ theo danh mục web của chính cơ sở đó.
+    if (dataset?.tenant && String(dataset.tenant).toLowerCase() !== "pariskimgiang") return dataset;
     const rules = {
       TC: { webCode: "1500006", webName: "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", webUnit: "đĩa", webPrice: 350000 },
       TCTO: { webCode: "1500007", webName: "HOA QUẢ THẬP CẨM (ĐĨA TO)", webUnit: "đĩa", webPrice: 400000 }

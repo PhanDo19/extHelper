@@ -19,4 +19,15 @@ assert.equal(transactions[0].status, "pending");
 assert.equal(transactions[1].status, "review");
 assert.equal(transactions[0].id, "REF-1");
 assert.equal(reader.dateKey(46203, false), "2026-06-30");
+
+// Kim Giang: invoice reconciliation follows Transaction date, not the
+// earlier customer Requesting date shown in the first bank column.
+const kimGiangRows = [
+  ["Requesting date", "Transaction date", "Reference number", "Description", "Debit", "Credit", "Running balance"],
+  ["2026-05-31 22:29:49", "2026-06-01", "KG-1", "VU THANH THANH chuyen tien QR", null, 3000000, 69996748]
+];
+const kimGiang = reader.parseBankRows(kimGiangRows, { tenantSlug: "pariskimgiang" });
+assert.equal(kimGiang.length, 1);
+assert.equal(kimGiang[0].transactionDate, "2026-06-01");
+assert.equal(kimGiang[0].requestedAt, "2026-05-31 22:29:49");
 console.log("bank statement parser: OK");

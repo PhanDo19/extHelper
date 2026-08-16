@@ -61,6 +61,7 @@
       parentExportId: options.parentExportId || null,
       exportedAt,
       extensionVersion: String(options.extensionVersion || ""),
+      tenant: String(options.tenant || "").trim().toLowerCase(),
       source: String(options.mappingDataset?.source || ""),
       inventoryFingerprint: fingerprintRows(rows),
       summary: stateSummary(rows),
@@ -68,7 +69,7 @@
     };
   }
 
-  function validate(payload) {
+  function validate(payload, expectedTenant) {
     const errors = [];
     const warnings = [];
     if (!payload || typeof payload !== "object") errors.push("File JSON không chứa một đối tượng hợp lệ.");
@@ -76,6 +77,18 @@
     if (Number(payload?.schemaVersion) !== SCHEMA_VERSION) errors.push(`Phiên bản dữ liệu không được hỗ trợ: ${payload?.schemaVersion ?? "trống"}.`);
     if (!String(payload?.exportId || "").trim()) errors.push("Thiếu mã lần xuất.");
     if (!Array.isArray(payload?.inventory?.rows)) errors.push("Thiếu danh sách tồn kho.");
+
+    const wantedTenant = String(expectedTenant || "").trim().toLowerCase();
+    const fileTenant = String(payload?.tenant || "").trim().toLowerCase();
+    if (wantedTenant && fileTenant && wantedTenant !== fileTenant) {
+      errors.push(`File ton kho thuoc co so ${fileTenant}, khong phai ${wantedTenant}.`);
+    } else if (wantedTenant && !fileTenant) {
+      if (wantedTenant === "pariskimgiang") {
+        warnings.push("File ton kho dinh dang cu chua co ma co so; chi nen dung cho Paris Kim Giang.");
+      } else {
+        errors.push(`File ton kho thieu ma co so ${wantedTenant}; khong the nhap an toan.`);
+      }
+    }
 
     const codes = new Set();
     for (const row of payload?.inventory?.rows || []) {
@@ -102,8 +115,8 @@
     return new Map((rows || []).map(row => [String(row.stockCode), Math.max(0, Number(row.availableQty) || 0)]));
   }
 
-  function compare(currentMappingDataset, incomingPayload, currentMeta) {
-    const validation = validate(incomingPayload);
+  function compare(currentMappingDataset, incomingPayload, currentMeta, expectedTenant) {
+    const validation = validate(incomingPayload, expectedTenant || currentMeta?.tenant);
     const currentRows = inventoryRows(currentMappingDataset);
     const incomingRows = incomingPayload?.inventory?.rows || [];
     const current = byStockCode(currentRows);
@@ -149,8 +162,8 @@
     };
   }
 
-  function applyToMapping(mappingDataset, payload) {
-    const validation = validate(payload);
+  function applyToMapping(mappingDataset, payload, expectedTenant) {
+    const validation = validate(payload, expectedTenant);
     if (!validation.valid) throw new Error(validation.errors.join(" "));
     const quantities = byStockCode(payload.inventory.rows);
     const next = clone(mappingDataset);

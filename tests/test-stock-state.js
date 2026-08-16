@@ -16,11 +16,13 @@ function mappings(qty) {
 
 const first = StockState.build({
   mappingDataset: mappings(10),
+  tenant: "pariskimgiang",
   exportId: "export-1",
   exportedAt: "2026-07-29T08:00:00.000Z",
   extensionVersion: "1.4.2"
 });
-assert.strictEqual(StockState.validate(first).valid, true);
+assert.strictEqual(StockState.validate(first, "pariskimgiang").valid, true);
+assert.strictEqual(first.tenant, "pariskimgiang");
 assert.strictEqual(first.kind, "invoice-target-inventory-state");
 assert.strictEqual(first.schemaVersion, 2);
 assert.strictEqual(first.summary.stockItemCount, 2);
@@ -30,19 +32,21 @@ assert.strictEqual(JSON.stringify(first).includes("webCode"), false);
 
 const second = StockState.build({
   mappingDataset: mappings(7),
+  tenant: "pariskimgiang",
   exportId: "export-2",
   parentExportId: "export-1",
   exportedAt: "2026-07-29T09:00:00.000Z"
 });
 const comparison = StockState.compare(mappings(10), second, {
   currentExportId: "export-1",
-  exportedAt: first.exportedAt
-});
+  exportedAt: first.exportedAt,
+  tenant: "pariskimgiang"
+}, "pariskimgiang");
 assert.strictEqual(comparison.validation.valid, true);
 assert.strictEqual(comparison.validation.warnings.length, 0);
 assert.strictEqual(comparison.counts.decreased, 1);
 
-const applied = StockState.applyToMapping(mappings(10), second);
+const applied = StockState.applyToMapping(mappings(10), second, "pariskimgiang");
 assert.strictEqual(applied.mappings[0].availableQty, 7);
 assert.strictEqual(applied.mappings[0].webCode, "100");
 assert.strictEqual(applied.mappings[0].webPrice, 10000);
@@ -62,6 +66,12 @@ const corrupted = structuredClone(second);
 corrupted.inventory.rows[0].availableQty = -1;
 const corruptValidation = StockState.validate(corrupted);
 assert.strictEqual(corruptValidation.valid, false);
+
+const wrongTenant = structuredClone(second);
+wrongTenant.tenant = "parislinhdam";
+const wrongTenantValidation = StockState.validate(wrongTenant, "pariskimgiang");
+assert.strictEqual(wrongTenantValidation.valid, false);
+assert.match(wrongTenantValidation.errors.join(" "), /parislinhdam/);
 assert.match(corruptValidation.errors.join(" "), /không hợp lệ/);
 
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
@@ -71,6 +81,8 @@ assert(stockAdminIndex >= 0, "Missing stock administration section");
 assert(contentSource.indexOf('id="it-import-stock"', stockAdminIndex) > stockAdminIndex);
 assert(contentSource.indexOf('id="it-import-state"', stockAdminIndex) > stockAdminIndex);
 assert(contentSource.indexOf('id="it-export-state"', stockAdminIndex) > stockAdminIndex);
+assert.match(contentSource, /id="it-mapping-file"/);
+assert.match(contentSource, /function importMappingFile\(event\)/);
 assert.match(contentSource, /function stockReservationByCode\(\)/);
 assert.match(contentSource, /function renderStockAdmin\(\)/);
 assert.match(contentSource, /function renderStockRows\(\)/);

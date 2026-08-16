@@ -11,7 +11,7 @@ Phiên bản 1.4.2 có hai nút `Nhập trạng thái tồn` và `Xuất trạng
 - Cuối ca, bấm `Xuất trạng thái tồn` để tải file JSON chỉ chứa mã kho, thông tin nhận diện và số lượng khả dụng.
 - Đầu ca hoặc trên máy khác, bấm `Nhập trạng thái tồn`, xem bảng so sánh rồi mới xác nhận.
 - Import chỉ merge `availableQty` theo đúng `stockCode`; không ghi đè danh mục web, ánh xạ, sao kê, rule ưu tiên, sổ đối soát hoặc phiên Batch Review.
-- Mã mới trong file chưa có ánh xạ sẽ được cảnh báo và chưa thêm tự động; mã hiện tại bị thiếu trong file sẽ được giữ nguyên.
+- Mã mới trong file chưa có ánh xạ sẽ được đưa vào màn hình duyệt. Người dùng có thể chọn nhóm, kiểm tra mã/tên/đơn vị/giá rồi tạo trực tiếp trên web bằng API; chỉ khi server trả ID thành công extension mới xác nhận ánh xạ. Mã hiện tại bị thiếu trong file vẫn được giữ nguyên.
 - Extension cảnh báo file cũ, file trùng hoặc file thuộc nhánh bàn giao khác.
 - Ngay trước khi nhập, trạng thái hiện tại được sao lưu trong `chrome.storage.local`.
 

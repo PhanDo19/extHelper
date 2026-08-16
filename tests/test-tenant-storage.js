@@ -1,5 +1,4 @@
-// Hai chi nhanh dung chung kho nhung sao ke rieng: kiem tra dung key nao duoc
-// tach theo chi nhanh va key nao van dung chung.
+// Mapping, sao ke va template API tach theo chi nhanh; kho vat ly dung chung.
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
@@ -7,8 +6,7 @@ const vm = require("vm");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "mapping-store.js"), "utf8");
 
-function makeStore(pathname) {
-  const store = {};
+function makeStore(pathname, store = {}) {
   const sandbox = {
     structuredClone,
     location: { pathname },
@@ -102,8 +100,8 @@ assert.equal(linhDam.api.currentTenant(), "parislinhdam");
       `${perTenant} khong duoc ghi vao key dung chung`);
   }
 
-  // Template API dung chung: schema hai ben da xac nhan giong nhau.
-  assert.ok("invoiceTargetApiTemplate" in linhDam.store, "Template API dung chung");
+  // Template API phai tach: request co duong dan/ID phien cua tung co so.
+  assert.ok("invoiceTargetApiTemplate__parislinhdam" in linhDam.store, "Template API Linh Dam phai tach rieng");
 
   // Danh muc mac dinh do content.js chon theo chi nhanh roi truyen vao, nen
   // loadCatalog phai tra dung fallback duoc dua vao, khong tu doi sang bo khac.
@@ -116,30 +114,35 @@ assert.equal(linhDam.api.currentTenant(), "parislinhdam");
   const kgRules = await makeStore("/pariskimgiang/Form").api.loadPriorityRules();
   assert.equal(kgRules.length, 2, "Chi nhanh mac dinh van giu quy tac san co");
 
-  // --- Ton kho: DUNG CHUNG theo stockCode, vi kho vat ly chi co mot ---
-  const shared = makeStore("/pariskimgiang/Form");
-  await shared.api.save({ mappings: [{ stockCode: "BANHSNACK", webCode: "1000047", stockQty: 100, availableQty: 100 }] });
-  assert.equal(shared.store.invoiceTargetSharedStock.BANHSNACK.availableQty, 100);
+  // --- Mapping tách theo cơ sở, kho vật lý dùng chung ---
+  const multiTenantStorage = {};
+  const kgStock = makeStore("/pariskimgiang/Form", multiTenantStorage);
+  const ldStock = makeStore("/parislinhdam/Form", multiTenantStorage);
+  await kgStock.api.save({ mappings: [{ stockCode: "BANHSNACK", webCode: "1000047", stockQty: 100, availableQty: 100 }] });
+  await ldStock.api.save({ mappings: [{ stockCode: "BANHSNACK", webCode: "1000052", stockQty: 999, availableQty: 999 }] });
+  assert.equal((await kgStock.api.load({ mappings: [] })).mappings[0].availableQty, 100);
+  assert.equal((await ldStock.api.load({ mappings: [] })).mappings[0].availableQty, 999);
 
-  // Ban 40 goi o Kim Giang -> Linh Dam phai thay ton con 60 du dung webCode khac.
-  await shared.api.commitVerifiedInvoice(
-    { mappings: [{ stockCode: "BANHSNACK", webCode: "1000047", stockQty: 60, availableQty: 60 }] },
+  await kgStock.api.saveSharedWarehouse({ initialized: true, items: [{ stockCode: "BANHSNACK", availableQty: 100 }] });
+  assert.equal((await ldStock.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 100,
+    "Linh Dam phai doc cung kho vat ly da cap nhat o Kim Giang");
+  await ldStock.api.saveSharedWarehouse({ initialized: true, items: [{ stockCode: "BANHSNACK", availableQty: 60 }] });
+  assert.equal((await kgStock.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 60,
+    "Kim Giang phai thay so ton da tru tu Linh Dam");
+
+  await kgStock.api.commitVerifiedInvoice(
+    { mappings: [{ stockCode: "BANHSNACK", webCode: "1000047", availableQty: 55 }] },
     { transactions: [] },
-    { entries: [] }
+    { entries: [] },
+    { initialized: true, items: [{ stockCode: "BANHSNACK", availableQty: 55 }] }
   );
-  const sharedStock = shared.store.invoiceTargetSharedStock;
-  assert.equal(sharedStock.BANHSNACK.availableQty, 60, "Xuat hang phai tru vao kho chung");
+  assert.equal((await ldStock.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 55,
+    "Ghi so doi soat phai cap nhat kho chung trong cung lan storage.set");
 
-  // Nap mapping cua chi nhanh kia (webCode khac) van phai lay so ton chung.
-  const ldWithStock = makeStore("/parislinhdam/Form");
-  ldWithStock.store.invoiceTargetSharedStock = sharedStock;
-  ldWithStock.store["invoiceTargetMappingDataset__parislinhdam"] = {
-    mappings: [{ stockCode: "BANHSNACK", webCode: "1000052", stockQty: 999, availableQty: 999 }]
-  };
-  const ldDataset = await ldWithStock.api.load({ mappings: [] });
-  assert.equal(ldDataset.mappings[0].availableQty, 60,
-    "Chi nhanh kia phai thay so ton da giam, du webCode khac");
-  assert.equal(ldDataset.mappings[0].webCode, "1000052", "Ma web rieng cua chi nhanh phai duoc giu");
+  await kgStock.api.saveStockStateMeta({ currentExportId: "kg-stock" });
+  await ldStock.api.saveStockStateMeta({ currentExportId: "ld-stock" });
+  assert.equal((await kgStock.api.loadStockStateMeta()).currentExportId, "kg-stock");
+  assert.equal((await ldStock.api.loadStockStateMeta()).currentExportId, "ld-stock");
 
-  console.log("tach theo chi nhanh + kho dung chung: OK");
+  console.log("tach hoan toan du lieu theo chi nhanh: OK");
 })().catch(error => { console.error(error); process.exit(1); });

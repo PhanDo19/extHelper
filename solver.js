@@ -279,6 +279,10 @@
       const requiredHour = hourStep && preTaxTarget ? preTaxTarget - actual : 0;
       const exactMinHourAmount = Math.max(0, Math.round(Number(opts.minHourAmount) || 0));
       const exactMaxHourAmount = Math.max(0, Math.round(Number(opts.maxHourAmount) || 0));
+      // The baseline minimum is a planning preference and may shrink for a
+      // small invoice. The maximum is the accounting safety cap and must not
+      // be exceeded by a fallback combination.
+      if (opts.enforceHourRange && hourStep && exactMaxHourAmount && requiredHour > exactMaxHourAmount) continue;
       if (opts.requireHourStepExact && hourStep && requiredHour < exactMinHourAmount) continue;
       if (opts.requireHourStepExact && hourStep && exactMaxHourAmount && requiredHour > exactMaxHourAmount) continue;
       if (opts.requireHourStepExact && hourStep && requiredHour >= 0 && requiredHour % hourStep !== 0) continue;

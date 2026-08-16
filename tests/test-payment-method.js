@@ -7,6 +7,13 @@ const source = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 // Phiếu do extension lập đều bắt nguồn từ giao dịch chuyển khoản trong sao kê,
 // nên PHUONGTHUCTT phải là "TM/CK" chứ không phải "TM" mặc định của website.
 assert.match(source, /const INVOICE_PAYMENT_METHOD = "TM\/CK";/);
+assert.match(source, /const DEFAULT_INVOICE_ADDRESS = "Kh\\u00e1ch kh\\u00f4ng cung c\\u1ea5p th\\u00f4ng tin";/,
+  "Pháº£i khai bÃ¡o Ä‘á»‹a chá»‰ máº·c Ä‘á»‹nh cho hÃ³a Ä‘Æ¡n");
+assert.strictEqual(
+  [...source.matchAll(/DIACHIKHACH: String\(expected\?\.buyerAddress \|\| DEFAULT_INVOICE_ADDRESS\)/g)].length,
+  3,
+  "Pháº£i gáº¯n Ä‘á»‹a chá»‰ á»Ÿ cáº£ luá»“ng cáº­p nháº­t, táº¡o phiÃªn vÃ  thanh toÃ¡n phiáº¿u má»›i"
+);
 
 // Hằng số phải được khai báo TRƯỚC mọi chỗ dùng (const không được hoisted).
 const declaration = source.indexOf("const INVOICE_PAYMENT_METHOD");
@@ -28,6 +35,10 @@ assert.match(buildPayload, /PHUONGTHUCTT: INVOICE_PAYMENT_METHOD/,
   "Luồng sửa phiếu phải ghi đè PHUONGTHUCTT");
 assert.match(buildPayload, /expectsPaymentMethod: true/,
   "Payload do extension dựng phải bật kiểm tra phương thức thanh toán");
+assert.match(buildPayload, /TIENGIOPHONGCUOI: hour/,
+  "Luồng sửa phiếu phải đồng bộ TIENGIO và TIENGIOPHONGCUOI");
+assert.match(buildPayload, /overrides\.BATDAU = checkIn\.toISOString\(\)/,
+  "BATDAU phải dùng cùng định dạng ISO UTC với request thật của website");
 
 // Bộ kiểm tra chặn payload sai phương thức, nhưng CHỈ với payload do extension
 // dựng. Payload bắt được từ nút Lưu của website là do website tạo (PHUONGTHUCTT

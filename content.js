@@ -6,9 +6,16 @@
   const SAVE_CAPTURED = "invoice-target-mvp:save-request-captured";
   const SAVE_BLOCKED = "invoice-target-mvp:save-blocked";
   const RUNTIME_WARNING = "invoice-target-mvp:runtime-warning";
+  const DEFAULT_INVOICE_BUYER = "Kh\u00e1ch l\u1ebb - Kh\u00f4ng l\u1ea5y h\u00f3a \u0111\u01a1n";
   // Moi chi nhanh co bo ma web rieng nen du lieu mac dinh phai chon theo chi
   // nhanh dang mo, khong duoc dung chung bo cua pariskimgiang.
   const pageTenantSlug = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+  const TENANT_LABELS = {
+    pariskimgiang: "Paris Kim Giang",
+    parislinhdam: "Paris Linh Đàm"
+  };
+  const pageTenantLabel = TENANT_LABELS[pageTenantSlug] || pageTenantSlug;
+  const pageTenantFileLabel = pageTenantSlug === "parislinhdam" ? "ParisLinhDam" : "ParisKimGiang";
   const embeddedDataset = pageTenantSlug === "parislinhdam"
     ? (globalThis.InvoiceMappingParisLinhDam || { mappings: [] })
     : (globalThis.InvoiceInventoryData || { mappings: [] });
@@ -21,6 +28,8 @@
   let catalogDataset = embeddedCatalog;
   let webCatalog = embeddedCatalog.items || [];
   let mappingDataset = embeddedDataset;
+  let sharedWarehouse = InvoiceSharedWarehouse.empty();
+  let pendingWarehouseImport = null;
   let inventory = [];
   let mappingSummary = {};
   let statementDataset = { source: "", transactions: [] };
@@ -44,27 +53,57 @@
   let statementSubtab = "statement";
   let showEInvoicesOutsideStatement = false;
 
+  const RUNTIME_REFRESH_MESSAGE =
+    "Extension vừa được cập nhật. Hãy nhấn F5 tải lại trang website, sau đó mở lại nút Σ.";
+
+  function normalizeRuntimeError(error) {
+    const message = String(error?.message || error || "");
+    return /extension context invalidated|context invalidated/i.test(message)
+      ? new Error(RUNTIME_REFRESH_MESSAGE)
+      : new Error(message || "Chrome runtime không sẵn sàng.");
+  }
+
+  function isInvalidRuntimeContext(error) {
+    return /extension context invalidated|context invalidated/i.test(String(error?.message || error || ""));
+  }
+
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
       if (!globalThis.chrome?.runtime?.sendMessage) {
-        reject(new Error("Chrome runtime khong san sang."));
+        reject(new Error(RUNTIME_REFRESH_MESSAGE));
         return;
       }
-      chrome.runtime.sendMessage(message, response => {
-        const error = chrome.runtime.lastError;
-        if (error) reject(new Error(error.message));
-        else if (!response?.ok) reject(new Error(response?.error || "Background khong thuc hien duoc yeu cau."));
-        else resolve(response);
-      });
+      try {
+        chrome.runtime.sendMessage(message, response => {
+          const error = chrome.runtime.lastError;
+          if (error) reject(normalizeRuntimeError(error));
+          else if (!response?.ok) reject(new Error(response?.error || "Background không thực hiện được yêu cầu."));
+          else resolve(response);
+        });
+      } catch (error) {
+        reject(normalizeRuntimeError(error));
+      }
     });
   }
+
+  // Khi unpacked extension được Reload, Chrome vô hiệu hóa content script cũ.
+  // Giữ lỗi này khỏi trở thành unhandled rejection và hướng dẫn đúng thao tác
+  // phục hồi. Trang vẫn cần F5 một lần để nạp content script mới.
+  window.addEventListener("unhandledrejection", event => {
+    if (!isInvalidRuntimeContext(event.reason)) return;
+    event.preventDefault();
+    setStatus(RUNTIME_REFRESH_MESSAGE, "error");
+  });
 
   function apiCaptureSummary(template) {
     if (!template) return "API: chưa có mẫu Lưu HĐ";
     let path = "";
     try { path = new URL(template.url).pathname; } catch (_) { path = template.url || ""; }
     const state = template.analysis?.ready ? "sẵn sàng" : "cần kiểm tra";
-    return `API: ${template.method || "POST"} ${path} · HTTP ${template.status || 0} · ${state}`;
+    const paymentPath = template.paymentTemplate
+      ? (() => { try { return new URL(template.paymentTemplate.url).pathname; } catch (_) { return "DoSave2"; } })()
+      : "";
+    return `API: ${template.method || "POST"} ${path}${paymentPath ? ` + ${paymentPath}` : ""} · HTTP ${template.status || 0} · ${state}`;
   }
 
   async function receiveSaveRequestCapture(event) {
@@ -81,7 +120,8 @@
       body: structuredClone(captured.body),
       status: Number(captured.status || 0),
       responseText: String(captured.responseText || "").slice(0, 8000),
-      capturedAt: captured.capturedAt || new Date().toISOString()
+      capturedAt: captured.capturedAt || new Date().toISOString(),
+      paymentTemplate: captured.paymentTemplate ? structuredClone(captured.paymentTemplate) : undefined
     };
     apiTemplate.analysis = InvoiceApiTemplate.analyze(apiTemplate);
     await InvoiceMappingStore.saveApiTemplate(apiTemplate);
@@ -155,7 +195,15 @@
     return {
       ...structuredClone(plan || {}),
       invoiceNo: invoiceSnapshot?.invoiceNo || transaction?.invoiceNo || plan?.invoiceNo || "",
-      invoiceDateKey: invoiceSnapshot?.invoiceDateKey || transaction?.transactionDate || plan?.invoiceDateKey || "",
+      // Ngày nghiệp vụ của phương án là ngày sao kê/danh sách phiếu. Với ca
+      // qua đêm, invoiceDateKey đọc từ form có thể là ngày Giờ vào hôm trước.
+      invoiceDateKey: transaction?.transactionDate || invoiceSnapshot?.invoiceDateKey || plan?.invoiceDateKey || "",
+      // Ngày hóa đơn và khoảng thời gian sử dụng phòng là hai dữ liệu độc lập.
+      // Ví dụ phiếu thuộc danh sách 01/06 có thể mang Giờ vào/Ra 24/04.
+      // Luôn chốt giờ từ snapshot thật của website để payload API và bước
+      // đối soát sau lưu không làm mất ca hát gốc.
+      checkIn: invoiceSnapshot?.checkIn || plan?.checkIn || "",
+      checkOut: invoiceSnapshot?.checkOut || plan?.checkOut || "",
       grand: Math.round(Number(plan?.targetGrand ?? plan?.grand ?? transaction?.credit) || 0),
       items: (plan?.items || []).map(item => ({
         ...structuredClone(item),
@@ -393,16 +441,40 @@
     document.getElementById("it-target").value = formatMoney(plan.targetGrand || transaction.credit);
     setStatus("Dang tao phien va thanh toan phieu moi qua 2 request API chinh thuc...", "warn");
     const apiTargetGrand = Math.round(Number(plan.targetGrand || transaction.credit) || 0);
-    const apiSaved = await request("createAndPayFreshInvoiceViaApi", {
+    const apiExpected = {
       items: plan.items,
       targetGrand: apiTargetGrand,
       targetGoods: plan.goods,
       targetHour: plan.hour,
       targetTax: plan.tax,
       invoiceDateKey: transaction.transactionDate,
+      statementClientTime: transaction.requestedAt || "",
       checkIn: plan.checkIn,
       checkOut: plan.checkOut
-    });
+    };
+    // Always trace extension-generated DoSave calls. This is independent from
+    // the manual "Bắt API" button and captures both success and failure.
+    await request("armApiTrace");
+    let apiSaved;
+    try {
+      apiSaved = await request("createAndPayFreshInvoiceViaApi", apiExpected);
+      await persistGeneratedInvoiceApiDebugLog({
+        expected: apiExpected,
+        outcome: "success",
+        result: apiSaved
+      });
+    } catch (error) {
+      try {
+        await persistGeneratedInvoiceApiDebugLog({
+          expected: apiExpected,
+          outcome: "error",
+          error: error.message
+        });
+      } catch (logError) {
+        console.error("[InvoiceTarget] Không thể xuất API debug log", logError);
+      }
+      throw error;
+    }
     if (!apiSaved?.saved || !apiSaved?.savedRecordId || !apiSaved?.invoiceNo) {
       throw new Error("Website chua xac nhan du hai buoc tao phien va thanh toan.");
     }
@@ -430,6 +502,21 @@
     syncBatchPlanTransaction(transaction);
     await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: structuredClone(pendingNewInvoice) });
     renderBatchPlans();
+
+    // Worker tab only performs the official create/payment request. The
+    // original Batch Review tab already has the invoice-list grid, so it will
+    // read the saved invoice back from the server and only then commit stock.
+    setStatus(
+      `Da luu ${apiSaved.invoiceNo}. Dang chuyen ve tab Batch Review de doi soat; ton kho chua bi tru.`,
+      "warn"
+    );
+    window.setTimeout(() => {
+      chrome.runtime?.sendMessage?.({ type: "invoiceTarget.closeCurrentBatchWorkerTab" }, () => {
+        void chrome.runtime?.lastError;
+      });
+    }, 500);
+    return true;
+
     let apiClosed = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       apiClosed = await request("closeInvoiceDetail");
@@ -578,6 +665,65 @@
     return true;
   }
 
+  async function resumeSavedPendingInvoice() {
+    if (!pendingNewInvoice?.savedAt || !pendingNewInvoice?.invoiceNo) return false;
+    const transaction = findStatementTransaction(pendingNewInvoice.transactionId);
+    if (!transaction) return false;
+
+    const plan = transaction.pendingPlan || pendingNewInvoice.plan;
+    if (!plan) return false;
+    transaction.invoiceNo = transaction.invoiceNo || pendingNewInvoice.invoiceNo;
+    transaction.pendingPlan = {
+      ...structuredClone(plan),
+      invoiceNo: transaction.invoiceNo,
+      invoiceDateKey: transaction.transactionDate,
+      apiSavedAt: plan.apiSavedAt || pendingNewInvoice.savedAt,
+      apiSavedRecordId: plan.apiSavedRecordId || pendingNewInvoice.savedRecordId || ""
+    };
+    transaction.status = "planned";
+
+    const index = batchPlans.findIndex(entry =>
+      String(entry.transactionId) === String(transaction.id)
+    );
+    if (index < 0) return false;
+    batchPlans[index] = {
+      ...batchPlans[index],
+      status: "planned",
+      transaction,
+      plan: transaction.pendingPlan,
+      message: `Đã lưu ${transaction.invoiceNo}; đang tự đối soát lại từ website.`
+    };
+    await InvoiceMappingStore.saveStatement(statementDataset);
+    await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: structuredClone(pendingNewInvoice) });
+    renderBatchPlans();
+    setStatus(`Đã lưu ${transaction.invoiceNo}; đang tự dò lại trên danh sách và đối soát…`, "warn");
+
+    const verification = await verifyBatchSavedInvoice({
+      target: { closest: () => batchButtonProxy(index) }
+    });
+    const verifiedTransaction = findStatementTransaction(transaction.id);
+    if (!verification?.verified || verifiedTransaction?.status !== "done") {
+      const reason = verification?.error ? ` ${verification.error}` : "";
+      setStatus(
+        `Phiếu ${transaction.invoiceNo} đã lưu nhưng chưa tự đối soát được.${reason} ` +
+        "Sao kê và tồn kho chưa bị thay đổi; không chạy lại API tạo phiếu.",
+        "warn"
+      );
+      return false;
+    }
+
+    pendingNewInvoice = null;
+    await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: null });
+    renderBatchPlans();
+    renderStatementAdmin();
+    renderWorkflowDashboard();
+    setStatus(
+      `Đã tự đọc lại và đối soát ${transaction.invoiceNo}. Sao kê đã xử lý và tồn kho đã được ghi nhận.`,
+      "ok"
+    );
+    return true;
+  }
+
   async function restoreUiSession() {
     const stored = await InvoiceMappingStore.loadUiSession();
     if (!stored || stored.schemaVersion !== 1 || stored.mode !== "batch") return;
@@ -628,6 +774,10 @@
       }
       const date = transaction?.transactionDate || pendingNewInvoice.transactionDate || "";
       const credit = Number(transaction?.credit || pendingNewInvoice.credit || 0);
+      if (pendingNewInvoice.savedAt && pendingNewInvoice.invoiceNo && isSalesWorkspacePage()) {
+        await resumeSavedPendingInvoice();
+        return;
+      }
       setStatus(
         `Đang tiếp tục tạo phiếu cho ngày ${date}, tổng mục tiêu ${formatMoney(credit)}đ. ` +
         "Sau khi tự lưu phiếu trên website, quay lại tab danh sách và bấm Tạo Batch Review để dò lại.",
@@ -689,7 +839,7 @@
         // rồi mới kiểm tra + phát hành qua cơ quan thuế.
         : action === "issueEInvoice" ? 90000
         : action === "readInvoiceItems" ? 45000
-        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList"].includes(action) ? 28000
+        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog"].includes(action) ? 30000
         : 5000;
       const timeout = setTimeout(
         () => reject(new Error(`Trang không phản hồi sau ${Math.round(timeoutMs / 1000)}s (${action}).`)),
@@ -714,42 +864,179 @@
   })[char]);
 
   function refreshMappingState() {
+    mappingDataset = InvoiceSharedWarehouse.overlayMappings(mappingDataset, sharedWarehouse);
     inventory = InvoiceMappingEngine.buildInventory(mappingDataset);
     mappingSummary = InvoiceMappingEngine.summarize(mappingDataset);
     const node = document.getElementById("it-stock-source");
     if (node) node.innerHTML = stockSummaryHtml();
+    renderWorkflowDashboard();
     if (document.getElementById("it-stock-admin") && !document.getElementById("it-stock-admin").hidden) {
       renderStockAdmin();
     }
   }
 
   function stockSummaryHtml() {
-    return `Nguồn kho: <b>${escapeHtml(mappingDataset.source || "KhoT5.xlsx")}</b><br>` +
+    const warehouseSource = sharedWarehouse.initialized ? sharedWarehouse.source : "chưa khởi tạo";
+    const warehouseTime = sharedWarehouse.updatedAt
+      ? new Date(sharedWarehouse.updatedAt).toLocaleString("vi-VN")
+      : "chưa cập nhật";
+    return `Cơ sở đang làm: <b>${escapeHtml(pageTenantLabel)}</b> · Kho vật lý: <b>Dùng chung Kim Giang + Linh Đàm</b><br>` +
+      `Nguồn kho: <b>${escapeHtml(warehouseSource)}</b> · Cập nhật: ${escapeHtml(warehouseTime)}<br>` +
       `${inventory.length} mã đủ điều kiện · ${mappingSummary.confirmed || 0} đã xác nhận · ` +
       `${mappingSummary.review || 0} cần duyệt · ${mappingSummary.unmatched || 0} chưa khớp<br>` +
       `Danh mục web: ${webCatalog.length} mã từ ${escapeHtml(catalogDataset.source || "data.xlsx")}`;
   }
 
+  const OPEN_STATEMENT_STATUSES = new Set([
+    "pending",
+    "review",
+    "planned",
+    "batch_ready",
+    "already_issued",
+    "needs_new_invoice",
+    "error"
+  ]);
+
+  function isOpenStatementTransaction(item) {
+    return OPEN_STATEMENT_STATUSES.has(String(item?.status || "pending"));
+  }
+
+  function workflowSnapshot() {
+    const transactions = statementDataset.transactions || [];
+    const pendingTransactions = transactions.filter(isOpenStatementTransaction).length;
+    const doneTransactions = transactions.filter(item => item.status === "done").length;
+    const ignoredTransactions = transactions.filter(item => ["ignored", "skipped"].includes(item.status)).length;
+    const linkedInvoiceNos = statementInvoiceNos();
+    const issuedTransactions = new Set((issuedInvoiceBook.entries || [])
+      .map(item => String(item.invoiceNo || "").trim())
+      .filter(invoiceNo => invoiceNo && linkedInvoiceNos.has(invoiceNo))).size;
+    const mappingPending = Number(mappingSummary.review || 0) + Number(mappingSummary.unmatched || 0);
+    return {
+      catalogReady: webCatalog.length > 0,
+      catalogSynced: catalogDataset.source === "Website API",
+      stockReady: sharedWarehouse.initialized && inventory.length > 0,
+      mappingPending,
+      statementReady: transactions.length > 0,
+      transactionCount: transactions.length,
+      pendingTransactions,
+      doneTransactions,
+      ignoredTransactions,
+      issuedTransactions,
+      readyPlans: batchPlans.filter(item => ["ready", "accepted", "batch_ready"].includes(item.status)).length
+    };
+  }
+
+  function setWorkflowStep(step, state, message) {
+    const card = document.querySelector(`[data-workflow-step="${step}"]`);
+    const status = document.getElementById(`it-step-${step}-status`);
+    if (!card || !status) return;
+    card.dataset.state = state;
+    status.className = `it-step-status ${state}`;
+    status.textContent = message;
+  }
+
+  function renderWorkflowDashboard() {
+    const progress = document.getElementById("it-workflow-progress");
+    if (!progress) return;
+    const state = workflowSnapshot();
+    const dataReady = state.catalogReady && state.catalogSynced && state.stockReady;
+    const mappingReady = dataReady && state.mappingPending === 0;
+    const statementReady = state.statementReady;
+    const batchFinished = statementReady && state.pendingTransactions === 0;
+    const issuanceFinished = batchFinished && state.doneTransactions > 0 && state.issuedTransactions >= state.doneTransactions;
+    const completedSteps = [dataReady, mappingReady, statementReady, batchFinished, issuanceFinished]
+      .filter(Boolean).length;
+    progress.innerHTML = `<div><b>${completedSteps}/5 bước đã sẵn sàng</b><span>${completedSteps === 5 ? "Đã hoàn tất toàn bộ quy trình" : "Tiếp tục ở bước được đánh dấu cần xử lý"}</span></div><div class="it-progress-track"><i style="width:${completedSteps * 20}%"></i></div>`;
+    setWorkflowStep("data", dataReady ? "done" : "attention",
+      dataReady
+        ? `${webCatalog.length} mã web mới nhất · ${inventory.length} mã kho có thể dùng`
+        : !state.catalogReady ? "Chưa có danh mục hàng trên web"
+          : !state.catalogSynced ? "Cần đồng bộ danh mục mới nhất từ website"
+            : "Chưa có tồn kho có thể sử dụng");
+    setWorkflowStep("mapping", mappingReady ? "done" : state.mappingPending ? "attention" : "waiting",
+      mappingReady ? `${mappingSummary.confirmed || 0} mặt hàng đã đối chiếu` : `${state.mappingPending} mặt hàng cần kiểm tra`);
+    setWorkflowStep("statement", statementReady ? "done" : "waiting",
+      statementReady ? `${state.transactionCount} giao dịch · ${state.pendingTransactions} chưa hoàn tất` : "Chưa nhập file sao kê");
+    setWorkflowStep("batch", batchFinished ? "done" : statementReady ? "ready" : "waiting",
+      !statementReady ? "Hoàn tất bước 3 trước" : state.pendingTransactions ? `${state.pendingTransactions} giao dịch đang chờ xử lý` : `${state.doneTransactions} đã đối soát${state.ignoredTransactions ? ` · ${state.ignoredTransactions} đã bỏ qua` : ""}`);
+    setWorkflowStep("einvoice", issuanceFinished ? "done" : state.doneTransactions ? "ready" : "waiting",
+      !state.doneTransactions ? "Chưa có hóa đơn đã đối soát" : `${state.issuedTransactions}/${state.doneTransactions} hóa đơn đã phát hành qua extension`);
+  }
+
   function panelHtml() {
     return `
       <button id="it-toggle" type="button" title="Lập phương án theo tồn kho">Σ</button>
-      <section id="it-panel" hidden>
-        <header><span id="it-resize-handle" title="Giữ và kéo để thay đổi kích thước">↖</span><strong>Khớp tổng tiền — stock-first${extensionVersion ? ` <small>v${escapeHtml(extensionVersion)}</small>` : ""}</strong><button id="it-close" type="button">×</button></header>
-        <div id="it-status" class="it-status">Hãy mở một phiếu hóa đơn.</div>
+      <section id="it-panel" class="home-mode" hidden>
+        <header>
+          <span id="it-resize-handle" title="Giữ và kéo để thay đổi kích thước">↖</span>
+          <div class="it-header-copy"><strong id="it-screen-title">Trợ lý xuất hóa đơn</strong><small id="it-screen-subtitle">${escapeHtml(pageTenantLabel)}${extensionVersion ? ` · v${escapeHtml(extensionVersion)}` : ""}</small></div>
+          <button id="it-close" type="button" aria-label="Đóng">×</button>
+        </header>
+        <nav id="it-screen-nav" class="it-screen-nav" hidden>
+          <button id="it-home-back" type="button">← Về quy trình</button>
+          <p id="it-screen-help"></p>
+        </nav>
+        <div id="it-status" class="it-status">Chọn bước cần làm. Nên bắt đầu từ bước có màu vàng.</div>
+        <section id="it-home-dashboard" class="it-home-dashboard">
+          <div class="it-welcome-card">
+            <div><span class="it-eyebrow">QUY TRÌNH DÀNH CHO KẾ TOÁN</span><h2>Xuất hóa đơn theo sao kê</h2><p>Làm lần lượt từ bước 1 đến bước 5. Extension sẽ báo rõ bước nào đã sẵn sàng và bước nào cần xử lý.</p></div>
+            <span class="it-branch-badge">${escapeHtml(pageTenantLabel)}</span>
+          </div>
+          <div id="it-workflow-progress" class="it-workflow-progress"></div>
+          <div class="it-workflow-list">
+            <article class="it-workflow-card" data-workflow-step="data">
+              <span class="it-step-number">1</span><div class="it-step-copy"><h3>Chuẩn bị dữ liệu</h3><p>Đồng bộ danh mục web của cơ sở và kiểm tra kho vật lý dùng chung.</p><span id="it-step-data-status" class="it-step-status"></span></div>
+              <div class="it-step-actions"><button id="it-sync-web" type="button" class="primary">Đồng bộ từ website</button><button id="it-manage-stock" type="button">Kiểm tra tồn kho</button></div>
+            </article>
+            <article class="it-workflow-card" data-workflow-step="mapping">
+              <span class="it-step-number">2</span><div class="it-step-copy"><h3>Đối chiếu mặt hàng</h3><p>Ghép mặt hàng trong file kho với đúng mã hàng trên website.</p><span id="it-step-mapping-status" class="it-step-status"></span></div>
+              <div class="it-step-actions"><button id="it-manage-mapping" type="button" class="primary">Kiểm tra ánh xạ</button></div>
+            </article>
+            <article class="it-workflow-card" data-workflow-step="statement">
+              <span class="it-step-number">3</span><div class="it-step-copy"><h3>Nhập sao kê ngân hàng</h3><p>Nhập file sao kê và kiểm tra các giao dịch chưa hoàn tất.</p><span id="it-step-statement-status" class="it-step-status"></span></div>
+              <div class="it-step-actions"><button id="it-manage-statement" type="button" class="primary">Xem giao dịch</button></div>
+            </article>
+            <article class="it-workflow-card" data-workflow-step="batch">
+              <span class="it-step-number">4</span><div class="it-step-copy"><h3>Lập và duyệt hóa đơn</h3><p>Tạo phương án hàng loạt, kiểm tra tổng tiền rồi mới lưu và đối soát.</p><span id="it-step-batch-status" class="it-step-status"></span></div>
+              <div class="it-step-actions"><button id="it-manage-batch" type="button" class="primary">Mở xử lý hàng loạt</button></div>
+            </article>
+            <article class="it-workflow-card" data-workflow-step="einvoice">
+              <span class="it-step-number">5</span><div class="it-step-copy"><h3>Phát hành hóa đơn</h3><p>Tải danh sách đã đối soát, kiểm tra rồi phát hành hóa đơn điện tử theo lô.</p><span id="it-step-einvoice-status" class="it-step-status"></span></div>
+              <div class="it-step-actions"><button id="it-manage-einvoice" type="button" class="primary">Mở phát hành hóa đơn</button></div>
+            </article>
+          </div>
+          <div class="it-home-secondary">
+            <button id="it-open-single" type="button">Điều chỉnh một phiếu đang mở</button>
+            <details><summary>Công cụ dữ liệu nâng cao</summary><div class="it-advanced-actions">
+              <button id="it-import-web" type="button">Cập nhật danh mục web (.xlsx)</button>
+              <button id="it-import-statement" type="button">Nhập nhanh sao kê (.xlsx)</button>
+            </div></details>
+            <details class="it-help-box"><summary>Giải thích các thuật ngữ</summary><dl><dt>Tồn kho</dt><dd>Số lượng hàng còn có thể đưa vào hóa đơn.</dd><dt>Ánh xạ</dt><dd>Ghép một mặt hàng trong kho với đúng mặt hàng trên website.</dd><dt>Batch Review</dt><dd>Màn hình xem trước nhiều hóa đơn trước khi lưu.</dd><dt>Đối soát</dt><dd>Kiểm tra hóa đơn đã lưu khớp đúng số tiền sao kê.</dd></dl></details>
+          </div>
+        </section>
         <div id="it-stock-source" class="it-stock-source">${stockSummaryHtml()}</div>
-        <div class="it-actions">
-          <button id="it-import-web" type="button">Nhập data.xlsx</button>
-          <button id="it-import-statement" type="button">Nhập sao kê.xlsx</button>
-          <button id="it-manage-stock" type="button">Quản lý tồn kho</button>
-          <button id="it-manage-mapping" type="button">Duyệt ánh xạ</button>
-          <button id="it-manage-statement" type="button">Giao dịch ngân hàng</button>
-          <button id="it-manage-batch" type="button">Batch Review</button>
+        <div class="it-file-inputs">
           <input id="it-web-file" type="file" accept=".xlsx" hidden>
           <input id="it-stock-file" type="file" accept=".xlsx" hidden>
+          <input id="it-mapping-file" type="file" accept=".json,application/json" hidden>
           <input id="it-statement-file" type="file" accept=".xlsx" hidden>
           <input id="it-state-file" type="file" accept=".json,application/json" hidden>
         </div>
         <section id="it-stock-admin" hidden>
+          <div class="it-shared-stock-note">
+            <div><span class="it-eyebrow">KHO VẬT LÝ DÙNG CHUNG</span><b>Kim Giang và Linh Đàm cùng trừ một số tồn</b>
+              <small>Mã web và ánh xạ vẫn được quản lý riêng cho từng cơ sở.</small></div>
+            <button id="it-open-stock-import" type="button" class="primary">Cập nhật kho chung</button>
+          </div>
+          <section id="it-warehouse-import" class="it-warehouse-import" hidden>
+            <div class="it-import-title"><div><b>Cập nhật file kho</b><small>Chọn đúng mục đích của file trước khi nhập.</small></div><button id="it-cancel-warehouse-import" type="button">Đóng</button></div>
+            <div class="it-import-modes">
+              <label class="selected"><input type="radio" name="it-warehouse-mode" value="snapshot" checked><span><b>Kiểm kê thay thế</b><small>Dùng khi file là số tồn thực tế mới nhất. Số lượng trong file sẽ thay số cũ.</small></span></label>
+              <label><input type="radio" name="it-warehouse-mode" value="add"><span><b>Nhập bổ sung</b><small>Dùng khi file chỉ là lô hàng mới nhập. Số lượng sẽ được cộng vào kho hiện có.</small></span></label>
+            </div>
+            <div class="it-import-file-row"><button id="it-choose-stock-file" type="button" class="primary">Chọn file Excel</button><span id="it-stock-file-name">Chưa chọn file</span></div>
+            <div id="it-warehouse-preview" hidden></div>
+          </section>
           <div class="it-stock-toolbar">
             <input id="it-stock-search" type="search" placeholder="Tìm mã hoặc tên hàng…">
             <select id="it-stock-filter">
@@ -760,9 +1047,9 @@
               <option value="per_invoice">Theo định mức/HĐ</option>
             </select>
             <div class="it-stock-actions">
-              <button id="it-import-stock" type="button">Nhập KhoT5.xlsx</button>
-              <button id="it-import-state" type="button">Nhập trạng thái tồn</button>
-              <button id="it-export-state" type="button">Xuất trạng thái tồn</button>
+              <button id="it-import-stock" type="button">Cập nhật kho chung</button>
+              <button id="it-import-state" type="button">Khôi phục bản sao</button>
+              <button id="it-export-state" type="button">Sao lưu kho</button>
               <button id="it-export-issued" type="button" title="Xuất Excel mặt hàng đã phát hành hóa đơn để hạch toán">Xuất kho đã phát hành (Excel)</button>
             </div>
           </div>
@@ -818,8 +1105,10 @@
         saveBatchUiSession({ panelOpen: true }).catch(error => console.error("Không lưu được phiên Batch Review", error));
       } else if (root.querySelector("#it-panel").classList.contains("stock-mode")) {
         renderStockAdmin();
-      } else {
+      } else if (root.querySelector("#it-panel").classList.contains("single-mode")) {
         scanInvoice();
+      } else {
+        showHomeDashboard();
       }
     });
     root.querySelector("#it-close").addEventListener("click", () => {
@@ -830,10 +1119,21 @@
     });
     root.querySelector("#it-scan").addEventListener("click", scanInvoice);
     root.querySelector("#it-solve").addEventListener("click", solveInvoice);
-    root.querySelector("#it-import-stock").addEventListener("click", () => root.querySelector("#it-stock-file").click());
+    root.querySelector("#it-import-stock").addEventListener("click", openWarehouseImport);
+    root.querySelector("#it-open-stock-import").addEventListener("click", openWarehouseImport);
+    root.querySelector("#it-cancel-warehouse-import").addEventListener("click", closeWarehouseImport);
+    root.querySelector("#it-choose-stock-file").addEventListener("click", () => root.querySelector("#it-stock-file").click());
+    root.querySelectorAll('input[name="it-warehouse-mode"]').forEach(input => input.addEventListener("change", () => {
+      root.querySelectorAll(".it-import-modes label").forEach(label => label.classList.toggle("selected", label.contains(input)));
+      pendingWarehouseImport = null;
+      root.querySelector("#it-warehouse-preview").hidden = true;
+      root.querySelector("#it-stock-file-name").textContent = "Chưa chọn file";
+    }));
+    root.querySelector("#it-sync-web").addEventListener("click", syncLatestWebCatalog);
     root.querySelector("#it-import-web").addEventListener("click", () => root.querySelector("#it-web-file").click());
     root.querySelector("#it-web-file").addEventListener("change", importWebFile);
     root.querySelector("#it-stock-file").addEventListener("change", importStockFile);
+    root.querySelector("#it-mapping-file").addEventListener("change", importMappingFile);
     root.querySelector("#it-import-statement").addEventListener("click", () => root.querySelector("#it-statement-file").click());
     root.querySelector("#it-statement-file").addEventListener("change", importStatementFile);
     root.querySelector("#it-import-state").addEventListener("click", () => root.querySelector("#it-state-file").click());
@@ -846,6 +1146,14 @@
     root.querySelector("#it-manage-batch").addEventListener("click", toggleBatchReview);
     root.querySelector("#it-manage-mapping").addEventListener("click", toggleMappingAdmin);
     root.querySelector("#it-manage-statement").addEventListener("click", toggleStatementAdmin);
+    root.querySelector("#it-manage-einvoice").addEventListener("click", () => {
+      openEInvoiceAdmin().catch(error => setStatus(error.message, "error"));
+    });
+    root.querySelector("#it-home-back").addEventListener("click", showHomeDashboard);
+    root.querySelector("#it-open-single").addEventListener("click", () => {
+      applyPanelScreen("single-mode");
+      scanInvoice();
+    });
     root.querySelector("#it-manage-priority").addEventListener("click", togglePriorityAdmin);
     root.querySelector("#it-target").addEventListener("blur", event => {
       const amount = parseMoney(event.target.value);
@@ -853,6 +1161,7 @@
       renderPriorityRules(true);
     });
     renderPriorityRules(true);
+    renderWorkflowDashboard();
   }
 
   function setStatus(message, kind) {
@@ -860,6 +1169,7 @@
     if (!node) return;
     node.textContent = message;
     node.className = `it-status ${kind || ""}`;
+    renderWorkflowDashboard();
   }
 
   function priorityInventory(rule) {
@@ -1061,7 +1371,7 @@
   // File nhị phân (xlsx) phải đi qua base64 vì thông điệp tới background chỉ
   // chuyển được dữ liệu JSON thuần.
   async function downloadBase64(base64, filename, mimeType) {
-    const response = await chrome.runtime.sendMessage({
+    const response = await sendRuntimeMessage({
       type: "invoiceTarget.downloadBinary",
       filename,
       mimeType,
@@ -1072,7 +1382,7 @@
   }
 
   async function downloadJson(payload, filename) {
-    const response = await chrome.runtime.sendMessage({
+    const response = await sendRuntimeMessage({
       type: "invoiceTarget.downloadStockState",
       filename,
       content: JSON.stringify(payload, null, 2)
@@ -1083,25 +1393,20 @@
 
   async function exportStockState() {
     try {
-      const payload = InvoiceStockState.build({
-        mappingDataset,
-        parentExportId: Number(stockStateMeta?.schemaVersion) === InvoiceStockState.SCHEMA_VERSION
-          ? stockStateMeta.currentExportId
-          : null,
-        extensionVersion
-      });
-      await downloadJson(payload, `TonKho_ParisKimGiang_${localTimestamp(payload.exportedAt)}.json`);
-      stockStateMeta = {
-        schemaVersion: payload.schemaVersion,
-        currentExportId: payload.exportId,
-        parentExportId: payload.parentExportId,
-        exportedAt: payload.exportedAt,
-        inventoryFingerprint: payload.inventoryFingerprint
+      if (!sharedWarehouse.initialized) throw new Error("Kho dùng chung chưa được khởi tạo.");
+      const exportedAt = new Date().toISOString();
+      const payload = {
+        kind: InvoiceSharedWarehouse.KIND,
+        schemaVersion: InvoiceSharedWarehouse.SCHEMA_VERSION,
+        exportedAt,
+        extensionVersion,
+        warehouse: InvoiceSharedWarehouse.normalize(sharedWarehouse)
       };
-      await InvoiceMappingStore.saveStockStateMeta(stockStateMeta);
+      await downloadJson(payload, `TonKho_DungChung_${localTimestamp(exportedAt)}.json`);
+      const summary = InvoiceSharedWarehouse.summarize(sharedWarehouse.items);
       setStatus(
-        `Đã xuất trạng thái tồn kho: ${payload.summary.stockItemCount} mã, ` +
-        `${formatMoney(payload.summary.availableUnitCount)} đơn vị khả dụng. File không chứa sao kê, rule hay danh mục web.`,
+        `Đã sao lưu kho dùng chung: ${summary.codes} mã, ${formatMoney(summary.units)} đơn vị. ` +
+        "File không chứa sao kê, rule hay mã web của từng cơ sở.",
         "ok"
       );
     } catch (error) {
@@ -1114,7 +1419,25 @@
     if (!file) return;
     try {
       const payload = JSON.parse(await file.text());
-      const comparison = InvoiceStockState.compare(mappingDataset, payload, stockStateMeta);
+      if (payload?.kind === InvoiceSharedWarehouse.KIND) {
+        const incoming = InvoiceSharedWarehouse.normalize(payload.warehouse || payload);
+        pendingWarehouseImport = {
+          fileName: file.name,
+          preview: InvoiceSharedWarehouse.previewImport(sharedWarehouse, incoming.items, "snapshot", {
+            source: file.name,
+            at: new Date().toISOString()
+          })
+        };
+        openWarehouseImport();
+        const snapshotMode = document.querySelector('input[name="it-warehouse-mode"][value="snapshot"]');
+        if (snapshotMode) snapshotMode.checked = true;
+        document.querySelectorAll(".it-import-modes label").forEach(label => label.classList.toggle("selected", label.contains(snapshotMode)));
+        document.getElementById("it-stock-file-name").textContent = file.name;
+        renderWarehouseImportPreview();
+        setStatus(`Đã đọc bản sao ${file.name}. Hãy kiểm tra trước khi khôi phục kho dùng chung.`, "warn");
+        return;
+      }
+      const comparison = InvoiceStockState.compare(mappingDataset, payload, stockStateMeta, pageTenantSlug);
       pendingStockStateImport = { fileName: file.name, payload, comparison };
       renderStockStatePreview();
       setStatus(
@@ -1180,9 +1503,10 @@
     const button = document.getElementById("it-state-apply");
     if (button) button.disabled = true;
     try {
-      const nextMappingDataset = InvoiceStockState.applyToMapping(mappingDataset, pending.payload);
+      const nextMappingDataset = InvoiceStockState.applyToMapping(mappingDataset, pending.payload, pageTenantSlug);
       const backup = InvoiceStockState.build({
         mappingDataset,
+        tenant: pageTenantSlug,
         extensionVersion,
         exportedAt: new Date().toISOString()
       });
@@ -1193,7 +1517,8 @@
         exportedAt: pending.payload.exportedAt,
         importedAt,
         sourceFile: pending.fileName,
-        inventoryFingerprint: pending.payload.inventoryFingerprint
+        inventoryFingerprint: pending.payload.inventoryFingerprint,
+        tenant: pageTenantSlug
       }, backup);
       stockStateMeta = {
         schemaVersion: pending.payload.schemaVersion,
@@ -1202,7 +1527,8 @@
         exportedAt: pending.payload.exportedAt,
         importedAt,
         sourceFile: pending.fileName,
-        inventoryFingerprint: pending.payload.inventoryFingerprint
+        inventoryFingerprint: pending.payload.inventoryFingerprint,
+        tenant: pageTenantSlug
       };
       mappingDataset = nextMappingDataset;
       refreshMappingState();
@@ -1220,23 +1546,131 @@
     }
   }
 
+  function openWarehouseImport() {
+    const node = document.getElementById("it-warehouse-import");
+    if (!node) return;
+    node.hidden = false;
+    node.scrollIntoView({ block: "nearest" });
+  }
+
+  function closeWarehouseImport() {
+    const node = document.getElementById("it-warehouse-import");
+    if (node) node.hidden = true;
+    pendingWarehouseImport = null;
+    const preview = document.getElementById("it-warehouse-preview");
+    if (preview) preview.hidden = true;
+  }
+
+  function warehouseRowsForMapping() {
+    return (sharedWarehouse.items || []).map(item => ({
+      stockCode: item.stockCode,
+      stockName: item.stockName,
+      stockUnit: item.stockUnit,
+      stockQty: item.stockQty,
+      conversion: item.conversion,
+      availableQty: item.availableQty,
+      salePrice: item.salePrice,
+      stockMissing: item.missingFromLastSnapshot
+    }));
+  }
+
+  function mergeWarehouseIntoCurrentMapping() {
+    if (!sharedWarehouse.initialized) return;
+    const previousRows = mappingDataset.mappings || [];
+    const merged = InvoiceMappingEngine.mergeStockSnapshot(warehouseRowsForMapping(), webCatalog, previousRows);
+    const sharedCodes = new Set((sharedWarehouse.items || []).map(item => String(item.stockCode)));
+    const retained = previousRows.filter(row => !sharedCodes.has(String(row.stockCode))).map(row => ({
+      ...row,
+      availableQty: row.availabilityMode === "per_invoice" ? row.availableQty : 0,
+      stockMissing: row.availabilityMode !== "per_invoice"
+    }));
+    mappingDataset = InvoiceMappingEngine.applyBusinessRules({
+      ...mappingDataset,
+      source: sharedWarehouse.source,
+      tenant: pageTenantSlug,
+      generatedAt: sharedWarehouse.updatedAt,
+      mappings: [...merged, ...retained]
+    });
+    mappingDataset = InvoiceSharedWarehouse.overlayMappings(mappingDataset, sharedWarehouse);
+  }
+
+  function renderWarehouseImportPreview() {
+    const node = document.getElementById("it-warehouse-preview");
+    const pending = pendingWarehouseImport;
+    if (!node || !pending) return;
+    const { preview } = pending;
+    const rows = preview.changes.filter(item => item.delta !== 0 || item.isNew).slice(0, 12);
+    node.hidden = false;
+    node.innerHTML = `<div class="it-import-preview-head"><div><b>Xem trước trước khi áp dụng</b><small>${preview.mode === "add" ? "Nhập bổ sung — cộng vào kho hiện tại" : "Kiểm kê thay thế — cập nhật theo số thực tế trong file"}</small></div></div>
+      <div class="it-import-preview-kpis">
+        <div><small>Mã trong file</small><b>${preview.counts.incoming}</b></div>
+        <div class="ok"><small>Mã mới</small><b>+${preview.counts.added}</b></div>
+        <div><small>Tăng / giảm</small><b>↑${preview.counts.increased} · ↓${preview.counts.decreased}</b></div>
+        <div class="${preview.counts.missing ? "warn" : ""}"><small>Không có trong file</small><b>${preview.counts.missing}</b></div>
+        <div><small>Tổng đơn vị</small><b>${formatMoney(preview.beforeSummary.units)} → ${formatMoney(preview.afterSummary.units)}</b></div>
+        <div><small>Giá trị theo giá bán</small><b>${formatMoney(preview.beforeSummary.value)} → ${formatMoney(preview.afterSummary.value)}</b></div>
+      </div>
+      ${preview.counts.missing ? `<div class="it-import-warning"><b>${preview.counts.missing} mã cũ không có trong file.</b> Extension giữ nguyên số lượng và đánh dấu để kiểm tra, không tự đưa về 0.</div>` : ""}
+      ${rows.length ? `<div class="it-table-wrap"><table><thead><tr><th>Mã kho</th><th>Tên hàng</th><th>Trước</th><th>Sau</th><th>Chênh lệch</th></tr></thead><tbody>${rows.map(row => `<tr><td><b>${escapeHtml(row.stockCode)}</b></td><td>${escapeHtml(row.stockName)}</td><td>${formatMoney(row.before)}</td><td>${formatMoney(row.after)}</td><td>${row.delta > 0 ? "+" : ""}${formatMoney(row.delta)}</td></tr>`).join("")}</tbody></table></div>` : "<p>Không có thay đổi số lượng.</p>"}
+      <label class="it-confirm"><input id="it-confirm-warehouse-import" type="checkbox"> Tôi đã kiểm tra đúng loại file và số lượng trước/sau.</label>
+      <div class="it-actions"><button id="it-apply-warehouse-import" type="button" class="primary" disabled>Áp dụng vào kho dùng chung</button></div>`;
+    const confirm = node.querySelector("#it-confirm-warehouse-import");
+    const apply = node.querySelector("#it-apply-warehouse-import");
+    confirm.addEventListener("change", () => { apply.disabled = !confirm.checked; });
+    apply.addEventListener("click", applyWarehouseImport);
+  }
+
+  async function applyWarehouseImport() {
+    if (!pendingWarehouseImport) return;
+    const importFileName = pendingWarehouseImport.fileName;
+    const button = document.getElementById("it-apply-warehouse-import");
+    if (button) button.disabled = true;
+    try {
+      sharedWarehouse = InvoiceSharedWarehouse.applyImport(
+        sharedWarehouse,
+        pendingWarehouseImport.preview,
+        pageTenantSlug
+      );
+      mergeWarehouseIntoCurrentMapping();
+      await Promise.all([
+        InvoiceMappingStore.saveSharedWarehouse(sharedWarehouse),
+        InvoiceMappingStore.save(mappingDataset)
+      ]);
+      const newCount = pendingWarehouseImport.preview.counts.added;
+      const pendingCount = (mappingDataset.mappings || []).filter(row => row.status === "review" || row.status === "unmatched").length;
+      refreshMappingState();
+      renderStockAdmin();
+      closeWarehouseImport();
+      setStatus(
+        `Đã cập nhật kho dùng chung từ ${importFileName || sharedWarehouse.source}. ` +
+        `${newCount} mã mới; ${pendingCount} mã của ${pageTenantLabel} cần kiểm tra ánh xạ.`,
+        pendingCount ? "warn" : "ok"
+      );
+    } catch (error) {
+      if (button) button.disabled = false;
+      setStatus(`Không cập nhật được kho dùng chung: ${error.message}`, "error");
+    }
+  }
+
   async function importStockFile(event) {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      setStatus("Đang đọc file kho…", "warn");
+      openWarehouseImport();
+      setStatus("Đang đọc file kho và lập bản xem trước…", "warn");
       const stockRows = await InvoiceXlsxReader.parseStockWorkbook(file);
-      mappingDataset = InvoiceMappingEngine.applyBusinessRules({
-        source: file.name,
-        generatedAt: new Date().toISOString(),
-        mappings: InvoiceMappingEngine.mergeStockSnapshot(stockRows, webCatalog, mappingDataset.mappings)
-      });
-      await InvoiceMappingStore.save(mappingDataset);
-      refreshMappingState();
-      renderMappingAdmin();
-      document.getElementById("it-mapping-admin").hidden = false;
-      setMappingMode(true);
-      setStatus(`Đã nhập ${stockRows.length} dòng kho. Hãy duyệt các ánh xạ chưa xác nhận.`, "ok");
+      if (!stockRows.length) throw new Error("File không có dòng tồn kho hợp lệ.");
+      const mode = document.querySelector('input[name="it-warehouse-mode"]:checked')?.value || "snapshot";
+      pendingWarehouseImport = {
+        fileName: file.name,
+        preview: InvoiceSharedWarehouse.previewImport(sharedWarehouse, stockRows, mode, {
+          source: file.name,
+          at: new Date().toISOString()
+        })
+      };
+      document.getElementById("it-stock-file-name").textContent = file.name;
+      renderWarehouseImportPreview();
+      setStatus("Đã đọc file. Hãy kiểm tra bản xem trước rồi xác nhận áp dụng.", "warn");
     } catch (error) {
       setStatus(`Không đọc được file kho: ${error.message}`, "error");
     } finally {
@@ -1250,7 +1684,7 @@
     try {
       setStatus("Đang đọc danh mục web…", "warn");
       const items = await InvoiceXlsxReader.parseWebCatalogWorkbook(file);
-      catalogDataset = { source: file.name, generatedAt: new Date().toISOString(), items };
+      catalogDataset = { source: file.name, tenant: pageTenantSlug, generatedAt: new Date().toISOString(), items };
       webCatalog = items;
       const report = InvoiceMappingEngine.reconcileCatalog(mappingDataset, webCatalog);
       await Promise.all([
@@ -1272,7 +1706,7 @@
     if (!file) return;
     try {
       setStatus("Đang đọc sao kê ngân hàng…", "warn");
-      const parsed = await InvoiceXlsxReader.parseBankStatementWorkbook(file);
+      const parsed = await InvoiceXlsxReader.parseBankStatementWorkbook(file, { tenantSlug: pageTenantSlug });
       const previous = new Map((statementDataset.transactions || []).map(item => [String(item.id), item]));
       const transactions = parsed.map(item => {
         const old = previous.get(String(item.id));
@@ -1318,7 +1752,8 @@
 
   function stockViewRows() {
     const reservations = stockReservationByCode();
-    return inventory.map(item => {
+    const mappedStockCodes = new Set(inventory.flatMap(item => (item.stockCodes || []).map(String)));
+    const rows = inventory.map(item => {
       const recordedQty = Math.max(0, Math.floor(Number(item.availableQty) || 0));
       const heldQty = item.availabilityMode === "per_invoice"
         ? 0
@@ -1332,6 +1767,24 @@
           : Math.max(0, recordedQty - heldQty)
       };
     });
+    for (const item of sharedWarehouse.items || []) {
+      if (mappedStockCodes.has(String(item.stockCode))) continue;
+      rows.push({
+        webCode: "",
+        webName: item.stockName,
+        webUnit: item.stockUnit,
+        webPrice: item.salePrice,
+        availableQty: item.availableQty,
+        recordedQty: item.availableQty,
+        heldQty: 0,
+        allocatableQty: item.availableQty,
+        stockCodes: [item.stockCode],
+        availabilityMode: "stock",
+        needsMapping: true,
+        stockMissing: item.missingFromLastSnapshot
+      });
+    }
+    return rows.sort((a, b) => Number(Boolean(a.needsMapping)) - Number(Boolean(b.needsMapping)) || String(a.webCode || a.stockCodes?.[0]).localeCompare(String(b.webCode || b.stockCodes?.[0])));
   }
 
   function renderStockAdmin() {
@@ -1339,12 +1792,14 @@
     const heldCodes = rows.filter(item => item.heldQty > 0).length;
     const lowCodes = rows.filter(item => item.availabilityMode !== "per_invoice" && item.allocatableQty > 0 && item.allocatableQty <= 3).length;
     const outCodes = rows.filter(item => item.availabilityMode !== "per_invoice" && item.allocatableQty <= 0).length;
+    const unmappedCodes = rows.filter(item => item.needsMapping).length;
     const kpis = document.getElementById("it-stock-kpis");
     if (kpis) {
       kpis.innerHTML = `<div><small>Mã đủ điều kiện</small><strong>${rows.length}</strong></div>
         <div><small>Đang giữ</small><strong>${heldCodes}</strong></div>
         <div class="${lowCodes ? "warn" : ""}"><small>Sắp hết</small><strong>${lowCodes}</strong></div>
-        <div class="${outCodes ? "error" : ""}"><small>Đã hết</small><strong>${outCodes}</strong></div>`;
+        <div class="${outCodes ? "error" : ""}"><small>Đã hết</small><strong>${outCodes}</strong></div>
+        <div class="${unmappedCodes ? "warn" : ""}"><small>Chưa ánh xạ tại ${escapeHtml(pageTenantLabel)}</small><strong>${unmappedCodes}</strong></div>`;
     }
     renderStockRows();
   }
@@ -1366,14 +1821,14 @@
       return true;
     });
     body.innerHTML = rows.map(item => `<tr class="${item.allocatableQty <= 0 && item.availabilityMode !== "per_invoice" ? "out" : item.allocatableQty <= 3 && item.availabilityMode !== "per_invoice" ? "low" : ""}">
-      <td><b>${escapeHtml(item.webCode)}</b></td>
+      <td><b>${item.needsMapping ? '<span class="it-needs-mapping">Chưa ánh xạ</span>' : escapeHtml(item.webCode)}</b></td>
       <td title="${escapeHtml(item.webName)}">${escapeHtml(item.webName)}</td>
       <td>${escapeHtml(item.webUnit || "")}</td>
       <td class="it-money">${formatMoney(item.webPrice)}</td>
       <td class="it-qty">${item.availabilityMode === "per_invoice" ? `${item.recordedQty}/HĐ` : formatMoney(item.recordedQty)}</td>
       <td class="it-qty held">${formatMoney(item.heldQty)}</td>
       <td class="it-qty allocatable">${item.availabilityMode === "per_invoice" ? `${item.allocatableQty}/HĐ` : formatMoney(item.allocatableQty)}</td>
-      <td title="${escapeHtml((item.stockCodes || []).join(", "))}">${escapeHtml((item.stockCodes || []).join(", "))}</td>
+      <td title="${escapeHtml((item.stockCodes || []).join(", "))}">${escapeHtml((item.stockCodes || []).join(", "))}${item.stockMissing ? " · cần kiểm tra" : ""}</td>
     </tr>`).join("") || '<tr><td colspan="8">Không có mặt hàng phù hợp bộ lọc.</td></tr>';
   }
 
@@ -1385,25 +1840,81 @@
   // Mỗi màn hình quản lý là một section độc lập; chỉ một section được mở tại một
   // thời điểm. Bảng này giữ nhãn mặc định của nút để không lặp lại ở từng hàm.
   const PANEL_SCREENS = [
-    { mode: "stock-mode", section: "it-stock-admin", button: "it-manage-stock", label: "Quản lý tồn kho" },
-    { mode: "mapping-mode", section: "it-mapping-admin", button: "it-manage-mapping", label: "Duyệt ánh xạ" },
-    { mode: "statement-mode", section: "it-statement-admin", button: "it-manage-statement", label: "Giao dịch ngân hàng" },
-    { mode: "batch-mode", section: "it-batch-review", button: "it-manage-batch", label: "Batch Review" }
+    { mode: "stock-mode", section: "it-stock-admin", title: "Bước 1 · Kho vật lý dùng chung", help: "Kiểm kê sẽ thay số hiện tại; nhập bổ sung sẽ cộng thêm. Mã web vẫn được ánh xạ riêng theo cơ sở." },
+    { mode: "mapping-mode", section: "it-mapping-admin", title: "Bước 2 · Đối chiếu mặt hàng", help: "Xác nhận mỗi mặt hàng trong kho tương ứng với đúng mã hàng trên website." },
+    { mode: "statement-mode", section: "it-statement-admin", title: "Bước 3 · Giao dịch ngân hàng", help: "Nhập sao kê và kiểm tra trạng thái từng giao dịch trước khi lập hóa đơn." },
+    { mode: "batch-mode", section: "it-batch-review", title: "Bước 4 · Lập và duyệt hóa đơn", help: "Xem phương án, tổng tiền và tồn kho. Chỉ Accept khi các thông tin đã hợp lý." }
   ];
 
   function applyPanelScreen(activeMode) {
     const panel = document.getElementById("it-panel");
     if (!panel) return false;
-    panel.classList.remove("review-mode", ...PANEL_SCREENS.map(screen => screen.mode));
-    if (activeMode) panel.classList.add(activeMode);
+    const mode = activeMode || "single-mode";
+    panel.classList.remove("home-mode", "single-mode", "review-mode", ...PANEL_SCREENS.map(screen => screen.mode));
+    panel.classList.add(mode);
     for (const screen of PANEL_SCREENS) {
-      const active = screen.mode === activeMode;
+      const active = screen.mode === mode;
       const section = document.getElementById(screen.section);
       if (section) section.hidden = !active;
-      const button = document.getElementById(screen.button);
-      if (button) button.textContent = active ? "Quay lại tính toán" : screen.label;
     }
+    const screen = PANEL_SCREENS.find(item => item.mode === mode);
+    const title = document.getElementById("it-screen-title");
+    const subtitle = document.getElementById("it-screen-subtitle");
+    const nav = document.getElementById("it-screen-nav");
+    const help = document.getElementById("it-screen-help");
+    if (title) title.textContent = screen?.title || "Điều chỉnh một phiếu";
+    if (subtitle) subtitle.textContent = `${pageTenantLabel}${extensionVersion ? ` · v${extensionVersion}` : ""}`;
+    if (nav) nav.hidden = mode === "home-mode";
+    if (help) help.textContent = screen?.help || "Đọc phiếu đang mở, tính phương án và kiểm tra trước khi lưu.";
     return true;
+  }
+
+  async function syncLatestWebCatalog(event) {
+    const button = event?.currentTarget || document.getElementById("it-sync-web");
+    const oldLabel = button?.textContent || "Đồng bộ từ website";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Đang đồng bộ…";
+    }
+    try {
+      setStatus(`Đang lấy danh mục mới nhất của ${pageTenantLabel} từ website…`, "warn");
+      const result = await request("fetchLatestProductCatalog");
+      const items = Array.isArray(result?.items) ? result.items : [];
+      if (!items.length) throw new Error("Website không trả về mặt hàng nào; dữ liệu hiện tại được giữ nguyên.");
+      catalogDataset = {
+        source: "Website API",
+        tenant: pageTenantSlug,
+        syncedAt: new Date().toISOString(),
+        total: Number(result.total || items.length),
+        items
+      };
+      webCatalog = items;
+      const report = InvoiceMappingEngine.reconcileCatalog(mappingDataset, webCatalog);
+      await Promise.all([
+        InvoiceMappingStore.saveCatalog(catalogDataset),
+        InvoiceMappingStore.save(mappingDataset)
+      ]);
+      refreshMappingState();
+      if (!document.getElementById("it-mapping-admin")?.hidden) renderMappingAdmin();
+      setStatus(
+        `Đã đồng bộ ${items.length} mặt hàng từ ${pageTenantLabel}. ${report.updated} ánh xạ được cập nhật; ${report.missing} mã cần kiểm tra lại.`,
+        report.missing ? "warn" : "ok"
+      );
+    } catch (error) {
+      setStatus(`Không đồng bộ được danh mục website: ${error.message}`, "error");
+    } finally {
+      if (button?.isConnected) {
+        button.disabled = false;
+        button.textContent = oldLabel;
+      }
+    }
+  }
+
+  function showHomeDashboard() {
+    if (!applyPanelScreen("home-mode")) return;
+    const title = document.getElementById("it-screen-title");
+    if (title) title.textContent = "Trợ lý xuất hóa đơn";
+    renderWorkflowDashboard();
   }
 
   function setStockMode(enabled) {
@@ -1474,6 +1985,37 @@
     setStatus(`Đã bật API Trace đến ${expires}. Hãy mở một phòng trống và tạo phiếu đúng một lần, sau đó bấm Xuất trace JSON.`, "ok");
   }
 
+  function selectApiTemplateFromTrace(records) {
+    const candidates = (records || [])
+      .filter(record => {
+        if (!record?.url || !record?.method || !["text", "urlencoded", "formdata"].includes(record.bodyType)) return false;
+        try { return /\/AddEdit\/DoSave/i.test(new URL(record.url, location.href).pathname); }
+        catch (_) { return false; }
+      })
+      .map(record => ({ record, analysis: InvoiceApiTemplate.analyze(record) }));
+    if (!candidates.length) return null;
+    const reversed = [...candidates].reverse();
+    const complete = reversed.find(candidate => candidate.analysis.ready);
+    if (complete) return complete;
+    const detail = reversed.find(candidate => candidate.analysis.detailArrays?.length);
+    const payment = reversed.find(candidate => candidate.analysis.payment?.ready);
+    if (detail && payment && detail.record !== payment.record) {
+      const record = { ...detail.record, paymentTemplate: payment.record };
+      return { record, analysis: InvoiceApiTemplate.analyze(record) };
+    }
+    return candidates[candidates.length - 1];
+  }
+
+  function apiTraceAnalysisMessage(analysis) {
+    const reasons = analysis?.reasons || [];
+    if (reasons.includes("payment-values-not-equal")) {
+      return "Trace mới chỉ có bước lưu tạm: Tiền mặt/Tiền thanh toán chưa bằng Tổng tiền. Hãy thực hiện tới bước Thanh toán hoặc Lưu thoát rồi xuất trace lại.";
+    }
+    if (reasons.includes("payment-fields-not-found")) return "Request chưa chứa dữ liệu thanh toán của hóa đơn.";
+    if (reasons.includes("invoice-detail-not-found")) return "Request chưa chứa danh sách mặt hàng của hóa đơn.";
+    return `Request DoSave chưa hợp lệ: ${reasons.join(", ") || "không xác định"}.`;
+  }
+
   async function exportInvoiceApiTrace() {
     const trace = await request("getApiTrace");
     const records = Array.isArray(trace?.records) ? trace.records : [];
@@ -1489,7 +2031,59 @@
       security: "Authorization, Cookie và Proxy-Authorization đã bị loại bỏ.",
       records
     }, `invoice-api-trace-${stamp}.json`);
-    setStatus(`Đã xuất API Trace gồm ${records.length} request.`, "ok");
+    const selected = selectApiTemplateFromTrace(records);
+    if (!selected) {
+      setStatus(`Đã xuất ${records.length} request nhưng chưa có request DoSave để tạo mẫu Lưu HĐ.`, "error");
+      return;
+    }
+    await receiveSaveRequestCapture({ detail: selected.record });
+    if (selected.analysis.ready) {
+      setStatus(`Đã xuất ${records.length} request và tự lưu mẫu Lưu HĐ hợp lệ cho ${pageTenantLabel}.`, "ok");
+    } else {
+      setStatus(`Đã xuất ${records.length} request. ${apiTraceAnalysisMessage(selected.analysis)}`, "error");
+    }
+  }
+
+  function apiDebugStorageKey() {
+    return `invoiceTarget.apiDebug.latest.${pageTenantSlug}`;
+  }
+
+  async function persistGeneratedInvoiceApiDebugLog(context = {}) {
+    let trace;
+    try {
+      trace = await request("getApiTrace");
+    } catch (error) {
+      trace = { page: location.href, records: [], traceReadError: error.message };
+    }
+    const exportedAt = new Date().toISOString();
+    const payload = {
+      schemaVersion: 2,
+      kind: "extension-generated-invoice-api-debug",
+      exportedAt,
+      tenant: pageTenantSlug,
+      tenantLabel: pageTenantLabel,
+      sourcePage: trace?.page || location.href,
+      expected: context.expected || null,
+      outcome: context.outcome || "unknown",
+      result: context.result || null,
+      error: context.error || "",
+      security: "Authorization, Cookie và Proxy-Authorization đã bị loại bỏ.",
+      records: Array.isArray(trace?.records) ? trace.records : []
+    };
+    await chrome.storage.local.set({ [apiDebugStorageKey()]: payload });
+    const stamp = exportedAt.replace(/[:.]/g, "-");
+    const transactionDate = String(context.expected?.invoiceDateKey || "unknown").replace(/[^0-9-]/g, "");
+    await downloadJson(payload, `invoice-api-debug-${pageTenantSlug}-${transactionDate}-${stamp}.json`);
+    return payload;
+  }
+
+  async function exportLatestGeneratedInvoiceApiDebugLog() {
+    const saved = await chrome.storage.local.get(apiDebugStorageKey());
+    const payload = saved?.[apiDebugStorageKey()];
+    if (!payload) throw new Error("Chưa có log API tự động nào của cơ sở hiện tại.");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await downloadJson(payload, `invoice-api-debug-${pageTenantSlug}-latest-${stamp}.json`);
+    setStatus("Đã xuất log API gần nhất. File chứa chính xác payload và response nhưng không chứa Cookie/Authorization.", "ok");
   }
 
   function renderBatchReview() {
@@ -1519,6 +2113,7 @@
         : "Lưu một phiếu thử bằng nút chính thức của website để tự bắt mẫu."}</small>
       <button id="it-arm-api-trace" type="button">Bắt API tạo phiếu</button>
       <button id="it-export-api-trace" type="button">Xuất trace JSON</button>
+      <button id="it-export-latest-api-debug" type="button">Xuất log API gần nhất</button>
     </div>
     ${pendingNewInvoiceContextHtml()}
     <div id="it-batch-summary"></div>
@@ -1529,6 +2124,9 @@
     });
     node.querySelector("#it-export-api-trace")?.addEventListener("click", () => {
       exportInvoiceApiTrace().catch(error => setStatus(error.message, "error"));
+    });
+    node.querySelector("#it-export-latest-api-debug")?.addEventListener("click", () => {
+      exportLatestGeneratedInvoiceApiDebugLog().catch(error => setStatus(error.message, "error"));
     });
     if (batchPlans.length) renderBatchPlans();
   }
@@ -1546,6 +2144,19 @@
     const now = new Date();
     const part = number => String(number).padStart(2, "0");
     return `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}`;
+  }
+
+  function suggestedEInvoiceRange() {
+    const fromDate = uiSession?.batchFromDate || uiSession?.eInvoiceFromDate || todayDateKey();
+    const candidateTo = uiSession?.batchToDate || uiSession?.eInvoiceToDate || fromDate;
+    return { fromDate, toDate: candidateTo < fromDate ? fromDate : candidateTo };
+  }
+
+  async function openEInvoiceAdmin() {
+    statementSubtab = "einvoice";
+    setStatementMode(true);
+    showStatementSubtab("einvoice");
+    await loadEInvoiceList();
   }
 
   // Sổ đối soát sau lưu đã giữ sẵn mặt hàng + số lượng của đúng phiếu đó, và số
@@ -1577,8 +2188,7 @@
   function renderEInvoiceAdmin() {
     const node = document.getElementById("it-einvoice-admin");
     if (!node) return;
-    const fromDate = uiSession?.eInvoiceFromDate || todayDateKey();
-    const toDate = uiSession?.eInvoiceToDate || fromDate;
+    const { fromDate, toDate } = suggestedEInvoiceRange();
     node.innerHTML = `<div class="it-batch-toolbar">
       <div><b>Phát hành hóa đơn điện tử</b><br><small>Chọn các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small></div>
       <label>Từ ngày<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
@@ -1612,7 +2222,9 @@
       ? eInvoiceRows
       : eInvoiceRows.filter(row => isStatementInvoice(row, linked));
     const selectable = new Set(
-      visibleRows.filter(row => !row.issued && !row.cancelled).map(row => row.id));
+      visibleRows
+        .filter(row => !row.issued && !row.cancelled && statementInvoiceMatch(row).valid)
+        .map(row => row.id));
     // Bỏ khỏi lựa chọn những dòng không còn phát hành được (hoặc đã bị ẩn).
     eInvoiceSelection = new Set(Array.from(eInvoiceSelection).filter(id => selectable.has(id)));
     summary.innerHTML = `<div class="it-batch-summary-bar">
@@ -1637,6 +2249,7 @@
     }
     const rows = visibleRows.map(row => {
       const recorded = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
+      const statementMatch = statementInvoiceMatch(row);
       const statusHtml = row.cancelled
         ? '<span class="it-bank-status skipped">Đã hủy</span>'
         : row.issued
@@ -1653,18 +2266,26 @@
         : recorded?.itemsError
           ? `<small class="it-blocked-note" title="${escapeHtml(recorded.itemsError)}">⚠ chưa đọc được mặt hàng</small>`
           : '<small class="it-blocked-note">chưa có trong sổ đối soát</small>';
-      const selectable = !row.issued && !row.cancelled;
+      const selectable = !row.issued && !row.cancelled && statementMatch.valid;
       const outside = !isStatementInvoice(row, linked);
-      return `<tr data-einvoice-id="${escapeHtml(row.id)}" class="${outside ? "it-outside-statement" : ""}">
+      const matchHtml = statementMatch.valid
+        ? `<span class="it-bank-status done">Khớp giao dịch</span><br><small>${escapeHtml(statementMatch.dateKey)} · ${formatMoney(statementMatch.credit)} đ${statementMatch.amountDifference ? ` · lệch ${statementMatch.amountDifference > 0 ? "+" : ""}${formatMoney(statementMatch.amountDifference)} đ` : ""}</small>`
+        : `<span class="it-bank-status skipped">Không khớp</span><br><small class="it-blocked-note">${escapeHtml(statementMatch.reason)}</small>`;
+      const rowClass = [outside ? "it-outside-statement" : "", !outside && !statementMatch.valid ? "it-einvoice-mismatch" : ""]
+        .filter(Boolean).join(" ");
+      return `<tr data-einvoice-id="${escapeHtml(row.id)}" class="${rowClass}">
         <td>${selectable
           ? `<input class="it-einvoice-select" type="checkbox" ${eInvoiceSelection.has(row.id) ? "checked" : ""}>`
           : ""}</td>
         <td><b>${escapeHtml(row.invoiceNo)}</b><br><small>${escapeHtml(row.dateKey)}</small>${
           outside ? '<br><small class="it-blocked-note">ngoài giao dịch</small>' : ""}</td>
         <td class="it-money">${formatMoney(row.grandTotal)}</td>
+        <td>${matchHtml}</td>
         <td>${escapeHtml(row.buyer || "—")}</td>
         <td>${statusHtml}</td>
-        <td>${itemsHtml}</td>
+        <td>${itemsHtml}${row.issued
+          ? `<br><button class="it-check-issued" type="button" data-id="${escapeHtml(row.id)}">Check / đồng bộ</button>`
+          : ""}</td>
       </tr>`;
     }).join("");
     table.innerHTML = `<div class="it-batch-actions">
@@ -1676,7 +2297,7 @@
       </span>
     </div>
     <div id="it-einvoice-progress"></div>
-    <div class="it-table-wrap"><table class="it-batch-table"><thead><tr><th></th><th>Phiếu</th><th>Tổng cộng</th><th>Người mua</th><th>Trạng thái</th><th>Mặt hàng đã ghi</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="it-table-wrap"><table class="it-batch-table"><thead><tr><th></th><th>Phiếu</th><th>Tổng cộng</th><th>Giao dịch liên kết</th><th>Người mua</th><th>Trạng thái</th><th>Mặt hàng đã ghi</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     table.querySelector("#it-einvoice-select-all")?.addEventListener("change", event => {
       table.querySelectorAll(".it-einvoice-select").forEach(input => { input.checked = event.target.checked; });
       updateEInvoiceSelection();
@@ -1692,6 +2313,48 @@
     table.querySelector("#it-sync-issued")?.addEventListener("click", () => {
       syncIssuedInvoices().catch(error => setStatus(error.message, "error"));
     });
+    table.querySelectorAll(".it-check-issued").forEach(button =>
+      button.addEventListener("click", () => {
+        checkIssuedInvoice(button.dataset.id).catch(error => setStatus(error.message, "error"));
+      }));
+  }
+
+  async function checkIssuedInvoice(invoiceId) {
+    const current = eInvoiceRows.find(row => row.id === invoiceId);
+    if (!current) throw new Error("Không tìm thấy hóa đơn cần Check trong danh sách hiện tại.");
+    const result = await request("fetchEInvoiceList", {
+      fromDate: current.dateKey,
+      toDate: current.dateKey
+    });
+    const actual = (result.rows || []).find(row => row.id === invoiceId);
+    if (!actual) throw new Error(`Website không còn trả về phiếu ${current.invoiceNo} trong ngày ${current.dateKey}.`);
+    Object.assign(current, actual);
+    if (!actual.issued) {
+      renderEInvoiceRows();
+      return setStatus(`Phiếu ${current.invoiceNo} hiện vẫn chưa được phát hành trên website.`, "warn");
+    }
+    const items = ledgerItemsForInvoiceNo(actual.invoiceNo);
+    issuedInvoiceBook = InvoiceIssuedBook.record(issuedInvoiceBook, {
+      invoiceId: actual.id,
+      invoiceNo: actual.invoiceNo,
+      dateKey: actual.dateKey,
+      issuedAt: new Date().toISOString(),
+      grandTotal: actual.grandTotal,
+      soHoaDon: actual.soHoaDon,
+      soKyHieu: actual.soKyHieu,
+      maCQThue: actual.maCQThue,
+      maTraCuu: actual.maTraCuu,
+      linkTraCuu: actual.linkTraCuu,
+      itemsError: items ? "" : "Không có trong sổ đối soát; cần nhập mặt hàng thủ công khi hạch toán.",
+      items: items || []
+    });
+    await InvoiceMappingStore.saveIssuedInvoices(issuedInvoiceBook);
+    renderEInvoiceRows();
+    setStatus(
+      `Đã Check và đồng bộ phiếu ${actual.invoiceNo}: hóa đơn số ${actual.soHoaDon || "—"}.` +
+      (items ? "" : " Chưa có mặt hàng trong sổ đối soát."),
+      items ? "ok" : "warn"
+    );
   }
 
   // Hóa đơn đã phát hành trên website nhưng chưa có trong sổ hạch toán — do phát
@@ -1803,6 +2466,12 @@
     setStatus("Đang tải danh sách hóa đơn điện tử…", "warn");
     const result = await request("fetchEInvoiceList", { fromDate, toDate });
     eInvoiceRows = result.rows || [];
+    for (const row of eInvoiceRows) {
+      const recorded = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
+      if (!recorded) continue;
+      if (!String(row.buyer || "").trim() && recorded.buyer) row.buyer = recorded.buyer;
+      if (!String(row.paymentMethod || "").trim() && recorded.paymentMethod) row.paymentMethod = recorded.paymentMethod;
+    }
     uiSession = { ...(uiSession || {}), eInvoiceFromDate: fromDate, eInvoiceToDate: toDate };
     // Chỉ ghi xuống storage khi đã có phiên Batch Review hợp lệ; nếu chưa thì
     // giữ trong bộ nhớ để không tạo ra bản ghi phiên sai schema.
@@ -1837,6 +2506,64 @@
     return linked.has(String(row.invoiceNo || "").trim());
   }
 
+  function statementTransactionsForInvoiceNo(invoiceNo) {
+    const wanted = String(invoiceNo || "").trim();
+    if (!wanted) return [];
+    return (statementDataset.transactions || []).filter(transaction => [
+      transaction.invoiceNo,
+      transaction.pendingPlan?.invoiceNo,
+      transaction.batchApprovedPlan?.invoiceNo
+    ].some(value => String(value || "").trim() === wanted));
+  }
+
+  const E_INVOICE_AMOUNT_TOLERANCE = 1;
+
+  // Một mã phiếu chỉ được phát hành từ extension khi đồng thời khớp ngày và
+  // tổng tiền với đúng giao dịch sao kê đã liên kết. Kiểm tra này ngăn việc
+  // phát hành nhầm một phiếu trùng mã nhưng sai ngày hoặc sai số tiền.
+  function statementInvoiceMatch(row) {
+    const candidates = statementTransactionsForInvoiceNo(row?.invoiceNo);
+    if (!candidates.length) {
+      return { valid: false, linked: false, reason: "Không có giao dịch sao kê liên kết." };
+    }
+    const invoiceDate = uiDateKey(row?.dateKey);
+    const invoiceTotal = Math.round(Number(row?.grandTotal) || 0);
+    const exact = candidates.find(transaction =>
+      uiDateKey(transaction.transactionDate) === invoiceDate &&
+      Math.abs(Math.round(Number(transaction.credit) || 0) - invoiceTotal) <= E_INVOICE_AMOUNT_TOLERANCE);
+    if (exact) {
+      const credit = Math.round(Number(exact.credit) || 0);
+      return {
+        valid: true,
+        linked: true,
+        transaction: exact,
+        dateKey: uiDateKey(exact.transactionDate),
+        credit,
+        amountDifference: invoiceTotal - credit,
+        reason: ""
+      };
+    }
+    const sameDate = candidates.find(transaction => uiDateKey(transaction.transactionDate) === invoiceDate);
+    const sameTotal = candidates.find(transaction =>
+      Math.abs(Math.round(Number(transaction.credit) || 0) - invoiceTotal) <= E_INVOICE_AMOUNT_TOLERANCE);
+    const reference = sameDate || sameTotal || candidates[0];
+    const problems = [];
+    if (uiDateKey(reference.transactionDate) !== invoiceDate) {
+      problems.push(`sai ngày: phiếu ${invoiceDate || "—"}, sao kê ${uiDateKey(reference.transactionDate) || "—"}`);
+    }
+    if (Math.abs(Math.round(Number(reference.credit) || 0) - invoiceTotal) > E_INVOICE_AMOUNT_TOLERANCE) {
+      problems.push(`sai tiền: phiếu ${formatMoney(invoiceTotal)} đ, sao kê ${formatMoney(reference.credit)} đ`);
+    }
+    return {
+      valid: false,
+      linked: true,
+      transaction: reference,
+      dateKey: uiDateKey(reference.transactionDate),
+      credit: Math.round(Number(reference.credit) || 0),
+      reason: problems.join("; ") || "Không khớp giao dịch sao kê."
+    };
+  }
+
   // Sau khi một hóa đơn báo lỗi, đọc lại đúng dòng đó trên website để biết thực
   // sự đã phát hành hay chưa. Trả về null nếu không xác định được.
   async function confirmIssuedAfterFailure(row) {
@@ -1856,13 +2583,27 @@
     if (issuingInProgress) return;
     const targets = eInvoiceRows.filter(row => eInvoiceSelection.has(row.id) && !row.issued && !row.cancelled);
     if (!targets.length) return setStatus("Chưa chọn hóa đơn nào để phát hành.", "error");
+    const mismatched = targets.filter(row => !statementInvoiceMatch(row).valid);
+    if (mismatched.length) {
+      const details = mismatched.slice(0, 5).map(row =>
+        `${row.invoiceNo}: ${statementInvoiceMatch(row).reason}`).join(" | ");
+      throw new Error(`Không phát hành: ${mismatched.length} phiếu không khớp giao dịch sao kê. ${details}`);
+    }
     // Mặt hàng lấy từ sổ đối soát; chỉ hóa đơn không có trong sổ mới cần đọc lại
     // từ màn hình danh sách Bán hàng. Cảnh báo trước để người dùng biết hóa đơn
     // nào sẽ thiếu số liệu hạch toán, thay vì chặn cả lô.
     const withoutLedger = targets.filter(row => !ledgerItemsForInvoiceNo(row.invoiceNo));
+    // Nếu có phiếu chưa nằm trong sổ đối soát, bridge phải mở phiếu từ danh
+    // sách Bán hàng để đọc mặt hàng. Chủ động chuyển màn hình trước khi phát
+    // hành, thay vì để bridge ném lỗi sâu sau khi lô đã bắt đầu chạy.
     const listReady = withoutLedger.length
-      ? await request("hasInvoiceList").catch(() => ({ present: false }))
+      ? { present: await ensureInvoiceListScreen() }
       : { present: true };
+    if (withoutLedger.length && !listReady.present) {
+      throw new Error(
+        "Chưa mở được danh sách Bán hàng để đọc mặt hàng. Hãy đóng phiếu đang mở, mở Bán hàng rồi thử phát hành lại."
+      );
+    }
     // Phiếu ngoài danh sách giao dịch không thuộc luồng của extension; chỉ phát
     // hành khi người dùng đã chủ động hiện và chọn, và phải nêu rõ trong xác nhận.
     const linkedNos = statementInvoiceNos();
@@ -1892,8 +2633,9 @@
     if (button) button.disabled = true;
     let succeeded = 0;
     const failures = [];
-    try {
-      for (const [index, row] of targets.entries()) {
+    const warnings = [];
+    let completed = 0;
+    const processTarget = async (row, index) => {
         showProgress(`Đang phát hành ${index + 1}/${targets.length}: ${row.invoiceNo}…`);
         setStatus(`Đang phát hành ${row.invoiceNo} (${index + 1}/${targets.length})…`, "warn");
         try {
@@ -1919,6 +2661,9 @@
             maCQThue: result.maCQThue,
             maTraCuu: result.maTraCuu,
             linkTraCuu: result.linkTraCuu,
+            buyer: result.buyer,
+            buyerAddress: result.buyerAddress,
+            paymentMethod: result.paymentMethod,
             itemsError: result.itemsError,
             items: result.items
           });
@@ -1929,10 +2674,14 @@
             soKyHieu: result.soKyHieu,
             maCQThue: result.maCQThue,
             maTraCuu: result.maTraCuu,
-            linkTraCuu: result.linkTraCuu
+            linkTraCuu: result.linkTraCuu,
+            buyer: String(result.buyer || row.buyer || DEFAULT_INVOICE_BUYER).trim(),
+            paymentMethod: String(result.paymentMethod || row.paymentMethod || "").trim()
           });
           succeeded += 1;
           eInvoiceSelection.delete(row.id);
+          completed += 1;
+          showProgress(`\u0110\u00e3 x\u1eed l\u00fd ${completed}/${targets.length} h\u00f3a \u0111\u01a1n...`);
           renderEInvoiceRows();
         } catch (error) {
           // Hết thời gian chờ hoặc mất phản hồi KHÔNG có nghĩa là chưa phát hành:
@@ -1958,12 +2707,32 @@
             Object.assign(row, actual);
             succeeded += 1;
             eInvoiceSelection.delete(row.id);
-            failures.push(`${row.invoiceNo}: mất phản hồi nhưng hóa đơn ĐÃ phát hành (Số ${actual.soHoaDon}); đã ghi sổ.`);
+            warnings.push(`${row.invoiceNo}: mất phản hồi nhưng hóa đơn ĐÃ phát hành (Số ${actual.soHoaDon}); đã ghi sổ.`);
           } else {
             failures.push(`${row.invoiceNo}: ${error.message}`);
           }
+          completed += 1;
+          showProgress(`\u0110\u00e3 x\u1eed l\u00fd ${completed}/${targets.length} h\u00f3a \u0111\u01a1n...`);
           renderEInvoiceRows();
         }
+    };
+    try {
+      // Fast lane: with ledger items available, issuing never touches the
+      // website UI. Two concurrent pipelines reduce network waiting while
+      // keeping load on the tax endpoint bounded. UI-reading stays sequential.
+      const canUseFastLane = targets.every(row => Boolean(ledgerItemsForInvoiceNo(row.invoiceNo)));
+      if (canUseFastLane && targets.length > 1) {
+        let nextIndex = 0;
+        const worker = async () => {
+          while (nextIndex < targets.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            await processTarget(targets[index], index);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(2, targets.length) }, worker));
+      } else {
+        for (const [index, row] of targets.entries()) await processTarget(row, index);
       }
     } finally {
       // Luôn mở khóa nút, kể cả khi vòng lặp hỏng giữa chừng.
@@ -1974,12 +2743,16 @@
       const entry = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
       return entry && !entry.items.length;
     }).length;
-    showProgress(failures.length ? `Thất bại ${failures.length} hóa đơn:\n${failures.join("\n")}` : "");
+    const progressMessages = [];
+    if (failures.length) progressMessages.push(`Thất bại ${failures.length} hóa đơn:\n${failures.join("\n")}`);
+    if (warnings.length) progressMessages.push(`Cảnh báo ${warnings.length} hóa đơn:\n${warnings.join("\n")}`);
+    showProgress(progressMessages.join("\n\n"));
     setStatus(
       `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` +
       (failures.length ? ` ${failures.length} hóa đơn lỗi, xem chi tiết bên dưới.` : "") +
+      (warnings.length ? ` ${warnings.length} hóa đơn có cảnh báo nhưng đã xác nhận phát hành.` : "") +
       (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : ""),
-      failures.length ? "error" : "ok"
+      failures.length ? "error" : warnings.length ? "warn" : "ok"
     );
   }
 
@@ -2031,7 +2804,7 @@
       const exportedAt = new Date().toISOString();
       await downloadBase64(
         InvoiceXlsxWriter.toBase64(bytes),
-        `XuatKho_PhatHanh_${localTimestamp(exportedAt)}.xlsx`,
+        `XuatKho_${pageTenantFileLabel}_PhatHanh_${localTimestamp(exportedAt)}.xlsx`,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
       const lineCount = sheets[0].rows.length;
@@ -2059,15 +2832,21 @@
         <button id="it-subtab-einvoice" type="button">Phát hành hóa đơn</button>
       </div>
       <div id="it-statement-view">
-        <div class="it-statement-toolbar"><b>Sao kê: ${escapeHtml(statementDataset.source || "chưa nhập")}</b>
+        <div class="it-statement-toolbar"><div class="it-statement-source"><b>Sao kê: ${escapeHtml(statementDataset.source || "chưa nhập")}</b><button id="it-statement-import-button" type="button" class="primary">Nhập sao kê Excel</button></div>
         <div class="it-statement-total"><small>Tổng tiền sao kê</small><strong>${formatMoney(statementTotal)} đ</strong><span id="it-statement-visible-total"></span></div>
         <select id="it-statement-filter"><option value="open">Chưa xử lý</option><option value="all">Tất cả</option><option value="pending">Chờ xử lý</option><option value="review">Cần kiểm tra</option><option value="done">Đã xử lý</option></select></div>
         <div class="it-table-wrap"><table class="it-statement-table"><thead><tr><th>Ngày GD</th><th>Diễn giải</th><th>Phiếu</th><th>Credit</th><th>Trạng thái</th><th></th></tr></thead><tbody id="it-statement-body"></tbody></table></div>
       </div>
       <div id="it-einvoice-admin" hidden></div>`;
     node.querySelector("#it-statement-filter").addEventListener("change", renderStatementRows);
+    node.querySelector("#it-statement-import-button").addEventListener("click", () => {
+      document.getElementById("it-statement-file")?.click();
+    });
     node.querySelector("#it-subtab-statement").addEventListener("click", () => showStatementSubtab("statement"));
-    node.querySelector("#it-subtab-einvoice").addEventListener("click", () => showStatementSubtab("einvoice"));
+    node.querySelector("#it-subtab-einvoice").addEventListener("click", () => {
+      showStatementSubtab("einvoice");
+      loadEInvoiceList().catch(error => setStatus(error.message, "error"));
+    });
     renderStatementRows();
     showStatementSubtab(statementSubtab);
   }
@@ -2095,7 +2874,7 @@
     if (!body) return;
     const filter = document.getElementById("it-statement-filter")?.value || "open";
     const rows = (statementDataset.transactions || []).filter(item =>
-      filter === "all" || item.status === filter || (filter === "open" && ["pending", "review", "planned", "batch_ready"].includes(item.status))
+      filter === "all" || item.status === filter || (filter === "open" && isOpenStatementTransaction(item))
     );
     const visibleTotal = rows.reduce((sum, item) => sum + Number(item.credit || 0), 0);
     const visibleSummary = document.getElementById("it-statement-visible-total");
@@ -2107,6 +2886,7 @@
       planned: "Chờ đối soát",
       done: "Đã xử lý",
       skipped: "Bỏ qua",
+      ignored: "Bỏ qua",
       already_issued: "Đã có HĐ khớp",
       needs_new_invoice: "Cần tạo phiếu"
     };
@@ -2124,11 +2904,50 @@
       <td class="it-statement-description" title="${escapeHtml(item.description)}"><span>${escapeHtml(item.description)}</span>${item.reference ? `<small>${escapeHtml(item.reference)}</small>` : ""}</td>
       <td class="it-statement-invoice">${invoiceCell}</td>
       <td class="it-money">${formatMoney(item.credit)}</td><td><span class="it-bank-status ${escapeHtml(item.status)}">${escapeHtml(statusLabels[item.status] || item.status)}</span>${item.blockedNote ? `<br><small class="it-blocked-note" title="${escapeHtml(item.blockedNote)}">⚠ ${escapeHtml(item.blockedNote)}</small>` : ""}</td>
-      <td><button class="it-use-transaction" type="button">Chọn</button><button class="it-skip-transaction" type="button">Bỏ qua</button></td></tr>`;
+      <td><button class="it-use-transaction" type="button">Chọn</button><button class="it-skip-transaction" type="button">Bỏ qua</button>${["planned", "batch_ready"].includes(item.status) && (invoiceNo || item.pendingPlan || item.batchApprovedPlan) ? '<button class="it-reset-statement-transaction" type="button" title="Gỡ phiếu đã mất hoặc phương án cũ và đưa giao dịch về Chờ xử lý">Làm lại</button>' : ""}</td></tr>`;
     }).join("") || '<tr><td colspan="6">Không có giao dịch phù hợp.</td></tr>';
     body.querySelectorAll(".it-use-transaction").forEach(button => button.addEventListener("click", useBankTransaction));
     body.querySelectorAll(".it-skip-transaction").forEach(button => button.addEventListener("click", skipBankTransaction));
     body.querySelectorAll(".it-open-invoice").forEach(button => button.addEventListener("click", openStatementInvoice));
+    body.querySelectorAll(".it-reset-statement-transaction").forEach(button => button.addEventListener("click", resetStatementTransaction));
+  }
+
+  async function resetStatementTransaction(event) {
+    const row = event.target.closest("tr");
+    const transaction = findStatementTransaction(row?.dataset.transactionId);
+    if (!transaction || transaction.status === "done") {
+      return setStatus("Giao dịch đã đối soát không thể làm lại từ màn hình này.", "error");
+    }
+    const oldInvoiceNo = String(transaction.invoiceNo || transaction.pendingPlan?.invoiceNo || transaction.batchApprovedPlan?.invoiceNo || "");
+    transaction.status = "pending";
+    transaction.invoiceNo = "";
+    transaction.linkedAt = "";
+    transaction.verifiedAt = "";
+    transaction.ledgerId = "";
+    transaction.apiSavedAt = "";
+    transaction.apiSavedRecordId = "";
+    transaction.blockedNote = "";
+    transaction.blockedAt = "";
+    delete transaction.pendingPlan;
+    delete transaction.batchApprovedPlan;
+    delete transaction.batchApprovedAt;
+    delete transaction.acceptedGrandOverride;
+    delete transaction.acceptedGrandOverrideAt;
+    batchPlans = batchPlans.filter(entry => String(entry.transactionId) !== String(transaction.id));
+    if (pendingNewInvoice && String(pendingNewInvoice.transactionId) === String(transaction.id)) {
+      pendingNewInvoice = null;
+      document.getElementById("it-pending-new-invoice")?.remove();
+    }
+    if (currentBankTransaction && String(currentBankTransaction.id) === String(transaction.id)) currentBankTransaction = null;
+    await InvoiceMappingStore.saveStatement(statementDataset);
+    await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: null });
+    renderWorkflowDashboard();
+    renderStatementRows();
+    renderBatchPlans();
+    setStatus(
+      `Đã gỡ ${oldInvoiceNo ? `phiếu ${oldInvoiceNo} và ` : ""}phương án cũ; giao dịch đã về Chờ xử lý. Tồn kho không bị trừ hoặc hoàn vì phiếu chưa đối soát.`,
+      "ok"
+    );
   }
 
   // Mở thẳng phiếu đã gắn với giao dịch. Giao dịch đã đối soát thì phiếu thường
@@ -2230,7 +3049,7 @@
     if (!currentBankTransaction || !candidate?.available) return;
     try {
       await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo: candidate.invoiceNo });
-      const openedScan = await waitForOpenedInvoice(candidate.invoiceNo);
+      const openedScan = await waitForOpenedInvoice(candidate.invoiceNo, candidate.dateKey || currentBankTransaction.transactionDate);
       currentBankTransaction.invoiceNo = candidate.invoiceNo;
       currentBankTransaction.linkedAt = new Date().toISOString();
       await InvoiceMappingStore.saveStatement(statementDataset);
@@ -2251,11 +3070,19 @@
     }
   }
 
-  async function waitForOpenedInvoice(expectedInvoiceNo) {
-    const deadline = Date.now() + 10000;
+  async function waitForOpenedInvoice(expectedInvoiceNo, listDateKey, timeoutMs = 15000) {
+    const expected = String(expectedInvoiceNo || "").trim().toUpperCase();
+    const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 15000);
+    let lastReadyInvoice = "";
     while (Date.now() < deadline) {
       const snapshot = await request("scan");
-      if (snapshot?.ready) return snapshot;
+      if (snapshot?.ready) {
+        const actual = String(snapshot.invoiceNo || "").trim().toUpperCase();
+        lastReadyInvoice = actual || lastReadyInvoice;
+        // The previous invoice can remain readable while the requested row is
+        // still opening. Do not attribute that stale form to this transaction.
+        if (!expected || actual === expected) return { ...snapshot, listDateKey: uiDateKey(listDateKey) };
+      }
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     throw new Error(`Website chưa mở được chi tiết phiếu ${expectedInvoiceNo}.`);
@@ -2278,11 +3105,46 @@
     selected.querySelector("#it-verify-saved-invoice")?.addEventListener("click", verifySavedInvoice);
   }
 
+  function isLinhDamFreshApiInvoice(plan) {
+    return pageTenantSlug === "parislinhdam" &&
+      Boolean(plan?.requiresNewInvoice) &&
+      Boolean(plan?.apiSavedRecordId || plan?.savedRecordId);
+  }
+
+  function matchesExpectedInvoiceDate(snapshot, plan) {
+    if (!isLinhDamFreshApiInvoice(plan)) {
+      return invoiceMatchesTransactionDate(snapshot, plan?.invoiceDateKey);
+    }
+    // Linh Đàm hiện xếp phiếu mới theo ngày tạo của máy chủ, dù NGAY và
+    // giờ vào/ra đã được lưu về quá khứ. Chỉ ở nhánh tạo mới bằng API của
+    // cơ sở này, đối soát ngày nghiệp vụ từ chi tiết phiếu đã lưu.
+    const expected = uiDateKey(plan?.invoiceDateKey);
+    const persistedBusinessDates = new Set([
+      uiDateKey(snapshot?.invoiceDateKey),
+      uiDateKey(snapshot?.checkIn),
+      uiDateKey(snapshot?.checkOut)
+    ].filter(Boolean));
+    return Boolean(expected) && persistedBusinessDates.has(expected);
+  }
+
   function verifySnapshotAgainstPlan(snapshot, plan) {
     const errors = [];
     if (!snapshot?.ready) errors.push("Phiếu chưa sẵn sàng.");
     if (String(snapshot?.invoiceNo || "") !== String(plan.invoiceNo || "")) errors.push("Sai số phiếu.");
-    if (snapshot?.invoiceDateKey !== plan.invoiceDateKey) errors.push("Sai ngày phiếu.");
+    if (!matchesExpectedInvoiceDate(snapshot, plan)) errors.push("Sai ngày phiếu.");
+    const compareUsageTime = (label, actualValue, expectedValue) => {
+      if (!expectedValue) {
+        errors.push(`${label}: phương án chưa lưu mốc giờ.`);
+        return;
+      }
+      const actual = parseUiDateTime(actualValue);
+      const expected = parseUiDateTime(expectedValue);
+      if (!actual || !expected || Math.abs(actual.getTime() - expected.getTime()) >= 60000) {
+        errors.push(`${label}: form ${actualValue || "trống"} ≠ phương án ${expectedValue}.`);
+      }
+    };
+    compareUsageTime("Sai giờ vào", snapshot?.checkIn, plan?.checkIn);
+    compareUsageTime("Sai giờ ra", snapshot?.checkOut, plan?.checkOut);
     // Nêu rõ số trên form và số của phương án: chỉ nói "Sai tổng cộng" thì không
     // biết website đang để giá trị nào, rất khó chẩn đoán khi Batch API dừng.
     const compareAmount = (label, actual, expected) => {
@@ -2356,21 +3218,32 @@
     return next;
   }
 
-  async function verifySavedInvoice() {
+  async function verifySavedInvoice(verifiedSnapshot) {
     if (!currentBankTransaction?.pendingPlan) return setStatus("Không có phương án chờ đối soát.", "error");
     const button = document.getElementById("it-verify-saved-invoice");
     try {
       if (button) button.disabled = true;
       setStatus("Đang đọc lại phiếu đã lưu và đối soát…", "warn");
-      const snapshot = await request("scan");
+      // Batch Review đã mở lại phiếu từ đúng dòng của danh sách và gắn
+      // listDateKey vào snapshot. Dùng lại chính snapshot đó; nếu scan lần nữa
+      // thì listDateKey bị mất và ca hát hôm trước có thể bị báo sai ngày.
+      const snapshot = verifiedSnapshot?.ready
+        ? verifiedSnapshot
+        : await request("scan");
       const plan = currentBankTransaction.pendingPlan;
       const errors = verifySnapshotAgainstPlan(snapshot, plan);
       if (errors.length) throw new Error(errors.join(" "));
       const transactionId = String(currentBankTransaction.id);
       const existing = (verificationLedger.entries || []).find(entry => String(entry.transactionId) === transactionId);
+      // Luôn đọc lại kho chung ngay trước khi ghi sổ để một tab/cơ sở khác
+      // không thể bị ghi đè bởi bản tồn cũ đang nằm trong bộ nhớ của tab này.
+      const latestSharedWarehouse = InvoiceSharedWarehouse.normalize(
+        await InvoiceMappingStore.loadSharedWarehouse(InvoiceSharedWarehouse.empty())
+      );
+      const latestMappingForStock = InvoiceSharedWarehouse.overlayMappings(mappingDataset, latestSharedWarehouse);
       const restoredMapping = existing
-        ? restoreVerifiedStock(mappingDataset, existing.items)
-        : mappingDataset;
+        ? restoreVerifiedStock(latestMappingForStock, existing.items)
+        : latestMappingForStock;
       const nextMapping = deductVerifiedStock(restoredMapping, plan.items);
       const ledgerEntry = {
         id: existing?.id || `ledger-${transactionId}`,
@@ -2394,8 +3267,15 @@
       nextTransaction.verifiedAt = ledgerEntry.verifiedAt;
       nextTransaction.ledgerId = ledgerEntry.id;
       nextTransaction.pendingPlan = null;
-      await InvoiceMappingStore.commitVerifiedInvoice(nextMapping, nextStatement, nextLedger);
+      const nextSharedWarehouse = InvoiceSharedWarehouse.reconcileMappingDelta(
+        latestSharedWarehouse,
+        latestMappingForStock,
+        nextMapping,
+        { tenant: pageTenantSlug, invoiceNo: plan.invoiceNo, transactionId }
+      );
+      await InvoiceMappingStore.commitVerifiedInvoice(nextMapping, nextStatement, nextLedger, nextSharedWarehouse);
       mappingDataset = nextMapping;
+      sharedWarehouse = nextSharedWarehouse;
       statementDataset = nextStatement;
       verificationLedger = nextLedger;
       currentBankTransaction = nextTransaction;
@@ -2411,8 +3291,10 @@
       setStatus(existing
         ? `Đã tái đối soát phiếu ${plan.invoiceNo}: hoàn phương án cũ và ghi sổ phương án mới.`
         : `Đã đối soát phiếu ${plan.invoiceNo}, đánh dấu sao kê đã xử lý và ghi sổ tồn kho.`, "ok");
+      return { verified: true, invoiceNo: plan.invoiceNo };
     } catch (error) {
       setStatus(`Đối soát thất bại: ${error.message} Chưa thay đổi tồn kho hoặc trạng thái sao kê.`, "error");
+      return { verified: false, error: error.message };
     } finally {
       if (button?.isConnected) button.disabled = false;
     }
@@ -2424,6 +3306,7 @@
     if (!item) return;
     item.status = "ignored";
     await InvoiceMappingStore.saveStatement(statementDataset);
+    renderWorkflowDashboard();
     renderStatementRows();
   }
 
@@ -2436,35 +3319,304 @@
     return `${item.webCode} | ${item.webName} | ${formatMoney(item.webPrice)}đ`;
   }
 
+  const PRODUCT_GROUPS = [
+    "DOKHO", "BIA - NƯỚC NGỌT", "PHUPHI", "RUOU - VANG",
+    "THUOCLA - SHISA - XIGA", "HOAQUA", "DOPHACHE"
+  ];
+  const PRODUCT_CODE_BASE = {
+    "DOKHO": 1000000,
+    "BIA - NƯỚC NGỌT": 1100000,
+    "PHUPHI": 1200000,
+    "RUOU - VANG": 1300000,
+    "THUOCLA - SHISA - XIGA": 1400000,
+    "HOAQUA": 1500000,
+    "DOPHACHE": 1600000
+  };
+  const productCreateInFlight = new Set();
+  const mappingCreateSelection = new Set();
+
+  function inferProductGroup(row) {
+    const text = InvoiceMappingEngine.normalizeText(`${row?.stockName || ""} ${row?.stockUnit || ""}`);
+    if (/ruou|vang/.test(text)) return "RUOU - VANG";
+    if (/thuoc|cigar|xiga|shisha/.test(text)) return "THUOCLA - SHISA - XIGA";
+    if (/hoa qua|trai cay/.test(text)) return "HOAQUA";
+    if (/pha che|siro|cocktail/.test(text)) return "DOPHACHE";
+    if (/bia|nuoc|pepsi|lavie|ion|yen|tra|coca|7up|sting/.test(text)) return "BIA - NƯỚC NGỌT";
+    return "DOKHO";
+  }
+
+  function nextProductCode(group, reserved) {
+    const base = PRODUCT_CODE_BASE[group] || PRODUCT_CODE_BASE.DOKHO;
+    const used = new Set((webCatalog || []).map(item => String(item.webCode || "")));
+    for (const value of reserved || []) used.add(String(value || ""));
+    let max = base;
+    for (const code of used) {
+      const numeric = Number(code);
+      if (Number.isInteger(numeric) && numeric > base && numeric < base + 100000) max = Math.max(max, numeric);
+    }
+    let candidate = max + 1;
+    while (used.has(String(candidate))) candidate += 1;
+    return String(candidate);
+  }
+
+  function ensureProductDrafts(rows) {
+    const reserved = (mappingDataset.mappings || [])
+      .map(row => row.productDraft?.webCode)
+      .filter(Boolean);
+    for (const row of rows) {
+      if (row.productDraft?.webCode) continue;
+      const group = inferProductGroup(row);
+      const webCode = nextProductCode(group, reserved);
+      reserved.push(webCode);
+      row.productDraft = {
+        webCode,
+        name: String(row.stockName || "").trim(),
+        unit: String(row.stockUnit || "").trim(),
+        price: Math.round(Number(row.salePrice) || 0),
+        group,
+        typeId: "0",
+        note: `Tạo từ kho ${pageTenantLabel}`
+      };
+    }
+  }
+
+  function productDraftFromRowElement(tr, row) {
+    const draft = {
+      webCode: tr.querySelector(".it-create-code")?.value.trim() || "",
+      name: tr.querySelector(".it-create-name")?.value.trim() || "",
+      unit: tr.querySelector(".it-create-unit")?.value.trim() || "",
+      price: parseMoney(tr.querySelector(".it-create-price")?.value),
+      group: tr.querySelector(".it-create-group")?.value || "DOKHO",
+      typeId: "0",
+      note: `Tạo từ kho ${pageTenantLabel}; mã kho ${row.stockCode}`
+    };
+    row.productDraft = draft;
+    return draft;
+  }
+
+  function validateProductDraft(draft) {
+    if (!/^\d{7}$/.test(draft.webCode)) throw new Error("Mã web phải gồm đúng 7 chữ số.");
+    if (!draft.name) throw new Error("Tên mặt hàng không được để trống.");
+    if (!draft.unit) throw new Error("Đơn vị tính không được để trống.");
+    if (!(draft.price > 0)) throw new Error("Giá bán phải lớn hơn 0.");
+    const duplicateCode = webCatalog.find(item => String(item.webCode) === draft.webCode);
+    if (duplicateCode) throw new Error(`Mã ${draft.webCode} đã có trong danh mục; hãy ánh xạ vào mã đó.`);
+    const normalizedName = InvoiceMappingEngine.normalizeText(draft.name);
+    const duplicateName = webCatalog.find(item => InvoiceMappingEngine.normalizeText(item.webName) === normalizedName);
+    if (duplicateName) throw new Error(`Tên này đã có ở mã ${duplicateName.webCode}; hãy kiểm tra và ánh xạ thay vì tạo trùng.`);
+  }
+
+  async function persistCreatedProduct(row, draft, result) {
+    const web = {
+      webCode: draft.webCode,
+      webName: draft.name,
+      webUnit: draft.unit,
+      webPrice: draft.price,
+      webType: "Mặt hàng kiêm vật tư",
+      webGroup: draft.group,
+      webId: result.id || ""
+    };
+    webCatalog = [...webCatalog, web].sort((a, b) => String(a.webCode).localeCompare(String(b.webCode)));
+    catalogDataset = {
+      ...catalogDataset,
+      tenant: pageTenantSlug,
+      source: `${catalogDataset.source || "danh mục"} + API`,
+      updatedAt: new Date().toISOString(),
+      items: webCatalog
+    };
+    Object.assign(row, web, {
+      status: "confirmed",
+      confidence: 100,
+      confirmedAt: new Date().toISOString(),
+      createdViaApi: true,
+      createdProductId: result.id || "",
+      createError: ""
+    });
+    mappingCreateSelection.delete(String(row.stockCode));
+    await Promise.all([
+      InvoiceMappingStore.saveCatalog(catalogDataset),
+      InvoiceMappingStore.save(mappingDataset)
+    ]);
+    refreshMappingState();
+  }
+
+  async function createProductForMapping(row, draft) {
+    const key = String(row.stockCode || "");
+    if (productCreateInFlight.has(key)) throw new Error("Dòng này đang được tạo.");
+    validateProductDraft(draft);
+    productCreateInFlight.add(key);
+    try {
+      const result = await request("createProductViaApi", { product: draft });
+      if (!result?.created || !result?.id) throw new Error("API không trả ID mặt hàng vừa tạo.");
+      await persistCreatedProduct(row, draft, result);
+      return result;
+    } catch (error) {
+      row.createError = error.message;
+      await InvoiceMappingStore.save(mappingDataset);
+      throw error;
+    } finally {
+      productCreateInFlight.delete(key);
+    }
+  }
+
+  async function createSingleMappedProduct(event) {
+    const tr = event.target.closest("tr");
+    const row = mappingDataset.mappings.find(item => String(item.stockCode) === tr?.dataset.stockCode);
+    if (!row) return;
+    const button = event.target;
+    button.disabled = true;
+    button.textContent = "Đang tạo…";
+    try {
+      const draft = productDraftFromRowElement(tr, row);
+      await createProductForMapping(row, draft);
+      renderMappingAdmin();
+      setStatus(`Đã tạo mã ${draft.webCode} bằng API và xác nhận ánh xạ ${row.stockCode}.`, "ok");
+    } catch (error) {
+      renderMappingRows();
+      setStatus(`Không tạo được ${row.stockCode}: ${error.message}`, "error");
+    }
+  }
+
+  async function createSelectedMappedProducts() {
+    const selected = (mappingDataset.mappings || []).filter(row =>
+      mappingCreateSelection.has(String(row.stockCode)) && row.status !== "confirmed"
+    );
+    if (!selected.length) return setStatus("Hãy chọn ít nhất một dòng cần tạo mặt hàng.", "warn");
+    const button = document.getElementById("it-create-selected-products");
+    button.disabled = true;
+    let completed = 0;
+    try {
+      for (const row of selected) {
+        const draft = row.productDraft;
+        button.textContent = `Đang tạo ${completed + 1}/${selected.length}…`;
+        await createProductForMapping(row, draft);
+        mappingCreateSelection.delete(String(row.stockCode));
+        completed += 1;
+      }
+      renderMappingAdmin();
+      setStatus(`Đã tạo tuần tự ${completed} mặt hàng bằng API và tự xác nhận ánh xạ.`, "ok");
+    } catch (error) {
+      renderMappingAdmin();
+      setStatus(`Đã tạo ${completed} dòng rồi dừng tại lỗi: ${error.message}`, "error");
+    }
+  }
+
   function renderMappingAdmin() {
     const node = document.getElementById("it-mapping-admin");
     if (!node) return;
-    node.innerHTML = `<div class="it-mapping-toolbar"><b>Ánh xạ kho → web</b>
-      <select id="it-mapping-filter"><option value="pending">Cần xử lý</option><option value="all">Tất cả</option><option value="confirmed">Đã xác nhận</option></select>
-      <button id="it-export-mapping" type="button">Xuất JSON</button></div>
+    const rows = mappingDataset.mappings || [];
+    const pending = rows.filter(row => !["confirmed", "disabled"].includes(row.status)).length;
+    const confirmed = rows.filter(row => row.status === "confirmed").length;
+    const disabled = rows.filter(row => row.status === "disabled").length;
+    node.innerHTML = `<div class="it-mapping-head">
+        <div><h3>Đối chiếu mặt hàng kho → web</h3><p>Ghép với mã có sẵn hoặc tạo mặt hàng mới trực tiếp bằng API.</p></div>
+        <div class="it-mapping-head-actions"><button id="it-import-mapping" type="button">Nhập hồ sơ</button><button id="it-export-mapping" type="button">Xuất hồ sơ</button></div>
+      </div>
+      <div class="it-mapping-kpis"><span><b>${rows.length}</b> tổng</span><span class="pending"><b>${pending}</b> cần xử lý</span><span class="confirmed"><b>${confirmed}</b> đã xác nhận</span><span><b>${disabled}</b> bỏ qua</span></div>
+      <div class="it-mapping-toolbar">
+        <input id="it-mapping-search" type="search" placeholder="Tìm mã kho hoặc tên mặt hàng…">
+        <select id="it-mapping-filter"><option value="pending">Cần xử lý</option><option value="all">Tất cả</option><option value="confirmed">Đã xác nhận</option><option value="disabled">Bỏ qua</option></select>
+        <label class="it-select-visible"><input id="it-select-visible-create" type="checkbox"> Chọn các dòng đang hiển thị</label>
+        <button id="it-create-selected-products" class="primary" type="button" disabled>Tạo API đã chọn (0)</button>
+      </div>
       <datalist id="it-web-options">${webCatalog.map(item => `<option value="${escapeHtml(webSearchValue(item))}"></option>`).join("")}</datalist>
-      <div class="it-table-wrap"><table><thead><tr><th>Kho</th><th>Tồn</th><th>Sản phẩm web</th><th>Trạng thái</th><th></th></tr></thead>
+      <div class="it-table-wrap it-mapping-table-wrap"><table><thead><tr><th></th><th>Mặt hàng trong kho</th><th>Ghép với sản phẩm web</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
       <tbody id="it-mapping-body"></tbody></table></div>`;
     node.querySelector("#it-mapping-filter").addEventListener("change", renderMappingRows);
+    node.querySelector("#it-mapping-search").addEventListener("input", renderMappingRows);
+    node.querySelector("#it-select-visible-create").addEventListener("change", toggleVisibleMappingSelection);
+    node.querySelector("#it-import-mapping").addEventListener("click", () => document.getElementById("it-mapping-file").click());
     node.querySelector("#it-export-mapping").addEventListener("click", exportMapping);
+    node.querySelector("#it-create-selected-products").addEventListener("click", createSelectedMappedProducts);
     renderMappingRows();
+  }
+
+  function mappingStatusLabel(row) {
+    const labels = { review: "Cần duyệt", unmatched: "Chưa khớp", confirmed: "Đã xác nhận", disabled: "Bỏ qua" };
+    const detail = Number(row.confidence || 0) > 0 && row.status !== "confirmed" ? ` · ${Number(row.confidence).toFixed(0)}%` : "";
+    return `<span class="it-map-status ${escapeHtml(row.status)}">${labels[row.status] || "Cần xử lý"}${detail}</span>`;
+  }
+
+  function updateMappingSelectionUi() {
+    const button = document.getElementById("it-create-selected-products");
+    if (button) {
+      button.disabled = mappingCreateSelection.size === 0;
+      button.textContent = `Tạo API đã chọn (${mappingCreateSelection.size})`;
+    }
+    const visible = [...document.querySelectorAll("#it-mapping-body .it-create-select")];
+    const all = document.getElementById("it-select-visible-create");
+    if (all) all.checked = visible.length > 0 && visible.every(input => input.checked);
+  }
+
+  function toggleVisibleMappingSelection(event) {
+    document.querySelectorAll("#it-mapping-body .it-create-select").forEach(input => {
+      input.checked = event.target.checked;
+      const key = String(input.dataset.stockCode || "");
+      if (event.target.checked) mappingCreateSelection.add(key);
+      else mappingCreateSelection.delete(key);
+    });
+    updateMappingSelectionUi();
+  }
+
+  function toggleProductEditor(event) {
+    const stockCode = event.target.closest("tr")?.dataset.stockCode;
+    const editor = document.querySelector(`#it-mapping-body tr.it-create-editor[data-stock-code="${CSS.escape(stockCode || "")}"]`);
+    if (!editor) return;
+    editor.hidden = !editor.hidden;
+    event.target.textContent = editor.hidden ? "Tạo mặt hàng mới" : "Đóng phần tạo mới";
   }
 
   function renderMappingRows() {
     const body = document.getElementById("it-mapping-body");
     const filter = document.getElementById("it-mapping-filter")?.value || "pending";
+    const keyword = InvoiceMappingEngine.normalizeText(document.getElementById("it-mapping-search")?.value || "");
     const rows = (mappingDataset.mappings || []).filter(row =>
       filter === "all" || row.status === filter || (filter === "pending" && !["confirmed", "disabled"].includes(row.status))
-    );
+    ).filter(row => !keyword || InvoiceMappingEngine.normalizeText(`${row.stockCode} ${row.stockName}`).includes(keyword));
+    ensureProductDrafts(rows);
     body.innerHTML = rows.map(row => {
       const currentWeb = webCatalog.find(item => String(item.webCode) === String(row.webCode));
-      return `<tr data-stock-code="${escapeHtml(row.stockCode)}"><td><b>${escapeHtml(row.stockCode)}</b><br>${escapeHtml(row.stockName)}</td>
-        <td>${row.availableQty}</td><td><input class="it-web-search" list="it-web-options" value="${escapeHtml(currentWeb ? webSearchValue(currentWeb) : "")}" placeholder="Gõ mã, tên hoặc giá sản phẩm…"></td>
-        <td>${escapeHtml(row.status)}<br>${Number(row.confidence || 0).toFixed(1)}</td>
-        <td><button class="it-confirm-map" type="button">Xác nhận</button><button class="it-disable-map" type="button">Bỏ</button></td></tr>`;
-    }).join("") || '<tr><td colspan="5">Không có dòng cần xử lý.</td></tr>';
+      const draft = row.productDraft || {};
+      const canCreate = !["confirmed", "disabled"].includes(row.status);
+      const actionHtml = row.status === "confirmed"
+        ? '<button class="it-reopen-map" type="button">Chỉnh sửa ánh xạ</button>'
+        : row.status === "disabled"
+          ? '<button class="it-reopen-map" type="button">Khôi phục dòng</button>'
+          : `<button class="it-confirm-map primary" type="button">Xác nhận ghép</button><button class="it-toggle-create" type="button">Tạo mặt hàng mới</button><button class="it-disable-map quiet" type="button">Bỏ qua</button>`;
+      const mainRow = `<tr class="it-mapping-row" data-stock-code="${escapeHtml(row.stockCode)}">
+        <td>${canCreate ? `<input class="it-create-select" data-stock-code="${escapeHtml(row.stockCode)}" type="checkbox" ${mappingCreateSelection.has(String(row.stockCode)) ? "checked" : ""}>` : ""}</td>
+        <td><b class="it-stock-name">${escapeHtml(row.stockName)}</b><div class="it-stock-meta"><code>${escapeHtml(row.stockCode)}</code><span>Tồn ${formatMoney(row.availableQty)}</span><span>${escapeHtml(row.stockUnit || "—")}</span><span>Giá kho ${formatMoney(row.salePrice)}</span></div></td>
+        <td><input class="it-web-search" list="it-web-options" value="${escapeHtml(currentWeb ? webSearchValue(currentWeb) : "")}" placeholder="Tìm mã, tên hoặc giá trên web…"></td>
+        <td>${mappingStatusLabel(row)}</td>
+        <td class="it-map-actions">${actionHtml}</td></tr>`;
+      if (!canCreate) return mainRow;
+      const editorRow = `<tr class="it-create-editor" data-stock-code="${escapeHtml(row.stockCode)}" hidden><td></td><td colspan="4"><div class="it-create-product">
+        <div class="it-create-title"><b>Tạo sản phẩm mới trên ${escapeHtml(pageTenantLabel)}</b><span>Kiểm tra thông tin trước khi gọi API</span></div>
+        <div class="it-create-grid"><label>Mã web<input class="it-create-code" value="${escapeHtml(draft.webCode)}" placeholder="7 chữ số"></label>
+        <label>Tên mặt hàng<input class="it-create-name" value="${escapeHtml(draft.name)}" placeholder="Tên mặt hàng"></label>
+        <label>ĐVT<input class="it-create-unit" value="${escapeHtml(draft.unit)}" placeholder="ĐVT"></label>
+        <label>Giá bán<input class="it-create-price" inputmode="numeric" value="${escapeHtml(formatMoney(draft.price))}" placeholder="Giá bán"></label>
+        <label>Nhóm hàng<select class="it-create-group">${PRODUCT_GROUPS.map(group => `<option ${group === draft.group ? "selected" : ""}>${escapeHtml(group)}</option>`).join("")}</select></label>
+        <button class="it-create-one primary" type="button">Tạo bằng API và ánh xạ</button></div>
+        ${row.createError ? `<div class="it-create-error">${escapeHtml(row.createError)}</div>` : ""}</div></td></tr>`;
+      return mainRow + editorRow;
+    }).join("") || '<tr><td colspan="5" class="it-empty-state"><b>Không có mặt hàng phù hợp bộ lọc.</b><br>Hãy đổi từ khóa hoặc trạng thái để xem dữ liệu khác.</td></tr>';
     body.querySelectorAll(".it-confirm-map").forEach(button => button.addEventListener("click", confirmMapping));
     body.querySelectorAll(".it-disable-map").forEach(button => button.addEventListener("click", disableMapping));
+    body.querySelectorAll(".it-create-one").forEach(button => button.addEventListener("click", createSingleMappedProduct));
+    body.querySelectorAll(".it-toggle-create").forEach(button => button.addEventListener("click", toggleProductEditor));
+    body.querySelectorAll(".it-reopen-map").forEach(button => button.addEventListener("click", reopenMapping));
+    body.querySelectorAll(".it-create-select").forEach(input => input.addEventListener("change", () => {
+      if (input.checked) mappingCreateSelection.add(String(input.dataset.stockCode));
+      else mappingCreateSelection.delete(String(input.dataset.stockCode));
+      updateMappingSelectionUi();
+    }));
+    body.querySelectorAll(".it-create-editor input,.it-create-editor select").forEach(input => input.addEventListener("change", () => {
+      const tr = input.closest("tr");
+      const row = mappingDataset.mappings.find(item => String(item.stockCode) === String(tr.dataset.stockCode));
+      if (row) productDraftFromRowElement(tr, row);
+    }));
+    updateMappingSelectionUi();
   }
 
   async function confirmMapping(event) {
@@ -2475,9 +3627,10 @@
     const web = webCatalog.find(item => String(item.webCode) === selectedCode);
     if (!row || !web) return setStatus("Hãy chọn một sản phẩm web trước khi xác nhận.", "error");
     Object.assign(row, web, { status: "confirmed", confirmedAt: new Date().toISOString() });
+    mappingCreateSelection.delete(String(row.stockCode));
     await InvoiceMappingStore.save(mappingDataset);
     refreshMappingState();
-    renderMappingRows();
+    renderMappingAdmin();
     setStatus(`Đã xác nhận ${row.stockCode} → ${web.webCode}.`, "ok");
   }
 
@@ -2486,18 +3639,104 @@
     const row = mappingDataset.mappings.find(item => String(item.stockCode) === stockCode);
     if (!row) return;
     row.status = "disabled";
+    mappingCreateSelection.delete(String(row.stockCode));
     await InvoiceMappingStore.save(mappingDataset);
     refreshMappingState();
-    renderMappingRows();
+    renderMappingAdmin();
+  }
+
+  async function reopenMapping(event) {
+    const stockCode = event.target.closest("tr")?.dataset.stockCode;
+    const row = mappingDataset.mappings.find(item => String(item.stockCode) === String(stockCode));
+    if (!row) return;
+    row.status = "review";
+    row.reviewNote = "Người dùng mở lại để kiểm tra ánh xạ.";
+    await InvoiceMappingStore.save(mappingDataset);
+    refreshMappingState();
+    renderMappingAdmin();
+    setStatus(`Đã mở lại ánh xạ ${row.stockCode} để chỉnh sửa.`, "ok");
   }
 
   function exportMapping() {
-    const blob = new Blob([JSON.stringify(mappingDataset, null, 2)], { type: "application/json" });
+    const payload = {
+      kind: "invoice-target-mapping-profile",
+      schemaVersion: 1,
+      tenant: pageTenantSlug,
+      tenantLabel: pageTenantLabel,
+      exportedAt: new Date().toISOString(),
+      catalog: { source: String(catalogDataset?.source || ""), itemCount: webCatalog.length },
+      mapping: {
+        source: String(mappingDataset?.source || ""),
+        generatedAt: String(mappingDataset?.generatedAt || ""),
+        mappings: structuredClone(mappingDataset?.mappings || [])
+      }
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `invoice-mapping-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `invoice-mapping-${pageTenantSlug}-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    setStatus(`Đã xuất hồ sơ ánh xạ của ${pageTenantLabel}. File không thay thế số tồn kho khi nhập lại.`, "ok");
+  }
+
+  async function importMappingFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      const fileTenant = String(payload?.tenant || payload?.mapping?.tenant || "").trim().toLowerCase();
+      if (fileTenant && fileTenant !== pageTenantSlug) {
+        throw new Error(`File ánh xạ thuộc cơ sở ${fileTenant}, không phải ${pageTenantSlug}.`);
+      }
+      if (!fileTenant && pageTenantSlug !== "pariskimgiang") {
+        throw new Error(`File ánh xạ thiếu mã cơ sở ${pageTenantSlug}; không thể nhập an toàn.`);
+      }
+      const incomingRows = payload?.mapping?.mappings || payload?.mappings;
+      if (!Array.isArray(incomingRows)) throw new Error("File không có danh sách ánh xạ hợp lệ.");
+      const byStockCode = new Map(incomingRows.map(row => [String(row.stockCode || "").trim(), row]));
+      let imported = 0;
+      let needsReview = 0;
+      const nextRows = (mappingDataset?.mappings || []).map(row => {
+        const source = byStockCode.get(String(row.stockCode || "").trim());
+        if (!source) return row;
+        const web = webCatalog.find(item => String(item.webCode) === String(source.webCode));
+        if (!web) {
+          needsReview += 1;
+          return { ...row, status: "review", reviewNote: `Mã web ${source.webCode || "trống"} không có trong danh mục hiện tại.` };
+        }
+        imported += 1;
+        return {
+          ...row,
+          ...web,
+          status: source.status === "disabled" ? "disabled" : "confirmed",
+          confidence: Number(source.confidence) || 100,
+          confirmedAt: source.confirmedAt || new Date().toISOString(),
+          reviewNote: String(source.reviewNote || ""),
+          availabilityMode: source.availabilityMode || row.availabilityMode,
+          maxQtyPerInvoice: source.maxQtyPerInvoice ?? row.maxQtyPerInvoice
+        };
+      });
+      mappingDataset = {
+        ...mappingDataset,
+        tenant: pageTenantSlug,
+        mappingProfileImportedAt: new Date().toISOString(),
+        mappingProfileSource: file.name,
+        mappings: nextRows
+      };
+      await InvoiceMappingStore.save(mappingDataset);
+      refreshMappingState();
+      renderMappingAdmin();
+      setStatus(
+        `Đã nhập ${imported} ánh xạ cho ${pageTenantLabel}` +
+        `${needsReview ? `; ${needsReview} dòng cần duyệt lại vì mã web đã thay đổi.` : ". Số tồn kho hiện tại được giữ nguyên."}`,
+        needsReview ? "warn" : "ok"
+      );
+    } catch (error) {
+      setStatus(`Không nhập được file ánh xạ: ${error.message}`, "error");
+    } finally {
+      event.target.value = "";
+    }
   }
 
   async function scanInvoice() {
@@ -2528,7 +3767,28 @@
   const MAX_PRODUCT_GROUP_SHARE = 0.6;
 
   function maxActiveLines(goodsTarget) {
-    return Math.max(4, Math.min(9, Math.round(Number(goodsTarget || 0) / 300000) + 2));
+    // Hóa đơn lớn ở cơ sở có nhiều mã giá thấp cần thêm dòng để đạt tiền hàng
+    // mà vẫn giữ giới hạn thực tế trên từng mã. 9 dòng khiến kho còn nhiều
+    // nhưng tổng sức chứa/HĐ vẫn không đạt. Chỉ nâng trần cho hóa đơn lớn;
+    // hóa đơn thông thường vẫn giữ tối đa 12 mã để không tạo đơn phi thực tế.
+    const target = Math.max(0, Number(goodsTarget || 0));
+    const adaptiveCap = target >= 6000000 ? 20 : target >= 4000000 ? 16 : 12;
+    return Math.max(4, Math.min(adaptiveCap, Math.round(target / 250000) + 2));
+  }
+
+  function reachableGoodsUpperBound(candidates, lineLimit, globalQtyLimit = 20) {
+    const maximumLines = Math.max(1, Math.floor(Number(lineLimit) || 1));
+    const maximumQty = Math.max(1, Math.floor(Number(globalQtyLimit) || 1));
+    return (candidates || [])
+      .map(item => {
+        const itemLimit = Number.isFinite(Number(item.maxQty))
+          ? Math.max(0, Math.floor(Number(item.maxQty)))
+          : maximumQty;
+        return Math.max(0, Math.round(Number(item.price) || 0)) * Math.min(maximumQty, itemLimit);
+      })
+      .sort((left, right) => right - left)
+      .slice(0, maximumLines)
+      .reduce((sum, amount) => sum + amount, 0);
   }
 
   function minimumGroupCount(goodsTarget) {
@@ -2548,6 +3808,8 @@
   // normal invoices are not invalidated; the small-invoice branch is tagged
   // separately through specialRule.
   const CALCULATION_VERSION = "website-inclusive-vat-2";
+  const MAX_SESSION_CANDIDATE_PROBES = 3;
+  const SESSION_CANDIDATE_PROBE_TIMEOUT_MS = 5000;
   const SMALL_INVOICE_BEER_LIMIT = 500000;
   const SMALL_INVOICE_BEER_QTY = 2;
 
@@ -2594,9 +3856,14 @@
     // nền 600.000đ cho hóa đơn 560.000đ), nên cũng phải kẹp theo trần 35% giống
     // phiếu mới — nếu không nền đã vượt trần ngay từ đầu và mọi tổ hợp đều vỡ
     // cả hai điều kiện của cổng kiểm tra cuối.
-    const nominalBaseHour = isNewInvoice
+    const currentHour = Math.max(0, Math.round(Number(scan?.currentHour) || 0));
+    // Một số phiếu cũ/API trả Tiền giờ = 0 dù giao dịch vẫn phải có tiền phòng.
+    // Nếu dùng thẳng số 0 làm nền, goodsTarget sẽ bằng toàn bộ tiền trước VAT;
+    // solver ghép tiền hàng ăn hết phần này rồi chốt cuối mới báo "không có Tiền giờ".
+    // Với trường hợp đó, dùng mốc 30/50 phút giống phiếu mới ngay từ lúc lập kế hoạch.
+    const nominalBaseHour = isNewInvoice || currentHour <= 0
       ? minuteBaseHour
-      : Math.max(0, Math.round(Number(scan?.currentHour) || 0));
+      : currentHour;
     const baseHour = preTaxCap > 0 ? Math.min(nominalBaseHour, preTaxCap) : nominalBaseHour;
     const adjustmentLimit = Math.max(step, Math.round(baseHour * MAX_HOUR_BASE_ADJUSTMENT_RATIO));
     return {
@@ -2608,7 +3875,9 @@
       baseHourClamped: baseHour < nominalBaseHour,
       // A new invoice uses 30 or 50 minutes as the minimum singing baseline,
       // depending on the bank-statement total.
-      minHourAmount: isNewInvoice ? baseHour : Math.max(0, baseHour - adjustmentLimit),
+      minHourAmount: isNewInvoice || currentHour <= 0
+        ? baseHour
+        : Math.max(step, baseHour - adjustmentLimit),
       maxHourAmount: baseHour + adjustmentLimit
     };
   }
@@ -2621,18 +3890,15 @@
     return Math.ceil(Math.max(0, Number(preTaxTarget) || 0) / (MAX_HOUR_TO_GOODS_RATIO + 1));
   }
 
-  // Tiền hàng tối đa để tiền giờ còn đạt tỷ lệ tự nhiên:
-  // giờ ≥ r×hàng  và  hàng + giờ = preTax  =>  hàng ≤ preTax/(1+r).
-  // Trần 35% tổng trước VAT lại tương đương giờ ≈ 0,54×hàng, chặt hơn tỷ lệ tự
-  // nhiên 0,8 nên hai mốc này loại trừ nhau. Trần 35% là ràng buộc cứng, vì vậy
-  // sàn mềm phải nhường: tiền hàng tối thiểu phải đạt preTax − trần giờ, nếu
-  // không cửa sổ tiền hàng rỗng và solver trả về phương án Tiền giờ = 0.
-  function naturalMaxGoodsForHourRatio(preTaxTarget, hourPreTaxCap = 0) {
-    const preTax = Math.max(0, Number(preTaxTarget) || 0);
-    const natural = Math.floor(preTax / (1 + NATURAL_MIN_HOUR_TO_GOODS_RATIO));
-    const cap = Math.max(0, Math.round(Number(hourPreTaxCap) || 0));
-    if (cap <= 0) return natural;
-    return Math.max(natural, preTax - cap);
+  // Cận trên tiền hàng phải chừa lại ít nhất minHourAmount cho Tiền giờ.
+  // Không được dùng (preTax - trần giờ) làm cả cận dưới lẫn cận trên: số đó
+  // thường không chia hết cho bước giá 5.000đ (ví dụ 3.180.450đ), khiến cửa sổ
+  // chỉ còn đúng một giá trị không thể biểu diễn dù 3.185.000đ là hợp lệ.
+  function maximumGoodsForHourRange(preTaxTarget, minHourAmount, minGoodsAmount = 0) {
+    const preTax = Math.max(0, Math.round(Number(preTaxTarget) || 0));
+    const minHour = Math.max(0, Math.round(Number(minHourAmount) || 0));
+    const minimumGoods = Math.max(0, Math.round(Number(minGoodsAmount) || 0));
+    return Math.max(minimumGoods, Math.max(0, preTax - minHour));
   }
 
   function candidateFromStock(stock, minQty, selectionPenalty, ruleMaxQty) {
@@ -2769,7 +4035,7 @@
       calculationVersion: CALCULATION_VERSION,
       specialRule: "under-500k-two-beers",
       invoiceNo: scan.invoiceNo,
-      invoiceDateKey: scan.invoiceDateKey,
+      invoiceDateKey: transaction.transactionDate,
       targetGrand,
       statementGrand,
       grandDifference,
@@ -2786,6 +4052,13 @@
       tax: targets.vatTarget,
       taxRate: 10,
       difference: predictedGrand - targetGrand,
+      checkIn: scan.checkIn || "",
+      checkOut: scan.sessionRebased
+        ? (recommendCheckOut(scan, hourFromTime, hourlyRate) || scan.checkOut || "")
+        : (scan.checkOut || ""),
+      sessionRebased: Boolean(scan.sessionRebased),
+      originalCheckIn: scan.originalCheckIn || "",
+      originalCheckOut: scan.originalCheckOut || "",
       proposedCheckOut: recommendCheckOut(scan, hourFromTime, hourlyRate),
       items: [{
         code: String(beer.webCode),
@@ -2845,7 +4118,17 @@
   function calculateBatchPlan(scan, transaction, inventoryState, productUsage, overrideGrand) {
     const maxHourToGoodsRatio = 2;
     if (!scan?.ready) return { status: "error", reason: "Không đọc được chi tiết phiếu." };
-    if (scan.invoiceDateKey !== transaction.transactionDate) return { status: "error", reason: "Ngày phiếu không khớp sao kê." };
+    if (!invoiceMatchesTransactionDate(scan, transaction.transactionDate)) {
+      const formDates = invoiceBusinessDateKeys(scan);
+      const invoiceLabel = String(scan?.invoiceNo || "").trim() || "không đọc được số phiếu";
+      return {
+        status: "error",
+        reason: `Ngày phiếu không khớp sao kê: extension đang kiểm tra phiếu ${invoiceLabel}; ` +
+          `sao kê ${transaction.transactionDate || "không xác định"}, ` +
+          `form ${formDates.length ? formDates.join(" hoặc ") : "không đọc được ngày"}` +
+          `${scan?.checkIn || scan?.checkOut ? ` (Giờ vào ${scan.checkIn || "—"}, Giờ ra ${scan.checkOut || "—"})` : ""}.`
+      };
+    }
     const statementGrand = Math.round(Number(transaction.credit) || 0);
     const requestedGrand = Math.round(Number(overrideGrand) || 0);
     const targetGrand = requestedGrand > 0 ? requestedGrand : statementGrand;
@@ -2911,8 +4194,16 @@
     // singing charge no higher than 35% of the pre-VAT total.
     hourBounds.maxHourAmount = Math.max(hourBounds.maxHourAmount, hourPreTaxCap);
     const minHourAmount = hourBounds.minHourAmount;
-    const minGoodsAmount = Math.ceil(Math.max(0, Number(targets.preTaxTarget) || 0) / (maxHourToGoodsRatio + 1));
+    // The goods amount must leave no more than the permitted singing charge.
+    // This used to be validated only after solving, causing avoidable errors
+    // even when another stock combination was valid.
+    const minGoodsForHourRange = Math.max(0, targets.preTaxTarget - hourBounds.maxHourAmount);
+    const minGoodsAmount = Math.max(
+      Math.ceil(Math.max(0, Number(targets.preTaxTarget) || 0) / (maxHourToGoodsRatio + 1)),
+      minGoodsForHourRange
+    );
     const candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage);
+    const activeLineLimit = maxActiveLines(targets.goodsTarget);
     const solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, {
       maxQty: 20,
       tolerance: 0,
@@ -2922,8 +4213,9 @@
       minHourAmount,
       maxHourAmount: hourBounds.maxHourAmount,
       requireHourStepExact: false,
+      enforceHourRange: true,
       minGoodsAmount,
-      maxGoodsAmount: naturalMaxGoodsForHourRatio(targets.preTaxTarget, hourPreTaxCap),
+      maxGoodsAmount: maximumGoodsForHourRange(targets.preTaxTarget, minHourAmount, minGoodsAmount),
       // Ưu tiên phương án nhiều số lượng: bỏ phạt tập trung, thưởng tổng số
       // lượng, và cho hình phạt "mã vừa bị loại" đủ nặng để Tính toán lại thực
       // sự đổi sang tổ hợp khác.
@@ -2935,9 +4227,20 @@
       maxGroupShare: MAX_PRODUCT_GROUP_SHARE,
       minGroupCount: minimumGroupCount(targets.goodsTarget),
       preferredLineCount: preferredLineCount(targets.goodsTarget),
-      maxActiveLines: maxActiveLines(targets.goodsTarget)
+      maxActiveLines: activeLineLimit
     });
-    if (!solution.items) return { status: "error", reason: solution.reason || "Không tìm được phương án." };
+    if (!solution.items) {
+      const reachableUpperBound = reachableGoodsUpperBound(candidates, activeLineLimit, 20);
+      const capacityExplanation = reachableUpperBound < minGoodsForHourRange
+        ? ` Với tối đa ${activeLineLimit} mã và giới hạn số lượng/HĐ hiện tại, sức chứa tiền hàng chỉ khoảng ${formatMoney(reachableUpperBound)} đ.`
+        : ` Kho có sức chứa lý thuyết khoảng ${formatMoney(reachableUpperBound)} đ nhưng không ghép được tổ hợp hợp lệ theo đơn giá và các rule hiện tại.`;
+      return {
+        status: "error",
+        reason: `Không tìm được tổ hợp hàng đạt tối thiểu ${formatMoney(minGoodsForHourRange)} đ ` +
+          `để giữ Tiền giờ không vượt ${formatMoney(hourBounds.maxHourAmount)} đ. ` +
+          capacityExplanation + ` Hãy kiểm tra ánh xạ và giới hạn số lượng/HĐ.`
+      };
+    }
     const selected = solution.items.filter(item => item.newQty > 0);
     const reconciledHour = InvoiceTargetSolver.reconcileHourAmount(
       solution.actual,
@@ -2984,7 +4287,7 @@
       status: "ready",
       calculationVersion: CALCULATION_VERSION,
       invoiceNo: scan.invoiceNo,
-      invoiceDateKey: scan.invoiceDateKey,
+      invoiceDateKey: transaction.transactionDate,
       targetGrand,
       // Khi người dùng chấp nhận tổng lệch, giữ lại cả tiền sao kê gốc và phần
       // chênh để đối soát/ghi sổ nêu rõ được lý do.
@@ -3007,6 +4310,13 @@
       tax: targets.vatTarget,
       taxRate: 10,
       difference,
+      checkIn: scan.checkIn || "",
+      checkOut: scan.sessionRebased
+        ? (recommendCheckOut(scan, hourFromTime, hourPricing.hourlyRate) || scan.checkOut || "")
+        : (scan.checkOut || ""),
+      sessionRebased: Boolean(scan.sessionRebased),
+      originalCheckIn: scan.originalCheckIn || "",
+      originalCheckOut: scan.originalCheckOut || "",
       proposedCheckOut: recommendCheckOut(scan, hourFromTime, hourPricing.hourlyRate),
       items: selected.map(item => ({
         code: String(item.code),
@@ -3146,6 +4456,24 @@
     )[0] || null;
   }
 
+  function rankInvoiceCandidates(candidates, targetAmount, linkedInvoiceNo) {
+    const target = Number(targetAmount) || 0;
+    const linked = String(linkedInvoiceNo || "");
+    const distance = candidate => {
+      const total = Number(candidate?.grandTotal);
+      return Number.isFinite(total) ? Math.abs(total - target) : Number.POSITIVE_INFINITY;
+    };
+    return [...(candidates || [])].sort((left, right) =>
+      (String(right?.invoiceNo || "") === linked ? 1 : 0) -
+        (String(left?.invoiceNo || "") === linked ? 1 : 0) ||
+      distance(left) - distance(right) ||
+      String(left?.invoiceNo || "").localeCompare(String(right?.invoiceNo || ""), "vi", {
+        numeric: true,
+        sensitivity: "base"
+      })
+    );
+  }
+
   function selectBatchReviewTransactions(transactions, options) {
     const fromDate = String(options?.fromDate || "");
     const toDate = String(options?.toDate || "");
@@ -3160,9 +4488,15 @@
     }).slice(0, limit);
   }
 
-  async function buildBatchReview() {
+  async function buildBatchReview(options) {
+    options = options || {};
     const button = document.getElementById("it-build-batch");
     const summary = document.getElementById("it-batch-summary");
+    const onlyTransactionId = String(options.onlyTransactionId || "");
+    const previousBatchPlans = batchPlans;
+    const previousPlanIndex = onlyTransactionId
+      ? previousBatchPlans.findIndex(entry => String(entry.transactionId) === onlyTransactionId)
+      : -1;
     try {
       if (button) button.disabled = true;
       const current = await request("scan");
@@ -3189,11 +4523,18 @@
       if (invalidatedLegacyPlans) {
         await InvoiceMappingStore.saveStatement(statementDataset);
       }
-      const transactions = selectBatchReviewTransactions(statementDataset.transactions, { fromDate, toDate, limit });
+      let transactions = selectBatchReviewTransactions(statementDataset.transactions, { fromDate, toDate, limit });
+      if (onlyTransactionId) {
+        const selectedTransaction = (statementDataset.transactions || [])
+          .find(item => String(item.id) === onlyTransactionId);
+        transactions = selectedTransaction ? [selectedTransaction] : [];
+      }
       if (!transactions.length) throw new Error("Không có giao dịch nào trong khoảng ngày đã chọn.");
-      batchPlans = [];
+      batchPlans = onlyTransactionId
+        ? previousBatchPlans.filter(entry => String(entry.transactionId) !== onlyTransactionId)
+        : [];
       const table = document.getElementById("it-batch-table");
-      if (table) table.innerHTML = "";
+      if (table && !onlyTransactionId) table.innerHTML = "";
       const selectedTransactionIds = transactions.map(item => String(item.id));
       // Reservations are global, not limited to the date range or row limit
       // currently shown in Batch Review. Reserve accepted/planned rows outside
@@ -3204,6 +4545,15 @@
         selectedTransactionIds
       );
       const productUsage = new Map();
+      if (onlyTransactionId) {
+        for (const item of statementDataset.transactions || []) {
+          if (String(item.id) === onlyTransactionId) continue;
+          const plan = item.pendingPlan || item.batchApprovedPlan;
+          if (["planned", "batch_ready", "done"].includes(item.status)) {
+            addPlanProductUsage(productUsage, plan?.items);
+          }
+        }
+      }
       // Ghi lại lý do không lập được hóa đơn ngay trên giao dịch, để người dùng
       // thấy ở bảng sao kê mà không phải mở lại Batch Review.
       const noteBlockedTransaction = (item, plan) => {
@@ -3295,7 +4645,8 @@
         const linkedCandidate = transaction.invoiceNo
           ? available.find(item => String(item.invoiceNo) === String(transaction.invoiceNo))
           : null;
-        const candidate = linkedCandidate || selectClosestInvoiceCandidate(available, transaction.credit);
+        const rankedCandidates = rankInvoiceCandidates(available, transaction.credit, transaction.invoiceNo);
+        let candidate = rankedCandidates[0] || null;
         const automaticallySelected = !linkedCandidate && available.length > 1 && candidate;
         const automaticSelectionReason = automaticallySelected
           ? `Tự chọn ${candidate.invoiceNo} gần tiền sao kê nhất trong ${available.length} phiếu cùng ngày ` +
@@ -3356,12 +4707,72 @@
           }
           continue;
         }
-        let opened = false;
+        // The list date alone is not enough: an old room session can be shown in a
+        // later sales list. Inspect a bounded number of the closest candidates
+        // and prefer one whose actual
+        // check-in/check-out touches the bank-statement date. Keep one rebased
+        // fallback only when no such invoice is available.
+        let rebasedCandidateScan = null;
+        let selectedCandidateScan = null;
+        let selectedCandidateLeftOpen = false;
+        const candidatesToProbe = rankedCandidates.slice(0, MAX_SESSION_CANDIDATE_PROBES);
+        for (let probeIndex = 0; probeIndex < candidatesToProbe.length; probeIndex += 1) {
+          const currentCandidate = candidatesToProbe[probeIndex];
+          let inspecting = false;
+          try {
+            if (summary) {
+              summary.textContent =
+                `Đang tính ${index + 1}/${transactions.length}: ${transaction.transactionDate} · ${formatMoney(transaction.credit)}` +
+                ` · kiểm tra phiếu ${probeIndex + 1}/${candidatesToProbe.length}`;
+            }
+            await request("openInvoiceCandidate", {
+              uid: currentCandidate.uid,
+              invoiceNo: currentCandidate.invoiceNo
+            });
+            inspecting = true;
+            const inspectedScan = await waitForOpenedInvoice(
+              currentCandidate.invoiceNo,
+              currentCandidate.dateKey || transaction.transactionDate,
+              SESSION_CANDIDATE_PROBE_TIMEOUT_MS
+            );
+            if (invoiceSessionTouchesTransactionDate(inspectedScan, transaction.transactionDate)) {
+              candidate = currentCandidate;
+              rebasedCandidateScan = null;
+              selectedCandidateScan = inspectedScan;
+              selectedCandidateLeftOpen = true;
+              inspecting = false;
+              break;
+            }
+            if (!rebasedCandidateScan) {
+              const rebased = rebaseInvoiceSession(inspectedScan, transaction.transactionDate);
+              if (rebased) {
+                candidate = currentCandidate;
+                rebasedCandidateScan = rebased;
+              }
+            }
+          } catch (_) {
+            // The normal read below will surface an actionable error if every
+            // candidate fails. A single unreadable row must not stop the search.
+          } finally {
+            if (inspecting) {
+              try { await request("closeInvoiceDetail"); } catch (_) {}
+              await new Promise(resolve => setTimeout(resolve, 120));
+            }
+          }
+        }
+        let opened = selectedCandidateLeftOpen;
         try {
           usedInvoiceNos.add(String(candidate.invoiceNo));
-          await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo: candidate.invoiceNo });
-          opened = true;
-          const scan = await waitForOpenedInvoice(candidate.invoiceNo);
+          if (!opened) {
+            await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo: candidate.invoiceNo });
+            opened = true;
+          }
+          let scan = selectedCandidateScan ||
+            await waitForOpenedInvoice(candidate.invoiceNo, candidate.dateKey || transaction.transactionDate);
+          if (rebasedCandidateScan &&
+              String(rebasedCandidateScan.invoiceNo || "") === String(candidate.invoiceNo || "")) {
+            scan = rebasedCandidateScan;
+          }
           const plan = calculateBatchPlan(
             scan, transaction, workingInventory, productUsage, transaction.acceptedGrandOverride
           );
@@ -3372,7 +4783,12 @@
             transaction,
             plan,
             candidates: available,
-            reason: plan.reason || automaticSelectionReason
+            reason: plan.reason || (available.length > 1
+              ? `Tu chon ${candidate.invoiceNo}; uu tien phieu co gio vao/ra phu hop ngay sao ke, sau do moi xet do gan tien.` +
+                (plan.sessionRebased
+                  ? ` Khong con phieu phu hop; da doi ca phien ${plan.originalCheckIn} - ${plan.originalCheckOut} sang ${plan.checkIn} - ${plan.checkOut}.`
+                  : "")
+              : "")
           });
           if (plan.status === "ready") {
             workingInventory = reserveBatchStock(workingInventory, plan.items);
@@ -3399,13 +4815,25 @@
           document.getElementById("it-pending-new-invoice")?.remove();
         }
       }
+      if (onlyTransactionId) {
+        const recalculatedIndex = batchPlans.findIndex(entry => String(entry.transactionId) === onlyTransactionId);
+        if (recalculatedIndex >= 0 && previousPlanIndex >= 0) {
+          const [recalculatedEntry] = batchPlans.splice(recalculatedIndex, 1);
+          batchPlans.splice(Math.min(previousPlanIndex, batchPlans.length), 0, recalculatedEntry);
+        }
+      }
       renderBatchPlans();
       renderStatementRows();
       // Ghi chú "không lập được hóa đơn" nằm trên giao dịch nên phải lưu xuống
       // storage, nếu không sẽ mất khi tải lại trang.
       await InvoiceMappingStore.saveStatement(statementDataset);
       await saveBatchUiSession({ panelOpen: true });
-      setStatus("Đã tạo Batch Review. Chưa có hóa đơn nào bị sửa hoặc lưu.", "ok");
+      setStatus(
+        onlyTransactionId
+          ? "Đã tính lại riêng hóa đơn được chọn. Các phương án khác được giữ nguyên."
+          : "Đã tạo Batch Review. Chưa có hóa đơn nào bị sửa hoặc lưu.",
+        "ok"
+      );
     } catch (error) {
       console.error("[InvoiceTarget batch review]", error);
       if (summary) summary.textContent = error.message;
@@ -3478,7 +4906,7 @@
           </select>` : ""}
           ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<br><button class="it-confirm-issued" type="button" data-index="${index}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
           ${entry.status === "needs_new_invoice" ? `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>` : ""}
-          ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<br><button class="it-open-pos" type="button" data-index="${index}">Tạo và lưu API phiếu mới từ phương án đã Accept</button>` : ""}
+          ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<br><button class="it-save-new-api" type="button" data-index="${index}">Tạo, lưu API và đối soát</button>` : ""}
           ${entry.status === "batch_ready" && !plan.requiresNewInvoice
             ? `<br><button class="it-save-api" type="button" data-index="${index}">Lưu API & đối soát</button>`
             : ""}
@@ -3521,6 +4949,7 @@
     table.querySelectorAll(".it-issued-choice").forEach(select => select.addEventListener("change", chooseIssuedInvoice));
     table.querySelectorAll(".it-confirm-issued").forEach(button => button.addEventListener("click", confirmAlreadyIssued));
     table.querySelectorAll(".it-open-pos").forEach(button => button.addEventListener("click", openPosForNewInvoice));
+    table.querySelectorAll(".it-save-new-api").forEach(button => button.addEventListener("click", saveNewAcceptedBatchPlanViaApi));
     table.querySelectorAll(".it-apply-accepted").forEach(button => button.addEventListener("click", applyAcceptedBatchPlan));
     table.querySelectorAll(".it-save-api").forEach(button => button.addEventListener("click", saveAcceptedBatchPlanViaApi));
     table.querySelectorAll(".it-recalculate-accepted").forEach(button => button.addEventListener("click", recalculateAcceptedBatchPlan));
@@ -3555,18 +4984,26 @@
         throw new Error("Chưa mở được màn hình danh sách Bán hàng để đọc lại phiếu; hãy mở danh sách rồi thử lại.");
       }
       const usedInvoiceNos = otherRowsInvoiceNos(transaction, plan);
+      // Linh Đàm xếp phiếu mới vào ngày tạo của máy chủ. Kim Giang vẫn tìm
+      // theo ngày sao kê như trước, không đi qua nhánh ngoại lệ này.
+      const lookupDateKey = isLinhDamFreshApiInvoice(plan)
+        ? todayDateKey()
+        : transaction.transactionDate;
       const found = await request("findInvoiceCandidates", {
-        dateKey: transaction.transactionDate,
+        dateKey: lookupDateKey,
         usedInvoiceNos
       });
       const candidate = (found.candidates || []).find(item =>
         String(item.invoiceNo) === String(plan.invoiceNo) && item.available
       );
       if (!candidate) {
-        throw new Error(`Không tìm thấy phiếu chưa xuất ${plan.invoiceNo} để đọc lại từ website.`);
+        const lookupNote = isLinhDamFreshApiInvoice(plan)
+          ? ` trong danh sách ngày server ${lookupDateKey}`
+          : "";
+        throw new Error(`Không tìm thấy phiếu chưa xuất ${plan.invoiceNo}${lookupNote} để đọc lại từ website.`);
       }
       await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo: plan.invoiceNo });
-      const reopened = await waitForOpenedInvoice(plan.invoiceNo);
+      const reopened = await waitForOpenedInvoice(plan.invoiceNo, candidate.dateKey || transaction.transactionDate);
       if (String(reopened.invoiceNo || "") !== String(plan.invoiceNo)) {
         throw new Error(`Website mở nhầm phiếu ${reopened.invoiceNo || "không xác định"}; chưa đối soát.`);
       }
@@ -3574,7 +5011,10 @@
       if (errors.length) throw new Error(errors.join(" "));
 
       if (button?.isConnected) button.textContent = "Đang ghi sổ tồn…";
-      await verifySavedInvoice();
+      const ledgerVerification = await verifySavedInvoice(reopened);
+      if (!ledgerVerification?.verified) {
+        throw new Error(ledgerVerification?.error || `Không đối soát được ${plan.invoiceNo}.`);
+      }
       if (currentBankTransaction?.status === "done") {
         if (button?.isConnected) button.textContent = "Đang trở về danh sách…";
         const closed = await request("closeInvoiceDetail");
@@ -3612,7 +5052,10 @@
     transaction.linkedAt = new Date().toISOString();
     await InvoiceMappingStore.saveStatement(statementDataset);
     setStatus(`Đã chọn ${invoiceNo}. Đang tính lại Batch Review để giữ tồn kho đúng thứ tự…`, "warn");
-    await buildBatchReview();
+    // Chỉ dựng lại đúng giao dịch vừa chọn phiếu. Gọi không có
+    // onlyTransactionId sẽ quét lại toàn bộ khoảng ngày hiện tại, làm mất thời
+    // gian và có thể thay đổi các phương án khác trong Batch Review.
+    await buildBatchReview({ onlyTransactionId: String(transaction.id) });
   }
 
   async function chooseIssuedInvoice(event) {
@@ -3677,7 +5120,7 @@
       "so với sao kê). Đang tính lại phương án…",
       "warn"
     );
-    await buildBatchReview();
+    await buildBatchReview({ onlyTransactionId: String(transaction.id) });
   }
 
   // Không dùng window.alert khi extension chặn lưu: native alert che toàn bộ
@@ -3712,8 +5155,8 @@
     }
     await InvoiceMappingStore.saveStatement(statementDataset);
     await saveBatchUiSession({ panelOpen: true });
-    setStatus("Đã quay về đúng tổng tiền sao kê. Đang tính lại Batch Review…", "warn");
-    await buildBatchReview();
+    setStatus("Đã quay về đúng tổng tiền sao kê. Đang tính lại riêng giao dịch này…", "warn");
+    await buildBatchReview({ onlyTransactionId: String(transaction.id) });
   }
 
   async function recalculateAcceptedBatchPlan(event) {
@@ -3766,7 +5209,7 @@
       await InvoiceMappingStore.saveStatement(statementDataset);
       await saveBatchUiSession({ panelOpen: true });
       setStatus("Đã hoàn reservation của phương án cũ. Đang tìm một tổ hợp mặt hàng khác…", "warn");
-      await buildBatchReview();
+      await buildBatchReview({ onlyTransactionId: String(transaction.id) });
     } catch (error) {
       if (button?.isConnected) {
         button.disabled = false;
@@ -3815,9 +5258,9 @@
         throw new Error(`Không tìm thấy phiếu chưa xuất ${invoiceNo} trong ngày ${transaction.transactionDate}.`);
       }
       await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo });
-      const openedScan = await waitForOpenedInvoice(invoiceNo);
-      if (openedScan.invoiceDateKey !== transaction.transactionDate) {
-        throw new Error(`Ngày phiếu ${openedScan.invoiceDateKey || "không xác định"} không khớp ${transaction.transactionDate}.`);
+      const openedScan = await waitForOpenedInvoice(invoiceNo, candidate.dateKey || transaction.transactionDate);
+      if (!invoiceMatchesTransactionDate(openedScan, transaction.transactionDate)) {
+        throw new Error(`Ngày phiếu ${invoiceBusinessDateKeys(openedScan).join(" hoặc ") || "không xác định"} không khớp ${transaction.transactionDate}.`);
       }
       if (button?.isConnected) button.textContent = "Đang áp dụng…";
       const applied = await request("applyInvoicePlan", {
@@ -3831,14 +5274,15 @@
         targetGrand: plan.targetGrand ?? plan.grand ?? transaction.credit,
         targetGoods: plan.goods,
         targetTax: plan.tax,
-        checkIn: openedScan.checkIn || "",
-        checkOut: openedScan.checkOut || ""
+        sessionRebased: Boolean(plan.sessionRebased),
+        checkIn: plan.checkIn || openedScan.checkIn || "",
+        checkOut: plan.checkOut || openedScan.checkOut || ""
       });
       latestScan = {
         ...openedScan,
         ...applied,
         invoiceNo: openedScan.invoiceNo,
-        invoiceDateKey: openedScan.invoiceDateKey
+        invoiceDateKey: transaction.transactionDate
       };
       const pendingPlan = pendingPlanFromApproved(plan, transaction, latestScan);
       const verificationErrors = verifySnapshotAgainstPlan(latestScan, pendingPlan);
@@ -3921,9 +5365,9 @@
         throw new Error(`Khong tim thay phieu chua xuat ${invoiceNo} trong ngay ${transaction.transactionDate}.`);
       }
       await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo });
-      const openedScan = await waitForOpenedInvoice(invoiceNo);
-      if (openedScan.invoiceDateKey !== transaction.transactionDate) {
-        throw new Error(`Ngay phieu ${openedScan.invoiceDateKey || "khong xac dinh"} khong khop ${transaction.transactionDate}.`);
+      const openedScan = await waitForOpenedInvoice(invoiceNo, candidate.dateKey || transaction.transactionDate);
+      if (!invoiceMatchesTransactionDate(openedScan, transaction.transactionDate)) {
+        throw new Error(`Ngay phieu ${invoiceBusinessDateKeys(openedScan).join(" hoac ") || "khong xac dinh"} khong khop ${transaction.transactionDate}.`);
       }
       const pendingPlan = pendingPlanFromApproved(plan, transaction, openedScan);
       return { applied: true, entry, transaction, plan: pendingPlan, invoiceNo, openedScan };
@@ -3967,7 +5411,12 @@
         targetGrand: plan.grand ?? plan.targetGrand ?? transaction.credit,
         targetGoods: plan.goods,
         targetHour: plan.hour,
-        targetTax: plan.tax
+        targetTax: plan.tax,
+        // Ngày hóa đơn dùng để khớp sao kê; Giờ vào/Ra là ca hát
+        // gốc và có thể nằm ở một ngày quá khứ khác.
+        invoiceDateKey: plan.invoiceDateKey || transaction.transactionDate,
+        checkIn: plan.checkIn,
+        checkOut: plan.checkOut
       });
     } catch (error) {
       transaction.status = "batch_ready";
@@ -4046,6 +5495,7 @@
     if (!opened?.opened) throw new Error(opened?.error || "Khong mo duoc tab worker tao phieu moi.");
 
     const deadline = Date.now() + 90000;
+    let verificationAttempted = false;
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 800));
       const latestStatement = await InvoiceMappingStore.loadStatement();
@@ -4055,6 +5505,9 @@
       if (latestTransaction?.status === "done") {
         statementDataset = latestStatement;
         mappingDataset = await InvoiceMappingStore.load();
+        sharedWarehouse = InvoiceSharedWarehouse.normalize(
+          await InvoiceMappingStore.loadSharedWarehouse(InvoiceSharedWarehouse.empty())
+        );
         verificationLedger = await InvoiceMappingStore.loadLedger();
         const storedSession = await InvoiceMappingStore.loadUiSession();
         batchPlans = hydrateBatchPlans(
@@ -4070,6 +5523,41 @@
           workerTabId: opened.tabId
         };
       }
+      if (!verificationAttempted && latestTransaction?.status === "planned" &&
+          latestTransaction?.apiSavedAt && latestTransaction?.pendingPlan?.invoiceNo) {
+        verificationAttempted = true;
+        // Reload the worker's persisted result, then verify on this original
+        // tab where the website's invoice list is already available.
+        statementDataset = latestStatement;
+        mappingDataset = await InvoiceMappingStore.load();
+        sharedWarehouse = InvoiceSharedWarehouse.normalize(
+          await InvoiceMappingStore.loadSharedWarehouse(InvoiceSharedWarehouse.empty())
+        );
+        verificationLedger = await InvoiceMappingStore.loadLedger();
+        const storedSession = await InvoiceMappingStore.loadUiSession();
+        batchPlans = hydrateBatchPlans(
+          storedSession?.batchPlans || serializeBatchPlans(batchPlans),
+          statementDataset.transactions
+        );
+        const verifyIndex = batchPlans.findIndex(item => String(item.transactionId) === transactionId);
+        if (verifyIndex < 0) throw new Error("Khong tim thay dong Batch vua duoc worker luu.");
+        renderBatchPlans();
+        const verification = await verifyBatchSavedInvoice({
+          target: { closest: () => batchButtonProxy(verifyIndex) }
+        });
+        const verifiedTransaction = findStatementTransaction(transactionId);
+        if (!verification?.verified || verifiedTransaction?.status !== "done") {
+          throw new Error(
+            `Da luu ${latestTransaction.pendingPlan.invoiceNo} nhung doc lai tu server chua khop: ` +
+            `${verification?.error || "khong ro loi"}. Ton kho chua bi tru.`
+          );
+        }
+        return {
+          invoiceNo: verifiedTransaction.invoiceNo,
+          transactionId,
+          workerTabId: opened.tabId
+        };
+      }
       if (latestTransaction?.status === "error") {
         throw new Error(latestTransaction.blockedNote || "Tab worker bao loi khi tao phieu moi.");
       }
@@ -4077,6 +5565,34 @@
     throw new Error(
       "Tab tao phieu moi chua hoan tat sau 90 giay. Tab duoc giu lai de kiem tra; khong chay lai API neu phieu da duoc luu."
     );
+  }
+
+  async function saveNewAcceptedBatchPlanViaApi(event) {
+    const button = event.target.closest("button");
+    const index = Number(button?.dataset.index);
+    try {
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Đang tạo, lưu và đối soát…";
+      }
+      const result = await saveNewBatchEntryViaWorker(index);
+      setStatus(
+        `Đã tạo, đọc lại và đối soát ${result.invoiceNo}. Tồn kho chỉ được cập nhật sau bước đối soát này.`,
+        "ok"
+      );
+      return result;
+    } catch (error) {
+      setStatus(
+        `${error.message} Giao dịch chưa được đánh dấu hoàn tất và tồn kho chưa bị trừ.`,
+        "error"
+      );
+      return { saved: false, error: error.message };
+    } finally {
+      if (button?.isConnected) {
+        button.disabled = false;
+        button.textContent = "Tạo, lưu API và đối soát";
+      }
+    }
   }
 
   async function saveAcceptedBatchPlanViaApi(event) {
@@ -4213,9 +5729,9 @@
         url: salesUrl
       });
       setStatus(
-        `Đã mở tab mới cho giao dịch ${t.transactionDate} · ${formatMoney(t.credit)}đ. ` +
-        "Tab này sẽ tự đóng sau khi lưu và đối soát thành công.",
-        "ok"
+        `Đã mở tab xử lý cho giao dịch ${t.transactionDate} · ${formatMoney(t.credit)}đ. ` +
+        "Đang chờ API trả số phiếu và tab danh sách đọc lại đúng ngày; bước này chưa phải là lưu thành công.",
+        "warn"
       );
       return { opened: true, tabId: opened.tabId, transactionId: String(t.id) };
     } catch (error) {
@@ -4227,6 +5743,61 @@
   function parseUiDateTime(value) {
     const match = String(value || "").match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s+(\d{1,2}):(\d{2})/);
     return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), Number(match[4]), Number(match[5])) : null;
+  }
+
+  function uiDateKey(value) {
+    const raw = String(value || "").trim();
+    const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+    const date = parseUiDateTime(raw);
+    if (!date) return "";
+    const part = number => String(number).padStart(2, "0");
+    return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}`;
+  }
+
+  // Website xếp phiếu theo ngày kết thúc/thanh toán, trong khi scan.invoiceDateKey
+  // trước đây ưu tiên ô Giờ vào. Ca hát qua đêm vì vậy có hai ngày nghiệp vụ hợp lệ.
+  function invoiceBusinessDateKeys(snapshot) {
+    const authoritativeListDate = uiDateKey(snapshot?.listDateKey);
+    if (authoritativeListDate) return [authoritativeListDate];
+    return [...new Set([
+      uiDateKey(snapshot?.invoiceDateKey),
+      uiDateKey(snapshot?.checkIn),
+      uiDateKey(snapshot?.checkOut)
+    ].filter(Boolean))];
+  }
+
+  function invoiceMatchesTransactionDate(snapshot, transactionDateKey) {
+    const expected = uiDateKey(transactionDateKey);
+    return Boolean(expected) && invoiceBusinessDateKeys(snapshot).includes(expected);
+  }
+
+  function invoiceSessionTouchesTransactionDate(snapshot, transactionDateKey) {
+    const expected = uiDateKey(transactionDateKey);
+    return Boolean(expected) && [uiDateKey(snapshot?.checkIn), uiDateKey(snapshot?.checkOut)].includes(expected);
+  }
+
+  function rebaseInvoiceSession(snapshot, transactionDateKey) {
+    const checkIn = parseUiDateTime(snapshot?.checkIn);
+    const checkOut = parseUiDateTime(snapshot?.checkOut);
+    const dateMatch = String(transactionDateKey || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!checkIn || !checkOut || !dateMatch || checkOut < checkIn) return null;
+    const duration = checkOut.getTime() - checkIn.getTime();
+    const rebasedCheckIn = new Date(
+      Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3]),
+      checkIn.getHours(), checkIn.getMinutes()
+    );
+    const rebasedCheckOut = new Date(rebasedCheckIn.getTime() + duration);
+    return {
+      ...snapshot,
+      checkIn: formatUiDateTime(rebasedCheckIn),
+      checkOut: formatUiDateTime(rebasedCheckOut),
+      invoiceDateKey: String(transactionDateKey || ""),
+      listDateKey: String(transactionDateKey || ""),
+      sessionRebased: true,
+      originalCheckIn: snapshot.checkIn || "",
+      originalCheckOut: snapshot.checkOut || ""
+    };
   }
 
   function formatUiDateTime(value) {
@@ -4266,9 +5837,9 @@
     if (!latestScan?.ready) await scanInvoice();
     if (!latestScan?.ready) return;
     if (currentBankTransaction) {
-      if (!latestScan.invoiceDateKey) return setStatus("Không đọc được ngày trên phiếu; chưa thể xác nhận khớp ngày sao kê.", "error");
-      if (latestScan.invoiceDateKey !== currentBankTransaction.transactionDate) {
-        return setStatus(`Ngày phiếu ${latestScan.invoiceDateKey} không khớp ngày ngân hàng ${currentBankTransaction.transactionDate}.`, "error");
+      if (!invoiceBusinessDateKeys(latestScan).length) return setStatus("Không đọc được ngày trên phiếu; chưa thể xác nhận khớp ngày sao kê.", "error");
+      if (!invoiceMatchesTransactionDate(latestScan, currentBankTransaction.transactionDate)) {
+        return setStatus(`Ngày phiếu ${invoiceBusinessDateKeys(latestScan).join(" hoặc ")} không khớp ngày ngân hàng ${currentBankTransaction.transactionDate}.`, "error");
       }
     }
     if (!inventory.length) return setStatus("Không có ánh xạ đã xác nhận nào còn tồn.", "error");
@@ -4310,7 +5881,7 @@
     const predictedGrand = solution.actual + finalHourAmount + targets.vatTarget;
     const proposedCheckOut = recommendCheckOut(latestScan, hourFromTime, hourPricing.hourlyRate);
     const totalDifference = predictedGrand - targetGrand;
-    const dateMatched = !currentBankTransaction || latestScan.invoiceDateKey === currentBankTransaction.transactionDate;
+    const dateMatched = !currentBankTransaction || invoiceMatchesTransactionDate(latestScan, currentBankTransaction.transactionDate);
     const stockSufficient = selected.every(item => Number(item.newQty) <= Number(item.maxQty));
     const ratioRealistic = solution.actual > 0 &&
       finalHourAmount <= solution.actual * MAX_HOUR_TO_GOODS_RATIO;
@@ -4422,7 +5993,7 @@
           currentBankTransaction.status = "planned";
           currentBankTransaction.pendingPlan = {
             invoiceNo: latestScan.invoiceNo || currentBankTransaction.invoiceNo || "",
-            invoiceDateKey: latestScan.invoiceDateKey || currentBankTransaction.transactionDate || "",
+            invoiceDateKey: currentBankTransaction.transactionDate || latestScan.invoiceDateKey || "",
             goods: solution.actual,
             hour: finalHourAmount,
             hourBase: hourBounds.baseHour,
@@ -4485,7 +6056,12 @@
   async function init() {
     catalogDataset = await InvoiceMappingStore.loadCatalog(embeddedCatalog);
     webCatalog = catalogDataset.items || [];
-    mappingDataset = InvoiceMappingEngine.applyBusinessRules(await InvoiceMappingStore.load(embeddedDataset));
+    const storedMapping = await InvoiceMappingStore.load(embeddedDataset);
+    mappingDataset = InvoiceMappingEngine.applyBusinessRules({ ...storedMapping, tenant: pageTenantSlug });
+    sharedWarehouse = InvoiceSharedWarehouse.normalize(
+      await InvoiceMappingStore.loadSharedWarehouse(InvoiceSharedWarehouse.empty())
+    );
+    if (sharedWarehouse.initialized) mergeWarehouseIntoCurrentMapping();
     statementDataset = await InvoiceMappingStore.loadStatement();
     verificationLedger = await InvoiceMappingStore.loadLedger();
     stockStateMeta = await InvoiceMappingStore.loadStockStateMeta();

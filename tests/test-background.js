@@ -67,12 +67,12 @@ assert.strictEqual(downloadOptions.filename, "invoice-api-trace-2026-08-02T09-27
 let issuedResponse;
 assert.strictEqual(listener({
   type: "invoiceTarget.downloadBinary",
-  filename: "XuatKho_PhatHanh_2026-08-07_143012.xlsx",
+  filename: "XuatKho_ParisKimGiang_PhatHanh_2026-08-07_143012.xlsx",
   mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   base64: "UEsDBBQAAAAIAA=="
 }, {}, response => { issuedResponse = response; }), true);
 assert.strictEqual(issuedResponse.ok, true);
-assert.strictEqual(downloadOptions.filename, "XuatKho_PhatHanh_2026-08-07_143012.xlsx");
+assert.strictEqual(downloadOptions.filename, "XuatKho_ParisKimGiang_PhatHanh_2026-08-07_143012.xlsx");
 assert.match(downloadOptions.url, /^data:application\/vnd\.openxmlformats/);
 
 // Ten file la va base64 sai dinh dang deu bi chan.
@@ -85,7 +85,7 @@ listener({
 assert.strictEqual(rejected.ok, false);
 listener({
   type: "invoiceTarget.downloadBinary",
-  filename: "XuatKho_PhatHanh_2026-08-07_143012.xlsx",
+  filename: "XuatKho_ParisLinhDam_PhatHanh_2026-08-07_143012.xlsx",
   base64: "khong-phai-base64!!"
 }, {}, response => { rejected = response; });
 assert.strictEqual(rejected.ok, false);

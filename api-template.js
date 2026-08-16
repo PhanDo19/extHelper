@@ -122,6 +122,29 @@
         TRALAI: cash.TRALAI ?? payment.change
       });
     }
+    // Linh Dam tach luu noi dung (DoSave) va xac nhan thanh toan (DoSave2).
+    // Cho phep mau luu mang theo request thanh toan di kem.
+    if ((!payment || !payment.ready) && template?.paymentTemplate) {
+      const paymentDecoded = decodeBody(template.paymentTemplate);
+      const paymentFound = { paymentObjects: [], cashObjects: [], detailArrays: [] };
+      walkPayload(paymentDecoded, "$payment", paymentFound, 0);
+      const companionPayments = paymentFound.paymentObjects.map(item => ({
+        path: item.path,
+        ...paymentResult(item.value)
+      }));
+      let companion = companionPayments.find(item => item.ready) || companionPayments[0] || null;
+      if (companion && paymentFound.cashObjects.length) {
+        const cash = paymentFound.cashObjects[0].value;
+        companion = paymentResult({
+          TONGCONG: companion.grand,
+          TIENMAT: cash.TIENMAT ?? companion.cash,
+          KHACHDUA: cash.KHACHDUA ?? companion.customer,
+          TIENTHANHTOAN: cash.TIENTHANHTOAN ?? companion.paid,
+          TRALAI: cash.TRALAI ?? companion.change
+        });
+      }
+      if (companion?.ready) payment = companion;
+    }
     if (!payment) reasons.push("payment-fields-not-found");
     else if (!payment.ready) reasons.push("payment-values-not-equal");
     if (!found.detailArrays.length) reasons.push("invoice-detail-not-found");

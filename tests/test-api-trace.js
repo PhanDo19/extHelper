@@ -4,6 +4,7 @@ const vm = require("vm");
 
 const bridgeSource = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+const apiTemplateSource = fs.readFileSync(path.join(__dirname, "..", "api-template.js"), "utf8");
 const createFixture = JSON.parse(fs.readFileSync(
   path.join(__dirname, "..", "fixtures", "api", "create-invoice-init.sanitized.json"),
   "utf8"
@@ -35,12 +36,18 @@ const context = {
   }
 };
 vm.createContext(context);
+context.globalThis = context;
+vm.runInContext(apiTemplateSource, context);
 vm.runInContext(`
   let apiTraceArmedUntil = Date.now() + 60000;
   ${extractFunction(bridgeSource, "safeRequestHeaders")}
   ${extractFunction(bridgeSource, "shouldTraceApiRequest")}
   this.safeRequestHeaders = safeRequestHeaders;
   this.shouldTraceApiRequest = shouldTraceApiRequest;
+`, context);
+vm.runInContext(`
+  ${extractFunction(contentSource, "selectApiTemplateFromTrace")}
+  this.selectApiTemplateFromTrace = selectApiTemplateFromTrace;
 `, context);
 
 for (const url of [
@@ -75,6 +82,56 @@ if (headers.Authorization || headers.Cookie || headers["Proxy-Authorization"]) {
 }
 if (headers["Content-Type"] !== "application/x-www-form-urlencoded") {
   throw new Error("Content-Type unexpectedly removed.");
+}
+
+const temporarySave = {
+  method: "POST",
+  url: "http://banhang.thuanvietsoft.com/parislinhdam/AddEdit/DoSave?is_ajax=1",
+  status: 200,
+  bodyType: "text",
+  body: JSON.stringify({ clientMap: { Maps: [
+    { Field: "TONGCONG", Value: 60500 },
+    { Field: "TIENMAT", Value: 0 },
+    { Field: "KHACHDUA", Value: 60500 },
+    { Field: "TIENTHANHTOAN", Value: 0 },
+    { Field: "TRALAI", Value: 0 }
+  ], Grids: [{ Name: "detail", Data: [{ DONGIA: 60500, SLXUAT: 1 }] }] } })
+};
+const paymentSave = {
+  ...temporarySave,
+  body: JSON.stringify({ clientMap: { Maps: [
+    { Field: "TONGCONG", Value: 60500 },
+    { Field: "TIENMAT", Value: 60500 },
+    { Field: "KHACHDUA", Value: 60500 },
+    { Field: "TIENTHANHTOAN", Value: 60500 },
+    { Field: "TRALAI", Value: 0 }
+  ], Grids: [{ Name: "detail", Data: [{ DONGIA: 60500, SLXUAT: 1 }] }] } })
+};
+const splitPaymentSave = {
+  method: "POST",
+  url: "http://banhang.thuanvietsoft.com/parislinhdam/AddEdit/DoSave2?is_ajax=1",
+  status: 200,
+  bodyType: "text",
+  body: JSON.stringify({ clientMap: { Maps: [
+    { Field: "TONGCONG", Value: 60500 },
+    { Field: "TIENMAT", Value: 60500 },
+    { Field: "KHACHDUA", Value: 60500 },
+    { Field: "TIENTHANHTOAN", Value: 60500 },
+    { Field: "TRALAI", Value: 0 }
+  ] } })
+};
+const temporarySelection = context.selectApiTemplateFromTrace([temporarySave]);
+if (!temporarySelection || temporarySelection.analysis.ready || !temporarySelection.analysis.reasons.includes("payment-values-not-equal")) {
+  throw new Error("A temporary DoSave must be diagnosed instead of silently remaining 'no template'.");
+}
+const paymentSelection = context.selectApiTemplateFromTrace([paymentSave, temporarySave]);
+if (!paymentSelection?.analysis?.ready || paymentSelection.record !== paymentSave) {
+  throw new Error("Trace promotion must prefer the valid payment DoSave over a later temporary save.");
+}
+const splitSelection = context.selectApiTemplateFromTrace([temporarySave, splitPaymentSave]);
+if (!splitSelection?.analysis?.ready || !splitSelection.record.paymentTemplate ||
+    !/DoSave2/i.test(splitSelection.record.paymentTemplate.url)) {
+  throw new Error("Linh Dam split DoSave + DoSave2 flow must produce one ready composite template.");
 }
 
 for (const marker of ["it-arm-api-trace", "it-export-api-trace", "armApiTrace", "getApiTrace"]) {

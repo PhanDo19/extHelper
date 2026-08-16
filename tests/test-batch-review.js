@@ -39,6 +39,10 @@ const batchPlanDeps = [
   extractConst("MAX_PRODUCT_GROUP_SHARE"),
   extractConst("EXCLUDED_PRODUCT_GROUPS"),
   extractFunction("websiteHourAmountForMinutes"),
+  extractFunction("parseUiDateTime"),
+  extractFunction("uiDateKey"),
+  extractFunction("invoiceBusinessDateKeys"),
+  extractFunction("invoiceMatchesTransactionDate"),
   extractFunction("stableDiversityRank"),
   extractFunction("isAutoSellableStock"),
   extractFunction("normalizedProductName"),
@@ -47,9 +51,10 @@ const batchPlanDeps = [
   extractFunction("calculateSmallInvoiceBeerPlan"),
   extractFunction("minimumGoodsForHourRatio"),
   extractFunction("hourPlanningBounds"),
-  extractFunction("naturalMaxGoodsForHourRatio"),
+  extractFunction("maximumGoodsForHourRange"),
   extractFunction("preferredLineCount"),
   extractFunction("maxActiveLines"),
+  extractFunction("reachableGoodsUpperBound"),
   extractFunction("minimumGroupCount"),
   extractFunction("calculateBatchPlan"),
   "this.calculateBatchPlan = calculateBatchPlan;"
@@ -75,6 +80,14 @@ vm.runInContext(
 vm.runInContext(
   `${extractFunction("selectClosestInvoiceCandidate")}; ` +
   "this.selectClosestInvoiceCandidate = selectClosestInvoiceCandidate;",
+  sandbox
+);
+vm.runInContext(
+  `${extractFunction("parseUiDateTime")}; ${extractFunction("uiDateKey")}; ${extractFunction("formatUiDateTime")}; ` +
+  `${extractFunction("invoiceSessionTouchesTransactionDate")}; ${extractFunction("rebaseInvoiceSession")}; ` +
+  `${extractFunction("rankInvoiceCandidates")}; ` +
+  "this.invoiceSessionTouchesTransactionDate = invoiceSessionTouchesTransactionDate; " +
+  "this.rebaseInvoiceSession = rebaseInvoiceSession; this.rankInvoiceCandidates = rankInvoiceCandidates;",
   sandbox
 );
 vm.runInContext(
@@ -299,6 +312,30 @@ const tie = sandbox.selectClosestInvoiceCandidate([
   { invoiceNo: "HD002", grandTotal: 2510000 }
 ], 2500000);
 if (tie.invoiceNo !== "HD002") throw new Error("Equal distances must use invoice number as a stable tie-breaker.");
+const ranked = sandbox.rankInvoiceCandidates([
+  { invoiceNo: "HD010", grandTotal: 3000000 },
+  { invoiceNo: "HD002", grandTotal: 3100000 }
+], 3000000, "HD002");
+if (ranked[0].invoiceNo !== "HD002") throw new Error("A linked invoice must be inspected first before amount ranking.");
+const oldSession = {
+  invoiceNo: "HD0126060414",
+  checkIn: "09/06/2026 22:40",
+  checkOut: "09/06/2026 23:45"
+};
+if (sandbox.invoiceSessionTouchesTransactionDate(oldSession, "2026-06-10")) {
+  throw new Error("A room session from the prior day must not be treated as a matching statement-date session.");
+}
+const rebasedSession = sandbox.rebaseInvoiceSession(oldSession, "2026-06-10");
+if (rebasedSession.checkIn !== "10/06/2026 22:40" || rebasedSession.checkOut !== "10/06/2026 23:45") {
+  throw new Error("Fallback must shift both room timestamps to the statement date and preserve duration.");
+}
+const overnightSession = {
+  checkIn: "09/06/2026 23:40",
+  checkOut: "10/06/2026 00:45"
+};
+if (!sandbox.invoiceSessionTouchesTransactionDate(overnightSession, "2026-06-10")) {
+  throw new Error("An overnight session ending on the statement date must remain valid without rebasing.");
+}
 
 const solver = require(path.join(__dirname, "..", "solver.js"));
 const planBox = {
@@ -318,6 +355,20 @@ vm.createContext(planBox);
 vm.runInContext(batchPlanDeps, planBox);
 const thresholdPricing = { hourlyRate: 600000, hourStep: 6000 };
 const newInvoiceScan = { newInvoicePlanning: true, currentHour: 0 };
+const largeInvoiceMinGoods = 3180450;
+const largeInvoiceMaxGoods = planBox.maximumGoodsForHourRange(4892999, 500000, largeInvoiceMinGoods);
+if (largeInvoiceMaxGoods !== 4392999 || largeInvoiceMaxGoods <= largeInvoiceMinGoods) {
+  throw new Error("Cửa sổ tiền hàng lớn phải cho phép làm tròn theo bước giá thay vì khóa tại đúng cận 35%.");
+}
+if (planBox.maxActiveLines(3180450) !== 12) {
+  throw new Error("Hóa đơn lớn phải được phép dùng tối đa 12 mã để không xung đột giới hạn số lượng/HĐ.");
+}
+if (planBox.maxActiveLines(4990819) !== 16) {
+  throw new Error("Hóa đơn từ 4 triệu tiền hàng phải được nâng trần lên 16 mã.");
+}
+if (planBox.maxActiveLines(6500000) !== 20) {
+  throw new Error("Hóa đơn từ 6 triệu tiền hàng phải được nâng trần lên 20 mã.");
+}
 if (planBox.hourPlanningBounds(newInvoiceScan, thresholdPricing, 1000000).baseHour !== 300000) {
   throw new Error("Sao kÃª Ä‘Ãºng 1.000.000Ä‘ pháº£i giá»¯ mÃ³c Tiá»n giá» 30 phÃºt.");
 }
@@ -340,6 +391,26 @@ if (residualPlan.hour !== 605909) throw new Error("Phần dư sau VAT website v�
 if (residualPlan.hourFromTime !== 606000 || residualPlan.hourAdjustment !== -91) throw new Error("Sai chi tiết bù chênh Tiền giờ.");
 if (residualPlan.hourBaseAdjustment !== -6091) throw new Error("Sai mức thay đổi so với tiền giờ nền của phiếu.");
 if (residualPlan.tax !== 216091 || residualPlan.difference !== 0) throw new Error("VAT phải bằng 10% tổng trước VAT và tổng phải khớp tuyệt đối.");
+
+const overnightResidualPlan = planBox.calculateBatchPlan({
+  ready: true,
+  invoiceNo: "HD-OVERNIGHT",
+  invoiceDateKey: "2026-06-29",
+  checkIn: "29/06/2026 23:30",
+  checkOut: "30/06/2026 01:00",
+  currentHour: 612000,
+  currentGrand: 1734700,
+  taxRate: 10
+}, {
+  transactionDate: "2026-06-30",
+  credit: 2377000
+}, []);
+if (overnightResidualPlan.status !== "ready") {
+  throw new Error(`Phiếu qua đêm kết thúc đúng ngày sao kê phải sẵn sàng: ${overnightResidualPlan.reason || ""}`);
+}
+if (overnightResidualPlan.invoiceDateKey !== "2026-06-30") {
+  throw new Error("Phương án phiếu qua đêm phải lưu ngày nghiệp vụ theo sao kê.");
+}
 
 // Regression: statement 4,873,000 => pre-VAT 4,430,000 and the 35% singing
 // cap is 1,550,500. A 1,435,000 singing charge must be accepted even though
@@ -665,6 +736,29 @@ if (spreadPlan.goods + spreadPlan.hour + spreadPlan.tax !== 1004444) {
   throw new Error("Phương án ép tiền giờ vẫn phải khớp tuyệt đối số tiền sao kê.");
 }
 
+// Phiếu đã tồn tại nhưng API/form trả Tiền giờ = 0 phải dùng mốc dự phòng
+// 30/50 phút để solver chừa tiền giờ ngay từ đầu, không được ghép hết vào hàng.
+const existingZeroHourPlan = spreadBox.calculateBatchPlan({
+  ready: true,
+  invoiceNo: "HD-EXISTING-ZERO-HOUR",
+  invoiceDateKey: "2026-06-30",
+  currentHour: 0,
+  currentGrand: 0,
+  taxRate: 10
+}, {
+  transactionDate: "2026-06-30",
+  credit: 1004444
+}, realStock);
+if (existingZeroHourPlan.status !== "ready") {
+  throw new Error(`Phiếu cũ có Tiền giờ = 0 phải tự dùng nền dự phòng: ${existingZeroHourPlan.reason || ""}`);
+}
+if (existingZeroHourPlan.hour <= 0) {
+  throw new Error("Phiếu cũ có Tiền giờ = 0 sau tính toán phải có Tiền giờ dương.");
+}
+if (existingZeroHourPlan.goods + existingZeroHourPlan.hour + existingZeroHourPlan.tax !== 1004444) {
+  throw new Error("Phiếu cũ dùng nền giờ dự phòng vẫn phải khớp tuyệt đối sao kê.");
+}
+
 // Phiếu ĐÃ CÓ SẴN lấy Tiền giờ trên form làm nền. Giá trị đó thuộc hóa đơn cũ
 // nên thường lớn hơn cả tổng sao kê đang khớp (nền 600.000đ cho hóa đơn
 // 560.000đ, nền 900.000đ cho hóa đơn 1.180.000đ). Trước đây nhánh này không bị
@@ -813,6 +907,8 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
     batchPlans: [],
     inventory: [],
     pendingNewInvoice: null,
+    MAX_SESSION_CANDIDATE_PROBES: 3,
+    SESSION_CANDIDATE_PROBE_TIMEOUT_MS: 5000,
     formatMoney: value => String(Number(value) || 0),
     // Không có phiếu chưa xuất nào -> ép vào nhánh fallback mới.
     request: async (action, payload) => {
@@ -843,6 +939,9 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
       return usage;
     },
     selectClosestInvoiceCandidate: sandbox.selectClosestInvoiceCandidate,
+    rankInvoiceCandidates: sandbox.rankInvoiceCandidates,
+    invoiceSessionTouchesTransactionDate: sandbox.invoiceSessionTouchesTransactionDate,
+    rebaseInvoiceSession: sandbox.rebaseInvoiceSession,
     selectBatchReviewTransactions: sandbox.selectBatchReviewTransactions,
     calculateBatchPlan: scan => ({ status: "ready", invoiceNo: scan.invoiceNo, items: [], targetGrand: 1500000 }),
     calculateNewInvoiceBatchPlan: transaction => ({
@@ -979,7 +1078,7 @@ const baseTransaction = {
   }
   if (!source.includes('class="it-verify-batch"') || !source.includes("verifyBatchSavedInvoice") ||
       !source.includes('await request("openInvoiceCandidate"') ||
-      !source.includes("await verifySavedInvoice()") ||
+      !source.includes("await verifySavedInvoice(reopened)") ||
       !source.includes('if (currentBankTransaction?.status === "done")') ||
       !source.includes('await request("closeInvoiceDetail")')) {
     throw new Error("Batch Review phải có đối soát sau lưu bằng cách mở lại phiếu từ website.");
@@ -1013,6 +1112,17 @@ const baseTransaction = {
   if (!source.includes("!pendingNewInvoice.formAutoOpenedAt") ||
       !source.includes("pendingNewInvoice.formAutoOpenedAt = new Date().toISOString()")) {
     throw new Error("Mỗi phiên needs_new_invoice chỉ được tự mở phòng một lần.");
+  }
+  const resumeSavedPendingSource = extractFunction("resumeSavedPendingInvoice");
+  if (!resumeSavedPendingSource.includes("verifyBatchSavedInvoice") ||
+      !resumeSavedPendingSource.includes("pendingNewInvoice = null") ||
+      !resumeSavedPendingSource.includes('verifiedTransaction?.status !== "done"')) {
+    throw new Error("Phiếu mới đã lưu phải tự đọc lại, chỉ xóa phiên sau khi đối soát thành công.");
+  }
+  const restoreUiSessionSource = extractFunction("restoreUiSession");
+  if (!restoreUiSessionSource.includes("pendingNewInvoice.savedAt") ||
+      !restoreUiSessionSource.includes("await resumeSavedPendingInvoice()")) {
+    throw new Error("Khôi phục phiên phải tự đối soát phiếu mới đã được API lưu.");
   }
   const saveIndex = openNewInvoiceSource.indexOf("await saveBatchUiSession({ panelOpen: true, pendingNewInvoice:");
   const navigateIndex = openNewInvoiceSource.indexOf("await sendRuntimeMessage({");

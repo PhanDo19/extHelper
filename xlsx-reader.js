@@ -140,7 +140,8 @@
     return headers.findIndex(header => vietnamesePatterns.some(pattern => header.includes(pattern)));
   }
 
-  function parseBankRows(rows) {
+  function parseBankRows(rows, options = {}) {
+    const tenantSlug = String(options.tenantSlug || "").trim().toLowerCase();
     const hasCreditHeader = headers =>
       headers.some(value => /(^| )credit($| )/.test(value)) ||
       headers.some(value => CREDIT_PATTERNS.some(pattern => value.includes(pattern)));
@@ -170,12 +171,24 @@
     // Ban tieng Viet co "Ngay hieu luc" (ky sao ke) lech "Ngay giao dich" (luc
     // tien thuc chuyen): giao dich 30/05 nam trong sao ke thang 06. Lay ngay
     // hieu luc lam ngay lap phieu de moi dong deu nam gon trong ky cua file.
-    const effectiveDateColumn = columns.requested >= 0 ? columns.requested : columns.transaction;
+    // Kim Giang exports both "Requesting date" (the customer's execution
+    // timestamp) and "Transaction date" (the accounting date shown on the
+    // website invoice list). Linh Dam's Vietnamese export instead uses
+    // "Ngay hieu luc" as the accounting/document date. Keep these tenant
+    // semantics separate so importing one branch cannot shift another.
+    const isKimGiang = tenantSlug === "pariskimgiang";
+    const effectiveDateColumn = isKimGiang
+      ? columns.transaction
+      : (columns.requested >= 0 ? columns.requested : columns.transaction);
     return rows.slice(headerIndex + 1).map((row, index) => {
       const credit = money(row[columns.credit]);
       const description = String(row[columns.description] || "").trim();
       const transactionDate = dateKey(row[effectiveDateColumn], false) || dateKey(row[columns.transaction], false);
-      const requestedAt = dateKey(row[columns.transaction], true) || dateKey(row[columns.requested], true);
+      // In Vietnamese statements, "Ngay giao dich" contains the real event
+      // timestamp while "Ngay hieu luc" is the accounting/document date.
+      const requestedAt = isKimGiang
+        ? (dateKey(row[columns.requested], true) || dateKey(row[columns.transaction], true))
+        : (dateKey(row[columns.transaction], true) || dateKey(row[columns.requested], true));
       const reference = String(row[columns.reference] || "").trim();
       const id = reference || `${requestedAt}|${transactionDate}|${credit}|${description}`;
       const transferLike = /chuyen tien|chuyen tie n|chuyen khoan|transfer|qr|mbvcb|ibft|liobank/i.test(normalizedHeader(description));
@@ -198,8 +211,8 @@
     }).filter(item => item.credit > 0 && item.transactionDate);
   }
 
-  async function parseBankStatementWorkbook(file) {
-    return parseBankRows(await readFirstSheet(file));
+  async function parseBankStatementWorkbook(file, options = {}) {
+    return parseBankRows(await readFirstSheet(file), options);
   }
 
   root.InvoiceXlsxReader = { parseStockWorkbook, parseWebCatalogWorkbook, parseBankStatementWorkbook, parseBankRows, dateKey };

@@ -223,8 +223,15 @@
     return null;
   }
 
+  function invoiceFormScope() {
+    const totalInput = suffixInput("numTONGCONG");
+    if (!totalInput) return document;
+    return totalInput.closest('[role="dialog"],.k-window-content,.ui-dialog-content,form') || document;
+  }
+
   function findInvoiceTimes() {
-    const inputs = Array.from(document.querySelectorAll("input")).filter(input => isVisible(input) && parseDateTime(input.value));
+    const inputs = Array.from(invoiceFormScope().querySelectorAll("input"))
+      .filter(input => isVisible(input) && parseDateTime(input.value));
     if (inputs.length < 2) return { checkIn: "", checkOut: "", durationMinutes: 0 };
     const checkInInput = inputs.find(input => /GIOVAO|NGAYVAO|CHECKIN|START/i.test(`${input.id} ${input.name}`)) || inputs[0];
     const remaining = inputs.filter(input => input !== checkInInput);
@@ -417,6 +424,128 @@
       expiresAt: apiTraceArmedUntil ? new Date(apiTraceArmedUntil).toISOString() : "",
       page: location.href,
       records: apiTraceRecords.map(record => ({ ...record }))
+    };
+  }
+
+  function normalizeProductLabel(value) {
+    return String(value || "").normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[đĐ]/g, match => match === "đ" ? "d" : "D")
+      .replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  const PRODUCT_TABLE_ID_FOR_CREATE = "c07a4b54-e177-40d9-b077-c140fd4641d9";
+
+  function productFormDataFromHtml(source) {
+    const text = String(source || "");
+    const tableAt = text.indexOf(PRODUCT_TABLE_ID_FOR_CREATE);
+    if (tableAt < 0) return null;
+    const marker = text.lastIndexOf("new DataTransferJs(", tableAt);
+    if (marker < 0) return null;
+    const formData = extractJsonObject(text, marker);
+    return formData && String(formData._AddEditTableID) === PRODUCT_TABLE_ID_FOR_CREATE ? formData : null;
+  }
+
+  function productFormDataFromDocument() {
+    const scripts = Array.from(document.scripts).map(script => script.textContent || "").reverse();
+    for (const source of scripts) {
+      const formData = productFormDataFromHtml(source);
+      if (formData) return formData;
+    }
+    return null;
+  }
+
+  async function loadProductCreateFormData() {
+    const current = productFormDataFromDocument();
+    if (current) return current;
+    const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+    const query = new URLSearchParams({
+      TableID: PRODUCT_TABLE_ID_FOR_CREATE,
+      RecordID: "",
+      Loai: "-1",
+      MaxTab: "0",
+      NOTITLE: "1",
+      is_dialog: "1"
+    });
+    const response = await window.fetch(`${location.origin}/${base}/AddEdit?${query}`, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest" }
+    });
+    const html = await response.text();
+    if (!response.ok) throw new Error(`Khong tai duoc mau tao mat hang (HTTP ${response.status}).`);
+    const formData = productFormDataFromHtml(html);
+    if (!formData) throw new Error("Website da doi mau form mat hang; khong doc duoc DataTransferJs.");
+    return formData;
+  }
+
+  function productLookupId(formData, controlPrefix, labelOrValue) {
+    const wanted = normalizeProductLabel(labelOrValue);
+    const control = Object.entries(formData || {}).find(([key, value]) =>
+      key.startsWith(controlPrefix) && Array.isArray(value?.LookupData)
+    )?.[1];
+    const item = (control?.LookupData || []).find(row =>
+      String(row.ID) === String(labelOrValue) || normalizeProductLabel(row.NAME) === wanted
+    );
+    if (!item) throw new Error(`Khong tim thay "${labelOrValue}" trong ${controlPrefix}.`);
+    return String(item.ID);
+  }
+
+  async function createProductViaApi(product) {
+    const data = product || {};
+    const webCode = String(data.webCode || "").trim();
+    const name = String(data.name || "").trim();
+    const price = Math.round(Number(data.price) || 0);
+    if (!webCode || !name || price <= 0) throw new Error("Ma web, ten va gia ban la bat buoc.");
+    const formData = await loadProductCreateFormData();
+    const unitId = productLookupId(formData, "lueDDONVITINHID", data.unit || "goi");
+    const groupId = productLookupId(formData, "lueDNHOMMATHANGID", data.group || "DOKHO");
+    // Dung ID on dinh thay vi ten hien thi de khong phu thuoc encoding.
+    const typeId = productLookupId(formData, "lueDLOAIMATHANGID", data.typeId ?? data.type ?? "0");
+    const required = (formData.mapper?.Maps || []).filter(map => map.AllowEmpty === false);
+    const knownRequired = new Set(["CODE", "NAME", "DDONVITINHID", "DNHOMMATHANGID"]);
+    const unsupported = required.filter(map => !knownRequired.has(String(map.Field || "").toUpperCase()));
+    if (unsupported.length) {
+      throw new Error(`Form co them truong bat buoc: ${unsupported.map(map => map.Field).join(", ")}.`);
+    }
+    const maps = setMapValues(formData.mapper?.Maps, {
+      CODE: webCode,
+      NAME: name,
+      DDONVITINHID: unitId,
+      DNHOMMATHANGID: groupId,
+      DLOAIMATHANGID: typeId,
+      GIABAN: price,
+      GIANHAP: Math.max(0, Math.round(Number(data.costPrice) || 0)),
+      NOTE: String(data.note || "Tao tu anh xa kho Invoice Target").slice(0, 255),
+      TAMKHOA: 0,
+      THUEMACDINH: Math.max(0, Number(data.taxRate) || 0)
+    });
+    const payload = {
+      mode: 0,
+      clientMap: {
+        TableID: PRODUCT_TABLE_ID_FOR_CREATE,
+        ID: "",
+        Maps: maps,
+        Grids: [],
+        CustomPostTable: [],
+        CustomPost: {}
+      },
+      TableID: PRODUCT_TABLE_ID_FOR_CREATE,
+      ID: "",
+      Loai: Number.isFinite(Number(formData.Loai)) ? Number(formData.Loai) : -1
+    };
+    const result = await postDoSavePayload(payload);
+    return {
+      created: true,
+      id: String(result.body?.Tag?.ID || ""),
+      webCode,
+      name,
+      unit: String(data.unit || ""),
+      group: String(data.group || ""),
+      type: String(data.type || "Mat hang kiem vat tu"),
+      price,
+      httpStatus: result.httpStatus,
+      endpoint: result.endpoint
     };
   }
 
@@ -747,6 +876,10 @@
   async function applyInvoicePlan(detail) {
     await closeTransientQuantityDialogs(500);
     try {
+      if (detail?.sessionRebased && detail.checkIn && detail.checkOut) {
+        applyInvoiceTimes(detail.checkIn, detail.checkOut, false);
+        await wait(500);
+      }
       const preservedFormState = captureInvoiceFormState();
       const replaced = await replaceInvoiceItems(detail.items || []);
       restoreInvoiceFormState(preservedFormState);
@@ -826,7 +959,7 @@
   }
 
   function findInvoiceDate() {
-    const inputs = Array.from(document.querySelectorAll('input'))
+    const inputs = Array.from(invoiceFormScope().querySelectorAll('input'))
       .filter(input => isVisible(input) && normalizeDateKey(input.value));
     if (!inputs.length) return { value: "", key: "" };
     const preferred = inputs.find(input => /GIOVAO|NGAYVAO|CHECKIN|START/i.test(`${input.id} ${input.name}`)) ||
@@ -1618,10 +1751,78 @@
   // Phieu do extension lap deu bat nguon tu giao dich chuyen khoan trong sao ke,
   // nen phuong thuc thanh toan ghi la TM/CK thay vi TM.
   const INVOICE_PAYMENT_METHOD = "TM/CK";
+  const DEFAULT_INVOICE_BUYER = "Kh\u00e1ch l\u1ebb - Kh\u00f4ng l\u1ea5y h\u00f3a \u0111\u01a1n";
+  const DEFAULT_INVOICE_ADDRESS = "Kh\u00e1ch kh\u00f4ng cung c\u1ea5p th\u00f4ng tin";
   const SALES_TABLE_ID = "d56b4b85-68c8-44c1-947d-9f3899e55a7c";
   const PRODUCT_GRID_TABLE_ID = "c07a4b54-e177-40d9-b077-c140fd4641d9";
+  const PRODUCT_CATALOG_MENU_ID = "c4059f67-16f0-4088-a639-9bdf906585de";
   const SALES_FORM_ID = "aaf252bb-ed11-4077-8852-5e453a6881a3";
   const SALES_MENU_ID = "f3ca052a-082b-49f6-8d4f-93b8a525e571";
+
+  async function fetchLatestProductCatalog() {
+    const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
+    const cols = [
+      "rowindex", "CODE", "NAME", "DDONVITINHID", "GIABAN", "DLOAIMATHANGID",
+      "DNHOMMATHANGID", "TIMECREATED", "GIATOITHIEUVUA", "THUEMACDINH",
+      "HIENTHITRENEMENU", "HOAHONG", "THOIGIAN", "DNHACUNGCAPID", "TILEHOAHONG",
+      "GIATOITHIEU", "GIATOITHIEULON", "CORFID", "KHOILUONG", "CHOTHUE",
+      "COCHAMSOCSAUMUA", "TUNGAY", "NGUOI_TAO", "GIABANVUA", "QUYDOIVUA",
+      "DDONVITINHLONID", "GIANHAPLON", "DDONVITINHVUAID", "QUYDOILON",
+      "GIABANLON", "GIANHAPVUA", "TIMEMODIFIED"
+    ];
+    const payload = {
+      GUID: PRODUCT_GRID_TABLE_ID,
+      cols,
+      SourceType: 2,
+      FormID: "",
+      RecordID: "",
+      AddEditTableID: "",
+      filters: {},
+      MenuID: PRODUCT_CATALOG_MENU_ID,
+      TableID: PRODUCT_GRID_TABLE_ID,
+      skip: 0,
+      take: "1000",
+      page: 1,
+      pageSize: "1000",
+      quickFilter: "",
+      filterCategoryID: "TatCa"
+    };
+    const response = await window.fetch(`${location.origin}/${base}/DataGrid/GetGridData`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify(payload)
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`Không tải được danh mục mặt hàng (HTTP ${response.status}).`);
+    let result;
+    try { result = JSON.parse(text); } catch (_) {
+      throw new Error("Website trả về danh mục mặt hàng không đúng định dạng JSON.");
+    }
+    let rows = Array.isArray(result?.Data) ? result.Data : null;
+    if (!rows && typeof result?.strData === "string") {
+      try {
+        const nested = JSON.parse(result.strData);
+        rows = Array.isArray(nested) ? nested : nested?.Data;
+      } catch (_) {}
+    }
+    if (!Array.isArray(rows)) throw new Error(result?.message || "Không tìm thấy danh sách mặt hàng trong phản hồi website.");
+    const items = rows.map(row => ({
+      webId: String(row.ID || ""),
+      webCode: String(row.CODE || "").trim(),
+      webName: String(row.NAME || "").trim(),
+      webUnit: String(row.DDONVITINHID__NAME || row.DDONVITINH_NAME || "").trim(),
+      webPrice: Math.round(Number(row.GIABAN) || 0),
+      webType: String(row.DLOAIMATHANGID__NAME || row.DLOAIMATHANG_NAME || "").trim(),
+      webGroup: String(row.DNHOMMATHANGID__NAME || row.DNHOMMATHANG_NAME || "").trim(),
+      modifiedAt: String(row.TIMEMODIFIED || "")
+    })).filter(item => item.webCode && item.webName);
+    if (!items.length) throw new Error("Website trả về danh mục rỗng; dữ liệu cũ vẫn được giữ nguyên.");
+    return { items, total: Number(result.Total || items.length), tenant: base };
+  }
 
   function extractJsonObject(source, startAt) {
     const start = source.indexOf("{", startAt);
@@ -1856,6 +2057,16 @@
       `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
   }
 
+  function localUsDateTime(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+    const pad = value => String(value).padStart(2, "0");
+    const hour24 = date.getHours();
+    const hour12 = hour24 % 12 || 12;
+    const marker = hour24 >= 12 ? "PM" : "AM";
+    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()} ` +
+      `${hour12}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${marker}`;
+  }
+
   function localDateKey(date) {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
     const pad = value => String(value).padStart(2, "0");
@@ -1865,7 +2076,20 @@
   function localMidnightIso(dateKey) {
     const match = String(dateKey || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!match) return "";
-    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+    // All shops operate in Viet Nam (UTC+7). Do not depend on the computer's
+    // current timezone: 00:00 on the document day must be 17:00Z on the
+    // previous UTC day (for example 2026-06-01 -> 2026-05-31T17:00:00.000Z).
+    const VIETNAM_UTC_OFFSET_HOURS = 7;
+    const utcMilliseconds = Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      -VIETNAM_UTC_OFFSET_HOURS,
+      0,
+      0,
+      0
+    );
+    const date = new Date(utcMilliseconds);
     return Number.isNaN(date.getTime()) ? "" : date.toISOString();
   }
 
@@ -1877,6 +2101,12 @@
   function parseStoredDateTime(value) {
     const text = String(value || "").trim();
     if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(text)) {
+      const date = new Date(text);
+      if (!Number.isNaN(date.getTime())) return date;
+    }
+    // GIOTHANHTOAN của website dùng định dạng US có AM/PM (M/D/YYYY h:mm:ss A).
+    // Không đưa chuỗi này qua parseDateTime vì hàm đó hiểu số đầu là ngày.
+    if (/\b(?:AM|PM)\b/i.test(text)) {
       const date = new Date(text);
       if (!Number.isNaN(date.getTime())) return date;
     }
@@ -1960,9 +2190,8 @@
       if (storedLocalDateKey(fields.NGAY) !== invoiceDateKey) {
         throw new Error(`Ngay hoa don trong request chua khop ${invoiceDateKey}.`);
       }
-      if (!expectedCheckIn || !expectedCheckOut || expectedCheckOut <= expectedCheckIn ||
-          localDateKey(expectedCheckIn) !== invoiceDateKey) {
-        throw new Error("Gio vao/ra cua phuong an moi khong hop le voi ngay giao dich.");
+      if (!expectedCheckIn || !expectedCheckOut || expectedCheckOut <= expectedCheckIn) {
+        throw new Error("Phuong an thieu Gio vao/Ra hop le de luu va doi soat.");
       }
       const actualCheckIn = parseStoredDateTime(fields.BATDAUPHONGCUOI || fields.BATDAU);
       const actualCheckOut = parseStoredDateTime(fields.KETTHUC);
@@ -1970,6 +2199,14 @@
           Math.abs(actualCheckIn.getTime() - expectedCheckIn.getTime()) >= 60000 ||
           Math.abs(actualCheckOut.getTime() - expectedCheckOut.getTime()) >= 60000) {
         throw new Error("Gio vao/ra trong request chua khop phuong an da Accept.");
+      }
+      // Ngày chứng từ và ca sử dụng phòng là hai dữ liệu độc lập đối với phiếu
+      // đã có. Vì vậy GIOTHANHTOAN phải khớp Giờ ra đã Accept, không được ép
+      // về ngày danh sách. Phiếu mới vẫn có expectedCheckOut thuộc ngày sao kê.
+      const actualPaymentAt = parseStoredDateTime(fields.GIOTHANHTOAN);
+      if (!actualPaymentAt ||
+          Math.abs(actualPaymentAt.getTime() - expectedCheckOut.getTime()) >= 60000) {
+        throw new Error("Gio thanh toan trong request chua khop Gio ra cua phuong an da Accept.");
       }
     }
 
@@ -2013,12 +2250,16 @@
     const checkIn = parseDateTime(expected?.checkIn);
     const checkOut = parseDateTime(expected?.checkOut);
     const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey) || localDateKey(checkIn);
-    if (expected?.requiresFreshDraft && (!invoiceDateKey || !checkIn || !checkOut || checkOut <= checkIn)) {
-      throw new Error("Phuong an phieu moi thieu ngay hoa don hoac gio vao/ra hop le.");
+    if ((invoiceDateKey || expected?.requiresFreshDraft) && (!invoiceDateKey || !checkIn || !checkOut || checkOut <= checkIn)) {
+      throw new Error("Phuong an thieu ngay hoa don hoac Gio vao/Ra hop le; khong the luu va doi soat.");
     }
     const overrides = {
       TIENHANG: goods,
       TIENGIO: hour,
+      // Website duy tri dong thoi tong tien gio va tien gio cua phong cuoi.
+      // Neu chi doi TIENGIO, request van HTTP 200 nhung khi doc lai co the
+      // bi website khoi phuc gia tri cu tu TIENGIOPHONGCUOI.
+      TIENGIOPHONGCUOI: hour,
       TIENTHUE: tax,
       TILETHUE: 10,
       TILEGIAMGIA: 0,
@@ -2031,13 +2272,18 @@
       TIENTHANHTOAN: grand,
       TRALAI: 0,
       // Phieu tu phuong an deu la khach chuyen khoan roi doi soat qua sao ke.
-      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD
+      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD,
+      NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
+      DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS
     };
     if (invoiceDateKey && checkIn && checkOut) {
       overrides.NGAY = localMidnightIso(invoiceDateKey);
       overrides.BATDAUPHONGCUOI = checkIn.toISOString();
       overrides.KETTHUC = checkOut.toISOString();
-      overrides.BATDAU = localServerDateTime(checkIn);
+      overrides.GIOTHANHTOAN = localUsDateTime(checkOut);
+      // Request chinh thuc cua website gui BATDAU cung dang ISO UTC nhu
+      // BATDAUPHONGCUOI, khong phai chuoi gio local.
+      overrides.BATDAU = checkIn.toISOString();
     }
     const maps = (formData.mapper?.Maps || []).map(map => {
       const field = String(map.Field || "").toUpperCase();
@@ -2070,6 +2316,9 @@
         }],
         CustomPost: {
           MODEQUANLY: Number(formData.ModeQuanLy) || 30,
+          // GioClient la thoi diem client thuc su gui request (audit timestamp),
+          // khong phai ngay nghiep vu cua hoa don. Ngay qua khu duoc luu rieng
+          // qua NGAY/GIOTHANHTOAN/BATDAU/KETTHUC va NGAYTHUCHIEN.
           GioClient: localServerDateTime(new Date())
         }
       },
@@ -2267,7 +2516,7 @@
     return postCurrentInvoiceViaApi(expected, detailRows);
   }
 
-  function freshSessionDetailRows(items, products) {
+  function freshSessionDetailRows(items, products, invoiceDateKey) {
     return (items || []).map((item, index) => {
       const code = String(item.code || "").trim();
       const product = products.get(code);
@@ -2301,12 +2550,13 @@
         ID: `it${Date.now().toString(36)}${index}`,
         TIENTHUEMATHANG: 0,
         THANHTIEN: qty * price,
+        NGAYTHUCHIEN: invoiceDateKey ? `${invoiceDateKey} 00:00:00` : null,
         THUTU: index + 1
       };
     });
   }
 
-  function finalPaymentDetailRows(sessionRows, persistedIds, warehouseId, taxRate) {
+  function finalPaymentDetailRows(sessionRows, persistedIds, warehouseId, taxRate, invoiceDateKey) {
     return sessionRows.map((row, index) => {
       const persistedId = String(persistedIds?.[row.ID] || "").trim();
       if (!isGuid(persistedId)) throw new Error(`Website khong tra ID dong hang ${row.DMATHANG_CODE}.`);
@@ -2339,7 +2589,7 @@
         DNHANVIEN_NAME: null,
         GIOHATCOMBO: null,
         TENHANG: row.TENHANG,
-        NGAYTHUCHIEN: null,
+        NGAYTHUCHIEN: invoiceDateKey ? `${invoiceDateKey} 00:00:00` : null,
         SLDAXUAT: 0,
         SUDUNGNGAY: null,
         LOAIDONVITINH: 0,
@@ -2405,7 +2655,7 @@
     return { body, responseText, endpoint: new URL(endpoint).pathname, httpStatus: response.status };
   }
 
-  async function createAndPayFreshInvoiceViaApi(expected) {
+  async function createAndPayFreshInvoiceViaApiLegacy(expected) {
     const formData = currentFormData({ allowBlankRecordId: true });
     if (isGuid(formDataRecordId(formData))) {
       throw new Error("Form hien tai da co ID; khong duoc dung flow tao phieu moi hai buoc.");
@@ -2429,14 +2679,15 @@
     const warehouseId = String(baseFields.DKHOXUATID || "").trim();
     if (!isGuid(roomId) || !isGuid(warehouseId)) throw new Error("Form phong moi thieu DBANID hoac DKHOXUATID.");
     const products = await fetchProductRowsForApiPlan(expected.items, warehouseId);
-    const sessionRows = freshSessionDetailRows(expected.items, products);
+    const sessionRows = freshSessionDetailRows(expected.items, products, invoiceDateKey);
     const calculatedGoods = sessionRows.reduce((sum, row) => sum + row.THANHTIEN, 0);
     if (calculatedGoods !== goods) throw new Error("Tong chi tiet hang khong bang tien hang cua phuong an.");
     const commonOverrides = {
       BATDAUPHONGCUOI: checkIn.toISOString(),
       KETTHUC: checkOut.toISOString(),
-      BATDAU: localServerDateTime(checkIn),
+      BATDAU: checkIn.toISOString(),
       NGAY: localMidnightIso(invoiceDateKey),
+      GIOTHANHTOAN: localUsDateTime(checkOut),
       TILETHUE: taxRate,
       TILEGIAMGIA: 0,
       TIENGIAMGIA: 0,
@@ -2448,7 +2699,9 @@
       TIENGIOPHONGCUOI: hour,
       TIENTHUE: tax,
       TONGCONG: grand,
-      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD,
+      PHUONGTHUCTT: String(INVOICE_PAYMENT_METHOD),
+      NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
+      DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS,
       SOHD: "",
       MODE: 1
     };
@@ -2474,12 +2727,13 @@
             DONGIA: row.DONGIA,
             THANHTIEN: 0,
             TENHANG: row.TENHANG,
-            GIOCLIENT: localServerDateTime(new Date()).replace(/-/g, "/"),
+            // Fresh DoSave derives NGAY from this client time.
+            GIOCLIENT: localServerDateTime(checkOut).replace(/-/g, "/"),
             CHUCNANG: "Su dung dich vu",
             THIETBI: ""
           }))
         }],
-        CustomPost: { MODEQUANLY: 0, GioClient: localServerDateTime(new Date()) }
+        CustomPost: { MODEQUANLY: 0, GioClient: localServerDateTime(checkOut) }
       },
       TableID: SALES_TABLE_ID,
       ID: "",
@@ -2490,7 +2744,7 @@
     if (!isGuid(sessionTag.LASTSAVEID) || !String(sessionTag.NAME || "").trim()) {
       throw new Error("Luu phien thanh cong nhung thieu NAME hoac LASTSAVEID.");
     }
-    const paymentRows = finalPaymentDetailRows(sessionRows, sessionTag.detail, warehouseId, taxRate);
+    const paymentRows = finalPaymentDetailRows(sessionRows, sessionTag.detail, warehouseId, taxRate, invoiceDateKey);
     const paymentPayload = {
       mode: 2,
       clientMap: {
@@ -2515,7 +2769,8 @@
         ],
         CustomPost: {
           MODEQUANLY: 0,
-          GioClient: localServerDateTime(new Date()),
+          // Keep the newly-created invoice on the accepted bank-statement day.
+          GioClient: localServerDateTime(checkOut),
           DVOUCHERID: null,
           XUATHOADON: false
         }
@@ -2539,6 +2794,144 @@
       sessionHttpStatus: session.httpStatus,
       rowCount: paymentRows.length,
       targetGrand: grand
+    };
+  }
+
+  // Deprecated experiment: sending mode=2 with a blank ID creates a valid
+  // invoice number, but Linh Dam stamps the invoice-list field NGAY with the
+  // server's current day. Keep this implementation only as documentation; the
+  // live action below uses the website's two-step session/payment protocol.
+  async function createAndPayFreshInvoiceViaApiOneRequest(expected) {
+    const formData = currentFormData({ allowBlankRecordId: true });
+    if (isGuid(formDataRecordId(formData))) {
+      throw new Error("Form hien tai da co ID; khong duoc dung flow tao phieu moi.");
+    }
+    const grand = Math.round(Number(expected?.targetGrand) || 0);
+    const goods = Math.round(Number(expected?.targetGoods) || 0);
+    const hour = Math.round(Number(expected?.targetHour) || 0);
+    const tax = Math.round(Number(expected?.targetTax) || 0);
+    const taxRate = 10;
+    const checkIn = parseDateTime(expected?.checkIn);
+    const checkOut = parseDateTime(expected?.checkOut);
+    const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey);
+    if (!grand || goods <= 0 || hour <= 0 || tax < 0 || goods + hour + tax !== grand) {
+      throw new Error("Tong = tien hang + tien gio + VAT cua phuong an API khong hop le.");
+    }
+    if (!invoiceDateKey || !checkIn || !checkOut || checkOut <= checkIn || localDateKey(checkIn) !== invoiceDateKey) {
+      throw new Error("Ngay va gio vao/ra cua phieu moi khong hop le.");
+    }
+    const baseFields = mapObject(formData.mapper?.Maps);
+    const roomId = String(baseFields.DBANID || "").trim();
+    const warehouseId = String(baseFields.DKHOXUATID || "").trim();
+    if (!isGuid(roomId) || !isGuid(warehouseId)) throw new Error("Form phong moi thieu DBANID hoac DKHOXUATID.");
+    const products = await fetchProductRowsForApiPlan(expected.items, warehouseId);
+    const rows = freshSessionDetailRows(expected.items, products, invoiceDateKey);
+    if (rows.reduce((sum, row) => sum + row.THANHTIEN, 0) !== goods) {
+      throw new Error("Tong chi tiet hang khong bang tien hang cua phuong an.");
+    }
+    const overrides = {
+      BATDAUPHONGCUOI: checkIn.toISOString(),
+      KETTHUC: checkOut.toISOString(),
+      BATDAU: checkIn.toISOString(),
+      NGAY: localMidnightIso(invoiceDateKey),
+      GIOTHANHTOAN: localUsDateTime(checkOut),
+      TILETHUE: taxRate,
+      TILEGIAMGIA: 0,
+      TIENGIAMGIA: 0,
+      TILEGIAMGIAGIO: 0,
+      TIENGIAMGIAGIO: 0,
+      TIENGIAMGIATONG: 0,
+      TIENHANG: goods,
+      TIENGIO: hour,
+      TIENGIOPHONGCUOI: hour,
+      TIENTHUE: tax,
+      TONGCONG: grand,
+      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD,
+      NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
+      DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS,
+      SOHD: "",
+      MODE: 1,
+      // Website uses this exact Vietnamese sentinel to generate the invoice
+      // number.  "Tu dong" is treated as a normal/invalid value and the API
+      // can return an ID without Tag.NAME, leaving the fresh-create flow stuck.
+      NAME: "Tự động",
+      LASTSAVEID: "",
+      DIENGIAI: ""
+    };
+    const payload = {
+      mode: 2,
+      clientMap: {
+        TableID: SALES_TABLE_ID,
+        ID: "",
+        Maps: setMapValues(formData.mapper?.Maps, overrides),
+        Grids: [{ Name: "detail", Data: rows }],
+        CustomPostTable: [
+          { Name: "ThanhToan", Data: [
+            { truong: "KHACHDUA", value: grand },
+            { truong: "TRALAI", value: 0 }
+          ] },
+          { Name: "LoaiQuy", Data: [
+            { truong: "TIENMAT", value: grand },
+            { truong: "TIENTHANHTOAN", value: grand }
+          ] },
+          { Name: "LuuVet", Data: rows.map(row => ({
+            PHANLOAI: 4,
+            BAN: String(suffixInput("lblTENBAN")?.textContent || ""),
+            NOTE: `Them mat hang '${row.TENHANG}' vao bill, so luong: ${row.SLXUATCHUAQUYDOI}`,
+            SOLUONG: row.SLXUATCHUAQUYDOI,
+            DONGIA: row.DONGIA,
+            THANHTIEN: 0,
+            TENHANG: row.TENHANG,
+            GIOCLIENT: localServerDateTime(checkOut).replace(/-/g, "/"),
+            CHUCNANG: "Su dung dich vu",
+            THIETBI: ""
+          })) }
+        ],
+        CustomPost: {
+          MODEQUANLY: 0,
+          GioClient: localServerDateTime(checkOut),
+          DVOUCHERID: null,
+          XUATHOADON: false
+        }
+      },
+      TableID: SALES_TABLE_ID,
+      ID: "",
+      Loai: 0
+    };
+    const saved = await postDoSavePayload(payload);
+    const tag = saved.body.Tag || {};
+    if (!isGuid(tag.ID) || !String(tag.NAME || "").trim()) {
+      const diagnostic = [
+        `code=${String(saved.body?.code ?? "")}`,
+        `ID=${String(tag.ID || "(trong)")}`,
+        `NAME=${String(tag.NAME || "(trong)")}`,
+        `LASTSAVEID=${String(tag.LASTSAVEID || "(trong)")}`
+      ].join(", ");
+      throw new Error(`API tao va thanh toan phieu moi thieu ID hoac so phieu (${diagnostic}).`);
+    }
+    return {
+      saved: true,
+      createdFresh: true,
+      invoiceNo: String(tag.NAME),
+      savedRecordId: String(tag.ID),
+      lastSaveId: String(tag.LASTSAVEID || ""),
+      endpoint: saved.endpoint,
+      httpStatus: saved.httpStatus,
+      rowCount: rows.length,
+      targetGrand: grand
+    };
+  }
+
+  // Use the same two server phases as the website: first create a sale
+  // session (mode=0), then pay that exact record (mode=2). Both requests carry
+  // the accepted bank-statement day. GioClient controls the generated invoice
+  // number/audit time; NGAY is persisted again while paying the created ID.
+  async function createAndPayFreshInvoiceViaApi(expected) {
+    const result = await createAndPayFreshInvoiceViaApiLegacy(expected);
+    return {
+      ...result,
+      invoiceDateKey: normalizeDateKey(expected?.invoiceDateKey),
+      createProtocol: "mode0-then-mode2"
     };
   }
 
@@ -2762,6 +3155,29 @@
     };
   }
 
+  // kiemTraThongTin returns the exact buyer/address that will be sent to the
+  // e-invoice provider. Keep these values so the extension can refresh its
+  // table immediately after issuing instead of waiting for another list load.
+  function parseEInvoiceCheckTagHtml(tag) {
+    const fields = new Map();
+    const text = String(tag || "")
+      .replace(/<\/?br\s*\/?>/gi, "\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/gi, " ");
+    for (const line of text.split("\n")) {
+      const separator = line.indexOf(":");
+      if (separator < 0) continue;
+      const label = normalizedVietnameseText(line.slice(0, separator));
+      const value = line.slice(separator + 1).trim();
+      if (label) fields.set(label, value);
+    }
+    return {
+      buyer: fields.get("NGUOI MUA") || "",
+      address: fields.get("DIA CHI") || "",
+      paymentMethod: fields.get("THANH TOAN") || ""
+    };
+  }
+
   async function issueEInvoice(detail) {
     const id = String(detail?.id || "").trim();
     if (!isGuid(id)) throw new Error(`ID hoa don dien tu khong hop le: ${id || "trong"}`);
@@ -2789,6 +3205,7 @@
     const check = await postEInvoiceApi("kiemTraThongTin?is_ajax=1", { id });
     const checkFailure = eInvoiceFailureReason(check.body, check.responseText);
     if (checkFailure) throw new Error(`Kiem tra thong tin that bai: ${checkFailure}`);
+    const checkedMetadata = parseEInvoiceCheckTagHtml(check.body?.Tag ?? check.body?.data ?? "");
 
     const issue = await postEInvoiceApi("phatHanhHoaDon?is_ajax=1", { id });
     const issueFailure = eInvoiceFailureReason(issue.body, issue.responseText);
@@ -2808,6 +3225,9 @@
       maCQThue: String(invoiceData.MACQTHUE ?? tag.MACQTHUE ?? "").trim(),
       maTraCuu: String(invoiceData.MATRACUU ?? tag.MATRACUU ?? "").trim(),
       linkTraCuu: String(invoiceData.LINKTRACUU ?? tag.LINKTRACUU ?? "").trim(),
+      buyer: checkedMetadata.buyer,
+      buyerAddress: checkedMetadata.address,
+      paymentMethod: checkedMetadata.paymentMethod,
       httpStatus: issue.httpStatus,
       items,
       itemsError
@@ -2903,6 +3323,8 @@
       else if (detail.action === "readInvoiceItems") result = { items: await readInvoiceItems(detail) };
       else if (detail.action === "armApiTrace") result = armApiTrace();
       else if (detail.action === "getApiTrace") result = getApiTrace();
+      else if (detail.action === "createProductViaApi") result = await createProductViaApi(detail.product);
+      else if (detail.action === "fetchLatestProductCatalog") result = await fetchLatestProductCatalog();
       // Cho content script biết trang hiện tại đã có grid danh sách phiếu chưa,
       // để nó tự điều hướng về màn hình danh sách trước khi đối soát sau lưu.
       else if (detail.action === "hasInvoiceList") result = { present: Boolean(invoiceListElement()) };

@@ -5,6 +5,13 @@ data/
 # Trace API và log chạy thử
 data/traces/
 *.log
+invoice-api-trace-*.json
+invoice-api-debug-*.json
+docs/invoice-api-trace-*.json
+
+# File dữ liệu sinh ra khi chuẩn hóa/tạo mặt hàng theo từng cơ sở
+MatHang_Can_Tao_*.xlsx
+mat-hang-can-tao-*.json
 
 # File backup / bản cũ đã lưu trữ
 .archive/

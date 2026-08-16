@@ -1,5 +1,5 @@
 // Mapping goi y cho chi nhanh parislinhdam.
-// stockCode dung chung voi pariskimgiang (kho vat ly mot), chi webCode la rieng.
+// stockCode la ma trong file kho Linh Dam; so ton va webCode deu tach rieng theo co so.
 // 28/53 dong khop tu dong theo ten; 25 dong can chon tay.
 (function (root) {
   "use strict";

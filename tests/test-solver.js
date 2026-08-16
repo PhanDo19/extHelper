@@ -218,3 +218,22 @@ assert.ok(
   ratioConstrained.hourActual <= ratioConstrained.actual * 2,
   "singing fee must not exceed twice the goods amount"
 );
+
+const impossibleHourRange = solver.solveQuantities([
+  { code: "A", name: "A", price: 100000, qty: 0, maxQty: 7 }
+], 200000, {
+  maxQty: 20,
+  tolerance: 0,
+  preTaxTarget: 1000000,
+  currentHour: 200000,
+  hourStep: 100000,
+  minHourAmount: 100000,
+  maxHourAmount: 250000,
+  minGoodsAmount: 750000,
+  enforceHourRange: true
+});
+assert.strictEqual(
+  impossibleHourRange.items,
+  undefined,
+  "solver must reject every combination above the hard singing-fee cap"
+);

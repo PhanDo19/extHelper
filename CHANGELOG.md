@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.19.41 (2026-08-15)
+
+- Sửa đối chiếu ngày riêng cho Kim Giang: dùng `Ngày giao dịch/Transaction date` làm ngày hóa đơn, không còn dùng nhầm `Ngày KH thực hiện/Requesting date`.
+- Giữ nguyên quy tắc sao kê Linh Đàm dùng `Ngày hiệu lực` làm ngày chứng từ; bổ sung test chống ảnh hưởng chéo giữa hai cơ sở.
+
+## 1.19.40 (2026-08-14)
+
+- Cho phép phát hành phiếu khớp ngày và mã giao dịch nhưng lệch tối đa 1 đồng so với sao kê do làm tròn; UI hiển thị rõ phần chênh lệch.
+- Vẫn khóa phát hành nếu sai ngày hoặc lệch tổng tiền từ 2 đồng trở lên.
+
+## 1.19.39 (2026-08-14)
+
+- Danh sách phát hành hiển thị giao dịch sao kê liên kết của từng phiếu và kiểm tra đồng thời mã phiếu, ngày giao dịch, tổng tiền.
+- Phiếu sai ngày hoặc sai tổng tiền được tô cảnh báo, không thể chọn và bị chặn lần nữa ngay trước khi gọi API phát hành.
+
+## 1.18.1 (2026-08-11)
+
+- Bổ sung “Đồng bộ từ website” tại bước chuẩn bị dữ liệu; gọi trực tiếp `DataGrid/GetGridData` bằng phiên đăng nhập hiện tại để lấy tối đa 1.000 mặt hàng mới nhất của đúng cơ sở.
+- Chỉ lưu dữ liệu danh mục cần thiết, không lưu cookie/token; dữ liệu cũ được giữ nguyên nếu API lỗi hoặc trả về danh mục rỗng.
+- Sau khi đồng bộ, tự cập nhật tên/đơn vị/giá trong ánh xạ và đưa mã không còn trên web về trạng thái cần kiểm tra.
+- Bước 1 chỉ báo hoàn tất khi đã có tồn kho và danh mục đã được đồng bộ từ website.
+
+## 1.18.0 (2026-08-11)
+
+- Thiết kế lại trang đầu theo quy trình 4 bước dành cho kế toán: dữ liệu cơ sở, đối chiếu mặt hàng, sao kê ngân hàng và lập/duyệt hóa đơn.
+- Mỗi bước có mô tả bằng ngôn ngữ nghiệp vụ, trạng thái lấy từ dữ liệu thực và một nút hành động chính; thanh tiến độ cho biết bước nào đã sẵn sàng.
+- Tách “Điều chỉnh một phiếu” khỏi xử lý hàng loạt; các màn hình chi tiết có tiêu đề, hướng dẫn ngắn và nút “Về quy trình” nhất quán.
+- Gom nhập nhanh file và thuật ngữ kỹ thuật vào khu vực mở rộng để màn hình chính gọn hơn cho người dùng không chuyên kỹ thuật.
+- Giữ nguyên ID nút và luồng API hiện có để thay đổi giao diện không làm ảnh hưởng quy trình lưu/đối soát.
+
+## 1.17.1 (2026-08-11)
+
+- Thiết kế lại màn hình ánh xạ thành trang quản lý gọn: tiêu đề, KPI tổng/cần xử lý/đã xác nhận/bỏ qua, tìm kiếm và bộ lọc trạng thái.
+- Mỗi dòng chỉ hiển thị thông tin kho, ô tìm sản phẩm, trạng thái tiếng Việt và các hành động chính; bỏ trạng thái kỹ thuật `review/0.0` khỏi giao diện.
+- Form tạo mặt hàng mới chỉ mở tại dòng được chọn, có nhãn rõ cho mã, tên, đơn vị, giá và nhóm hàng.
+- Thêm chọn tất cả dòng đang hiển thị, đếm số dòng đã chọn và thanh tạo API hàng loạt cố định; hỗ trợ mở lại ánh xạ đã xác nhận hoặc đã bỏ qua.
+
+## 1.17.0 (2026-08-11)
+
+- Thêm luồng tạo mặt hàng web trực tiếp bằng API chính thức `AddEdit/DoSave`; không còn phải mở và nhập form mặt hàng trên giao diện website.
+- Mẫu tạo mặt hàng được đọc động theo cơ sở đang mở để lấy đúng ID đơn vị tính, nhóm hàng và loại hàng của từng cơ sở.
+- Màn hình ánh xạ kho → web cho phép sửa mã, tên, đơn vị, giá và nhóm trước khi tạo; hỗ trợ tạo một dòng hoặc chọn nhiều dòng để chạy tuần tự.
+- Chỉ ghi mặt hàng vào danh mục cục bộ và xác nhận ánh xạ sau khi API trả về ID hợp lệ. Lô dừng ngay ở dòng lỗi nên không đánh dấu nhầm các dòng chưa tạo.
+- Chặn mã web trùng và tên trùng với danh mục hiện tại trước khi gửi API; thời gian chờ riêng cho thao tác tạo là 30 giây.
+- Thêm kiểm thử bảo đảm API chạy trước bước ghi ánh xạ và batch tạo mặt hàng không chạy song song.
+
+## 1.16.1 (2026-08-11)
+
+- Chuyển extension sang hồ sơ nhiều cơ sở: tồn kho, metadata/backup kho và API template được tách theo `pariskimgiang` / `parislinhdam`; xuất hàng ở một cơ sở không còn làm giảm tồn của cơ sở kia.
+- Giữ nguyên khóa cũ của Kim Giang để không mất dữ liệu đang vận hành; Linh Đàm dùng các khóa có hậu tố `__parislinhdam` và cần nhập file kho riêng.
+- File trạng thái tồn mới mang `tenant`; extension chặn file thuộc cơ sở khác. File định dạng cũ thiếu cơ sở chỉ được phép khôi phục có cảnh báo tại Kim Giang.
+- Màn hình hiển thị rõ cơ sở hiện tại và tên file xuất tồn/xuất kho có tên cơ sở.
+- Bổ sung xuất/nhập hồ sơ ánh xạ JSON. Khi nhập lại, extension chỉ cập nhật quan hệ mã kho → mã web, không ghi đè số tồn vừa nhập.
+- Cập nhật kiểm thử đa cơ sở; xác nhận Kim Giang và Linh Đàm có thể có cùng `stockCode` nhưng số tồn độc lập.
+
 ## 1.16.0 (2026-08-07)
 
 - **Xuất kho đã phát hành nay ra file Excel** thay cho JSON, để kế toán mở và quản lý trực tiếp. Cột: `Mã phiếu`, `Ngày`, `Số hóa đơn`, `Mã hàng`, `Tên hàng`, `Tên hàng kho`, `Số lượng`, `Giá tiền`, `Thành tiền` — mỗi dòng hàng một dòng Excel.

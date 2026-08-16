@@ -33,7 +33,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const filename = String(message.filename || "");
     const base64 = String(message.base64 || "");
     const mimeType = String(message.mimeType || "application/octet-stream");
-    if (!/^XuatKho_PhatHanh_[0-9_-]+\.xlsx$/.test(filename)) {
+    if (!/^XuatKho_(ParisKimGiang|ParisLinhDam)_PhatHanh_[0-9_-]+\.xlsx$/.test(filename)) {
       sendResponse({ ok: false, error: `Tên file tải xuống không hợp lệ: ${filename}` });
       return false;
     }
@@ -57,8 +57,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "invoiceTarget.downloadStockState") return false;
   const filename = String(message.filename || "");
   const content = String(message.content || "");
-  const allowedFilename = /^TonKho_ParisKimGiang_[0-9_-]+\.json$/.test(filename) ||
-    /^invoice-api-trace-[0-9TZ_-]+\.json$/.test(filename);
+  const allowedFilename = /^TonKho_(ParisKimGiang|ParisLinhDam)_[0-9_-]+\.json$/.test(filename) ||
+    /^invoice-api-trace-[0-9TZ_-]+\.json$/.test(filename) ||
+    /^invoice-api-debug-(pariskimgiang|parislinhdam)-[A-Za-z0-9TZ_-]+\.json$/.test(filename);
   if (!allowedFilename) {
     sendResponse({ ok: false, error: `Tên file tải xuống không hợp lệ: ${filename}` });
     return false;

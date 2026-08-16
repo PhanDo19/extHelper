@@ -109,8 +109,10 @@ assert.strictEqual(serialized.includes("availableQty"), false);
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 assert(contentSource.includes('id="it-einvoice-admin"'), "Missing e-invoice section");
 assert(contentSource.includes('id="it-subtab-einvoice"'), "Missing e-invoice sub-tab");
-assert(!contentSource.includes('id="it-manage-einvoice"'),
-  "Phát hành phải nằm trong tab Giao dịch, không tách thành màn hình riêng");
+assert(contentSource.includes('id="it-manage-einvoice"'),
+  "Dashboard phải có lối tắt rõ ràng tới bước Phát hành hóa đơn");
+assert(contentSource.includes('function openEInvoiceAdmin()'),
+  "Lối tắt phát hành phải mở đúng sub-tab Giao dịch, không tạo màn hình dữ liệu riêng");
 // Section phát hành phải được render bên trong tab Giao dịch.
 const statementAdminIndex = contentSource.indexOf("function renderStatementAdmin");
 const subtabIndex = contentSource.indexOf('id="it-einvoice-admin"', statementAdminIndex);
@@ -121,10 +123,14 @@ const stockAdminIndex = contentSource.indexOf('id="it-stock-admin"');
 assert(contentSource.indexOf('id="it-export-issued"', stockAdminIndex) > stockAdminIndex,
   "Nút xuất hạch toán phải nằm trong tab Kho");
 assert.match(contentSource, /function issueSelectedEInvoices\(\)/);
+assert.match(contentSource, /present: await ensureInvoiceListScreen\(\)/);
+assert.match(contentSource, /Chưa mở được danh sách Bán hàng để đọc mặt hàng/);
 assert.match(contentSource, /function exportIssuedInvoices\(\)/);
 assert.match(contentSource, /function renderEInvoiceRows\(\)/);
 // Ghi sổ ngay sau từng hóa đơn để lô dừng giữa chừng vẫn có số liệu.
 assert.match(contentSource, /saveIssuedInvoices\(issuedInvoiceBook\)/);
+assert.match(contentSource, /canUseFastLane/);
+assert.match(contentSource, /Math\.min\(2, targets\.length\)/);
 
 const bridgeSource = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 assert.match(bridgeSource, /HoaDonDienTu\/\$\{action\}/);
@@ -162,15 +168,14 @@ assert.match(readViaUi, /openedNo !== wanted/);
 // thuộc màn hình đang mở. Chỉ hóa đơn thiếu trong sổ mới phải mở lại phiếu.
 assert.match(contentSource, /function ledgerItemsForInvoiceNo\(invoiceNo\)/);
 assert.match(contentSource, /knownItems: ledgerItems \|\| null/);
-// Không được chặn cả lô chỉ vì chưa mở màn hình danh sách Bán hàng.
+// Không được gọi bridge phát hành từ màn hình Mặt hàng. Với hóa đơn thiếu trong
+// sổ, content script phải tự chuyển về danh sách Bán hàng trước khi chạy lô.
 const issueFlow = contentSource.slice(
   contentSource.indexOf("async function issueSelectedEInvoices"),
   contentSource.indexOf("async function exportIssuedInvoices"));
-assert(!/return setStatus\(\s*"Hãy mở màn hình danh sách Bán hàng/.test(issueFlow),
-  "Không được chặn phát hành chỉ vì chưa mở danh sách Bán hàng");
 assert.match(issueFlow, /withoutLedger/);
-// Chỉ gọi hasInvoiceList khi thực sự có hóa đơn thiếu trong sổ.
-assert.match(issueFlow, /withoutLedger\.length\s*\?\s*await request\("hasInvoiceList"\)/);
+assert.match(issueFlow, /withoutLedger\.length\s*\?\s*\{ present: await ensureInvoiceListScreen\(\) \}/);
+assert.match(issueFlow, /withoutLedger\.length && !listReady\.present/);
 
 // Bridge phải dùng knownItems trước, chỉ đọc lại khi không có.
 const issueBridge = bridgeSource.slice(
@@ -220,6 +225,14 @@ assert.strictEqual(reordered.MACQTHUE, "M1-X");
 // đọc lại danh sách thay vì báo thành công mơ hồ.
 assert.strictEqual(parseIssuedInvoiceTagHtml("").SOHOADON, "");
 assert.strictEqual(parseIssuedInvoiceTagHtml(null).SOHOADON, "");
+
+const { parseEInvoiceCheckTagHtml } = evalBridgeFunction("normalizedVietnameseText", "parseEInvoiceCheckTagHtml");
+const checkedMetadata = parseEInvoiceCheckTagHtml(
+  "Người mua: Khách lẻ - Không lấy hóa đơn</br>Địa chỉ: Khách không cung cấp thông tin</br>Thanh toán: TM/CK</br>"
+);
+assert.strictEqual(checkedMetadata.buyer, "Khách lẻ - Không lấy hóa đơn");
+assert.strictEqual(checkedMetadata.address, "Khách không cung cấp thông tin");
+assert.strictEqual(checkedMetadata.paymentMethod, "TM/CK");
 
 // Tag dạng chuỗi phải được nhận diện trước khi đọc INVOICEDATA.
 assert.match(bridgeSource, /typeof rawTag === "string"[\s\S]{0,80}parseIssuedInvoiceTagHtml/);
@@ -315,7 +328,9 @@ assert.strictEqual(linkage.isStatementInvoice({ invoiceNo: "" }, linkedNos), fal
 assert.match(contentSource, /showEInvoicesOutsideStatement\s*\?\s*eInvoiceRows\s*:\s*eInvoiceRows\.filter/);
 assert(contentSource.includes('id="it-einvoice-show-outside"'), "Thiếu ô bật xem phiếu ngoài giao dịch");
 // Chỉ được chọn trong số dòng đang hiện, tránh phát hành nhầm dòng đã bị ẩn.
-assert.match(contentSource, /const selectable = new Set\(\s*visibleRows\.filter/);
+assert.match(contentSource, /const selectable = new Set\(\s*visibleRows\s*\.filter/);
+assert.match(contentSource, /!row\.issued && !row\.cancelled && statementInvoiceMatch\(row\)\.valid/,
+  "Chỉ phiếu khớp mã, ngày và tổng tiền sao kê mới được chọn phát hành");
 assert.match(issueFlow, /KHÔNG thuộc danh sách giao dịch/);
 
 // Hóa đơn đã phát hành trên website nhưng chưa vào sổ hạch toán phải ghi bổ sung
