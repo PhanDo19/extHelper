@@ -47,6 +47,11 @@ const batchPlanDeps = [
   extractFunction("isAutoSellableStock"),
   extractFunction("normalizedProductName"),
   extractFunction("isBeerStock"),
+  extractFunction("isWetTowelStock"),
+  extractConst("MANDATORY_GROUPS"),
+  extractFunction("mandatoryGroupFor"),
+  extractFunction("mandatoryGroupAvailability"),
+  extractFunction("unmetMandatoryGroup"),
   extractFunction("selectSmallInvoiceBeer"),
   extractFunction("calculateSmallInvoiceBeerPlan"),
   extractFunction("minimumGoodsForHourRatio"),
@@ -57,7 +62,11 @@ const batchPlanDeps = [
   extractFunction("reachableGoodsUpperBound"),
   extractFunction("minimumGroupCount"),
   extractFunction("calculateBatchPlan"),
-  "this.calculateBatchPlan = calculateBatchPlan;"
+  "this.calculateBatchPlan = calculateBatchPlan;",
+  "this.isBeerStock = isBeerStock; this.isWetTowelStock = isWetTowelStock;",
+  "this.unmetMandatoryGroup = unmetMandatoryGroup;",
+  "this.mandatoryGroupAvailability = mandatoryGroupAvailability;",
+  "this.MANDATORY_GROUPS = MANDATORY_GROUPS;"
 ].join("; ");
 
 const sandbox = { structuredClone };
@@ -375,6 +384,14 @@ if (planBox.hourPlanningBounds(newInvoiceScan, thresholdPricing, 1000000).baseHo
 if (planBox.hourPlanningBounds(newInvoiceScan, thresholdPricing, 1000001).baseHour !== 500000) {
   throw new Error("Sao kÃª trÃªn 1.000.000Ä‘ pháº£i dÃ¹ng mÃ³c Tiá»n giá» 50 phÃºt.");
 }
+// Kho tối thiểu thỏa món hàng bắt buộc (3 bia + 2 khăn ướt). Các ca dùng nó
+// đều kiểm Tiền giờ hoặc cơ cấu chứ không kiểm việc chọn hàng, nhưng vẫn phải
+// đi qua gate món bắt buộc như hóa đơn thật.
+const mandatoryFixture = [
+  { webCode: "1100019", webName: "Bia Tiger Crystal", webUnit: "chai", webPrice: 45000, availableQty: 20 },
+  { webCode: "1000031", webName: "Khăn ướt", webUnit: "Chiếc", webPrice: 5000, availableQty: 100 }
+];
+
 const residualPlan = planBox.calculateBatchPlan({
   ready: true,
   invoiceNo: "HD0126060331",
@@ -385,7 +402,7 @@ const residualPlan = planBox.calculateBatchPlan({
 }, {
   transactionDate: "2026-06-30",
   credit: 2377000
-}, []);
+}, mandatoryFixture);
 if (residualPlan.status !== "ready") throw new Error(`Ca lệch 91 đồng phải sẵn sàng: ${residualPlan.reason || ""}`);
 if (residualPlan.hour !== 605909) throw new Error("Phần dư sau VAT website và tiền hàng phải được bù vào Tiền giờ.");
 if (residualPlan.hourFromTime !== 606000 || residualPlan.hourAdjustment !== -91) throw new Error("Sai chi tiết bù chênh Tiền giờ.");
@@ -404,7 +421,7 @@ const overnightResidualPlan = planBox.calculateBatchPlan({
 }, {
   transactionDate: "2026-06-30",
   credit: 2377000
-}, []);
+}, mandatoryFixture);
 if (overnightResidualPlan.status !== "ready") {
   throw new Error(`Phiếu qua đêm kết thúc đúng ngày sao kê phải sẵn sàng: ${overnightResidualPlan.reason || ""}`);
 }
@@ -419,7 +436,9 @@ const hourCapBox = {
   InvoiceTargetSolver: {
     deriveInvoiceTargets: solver.deriveInvoiceTargets,
     solveQuantities: () => ({ items: [{ code: "CAP", newQty: 1 }], actual: 2995000, hourActual: 1435000 }),
-    reconcileHourAmount: solver.reconcileHourAmount
+    reconcileHourAmount: solver.reconcileHourAmount,
+    // Gate món hàng bắt buộc đo tồn khả dụng qua trần mỗi hóa đơn.
+    recommendInvoiceLimit: solver.recommendInvoiceLimit
   },
   priorityRules: [],
   inferHourPricing: () => ({ hourlyRate: 600000, hourStep: 6000 }),
@@ -439,7 +458,7 @@ const hourCapPlan = hourCapBox.calculateBatchPlan({
 }, {
   transactionDate: "2026-06-18",
   credit: 4873000
-}, []);
+}, mandatoryFixture);
 if (hourCapPlan.status !== "ready") {
   throw new Error(`A singing charge below 35% of pre-VAT must pass: ${hourCapPlan.reason || ""}`);
 }
@@ -463,7 +482,7 @@ vm.runInContext(
 const newInvoicePlan = planBox.calculateNewInvoiceBatchPlan({
   transactionDate: "2026-06-30",
   credit: 1004444
-}, []);
+}, mandatoryFixture);
 if (newInvoicePlan.status !== "ready" || !newInvoicePlan.requiresNewInvoice) {
   throw new Error(`New-invoice Batch Review plan must be ready: ${newInvoicePlan.reason || ""}`);
 }
@@ -473,6 +492,7 @@ if (newInvoicePlan.targetGrand !== 1004444 || newInvoicePlan.checkIn !== "30/06/
 
 const smallBeerStock = [
   { webCode: "1100019", webName: "Bia Tiger Crystal", webUnit: "chai", webPrice: 45000, availableQty: 8 },
+  { webCode: "1000031", webName: "Khăn ướt", webUnit: "Chiếc", webPrice: 5000, availableQty: 200 },
   { webCode: "1200001", webName: "BÌNH RÓT BIA", webUnit: "cái", webPrice: 250000, availableQty: 10 },
   { webCode: "1000004", webName: "Bò khô", webUnit: "gói", webPrice: 90000, availableQty: 10 }
 ];
@@ -704,6 +724,7 @@ vm.runInContext(batchPlanDeps, spreadBox);
 const realStock = [
   { webCode: "1000999", webName: "Exact fallback", webPrice: 394000, availableQty: 1 },
   { webCode: "1100019", webName: "Bia Tiger Crystal", webPrice: 45000, availableQty: 8 },
+  { webCode: "1000031", webName: "Khăn ướt", webUnit: "Chiếc", webPrice: 5000, availableQty: 200 },
   { webCode: "1500007", webName: "Hoa quả thập cẩm", webPrice: 400000, availableQty: 1 },
   { webCode: "1400016", webName: "TL Camel", webPrice: 60000, availableQty: 1 },
   { webCode: "1000064", webName: "Hạt Mắc Ca", webPrice: 180000, availableQty: 2 }
@@ -768,7 +789,8 @@ const existingStock = [
   { webCode: "1100018", webName: "Bia chai Saigon Special 330ml", webPrice: 30000, availableQty: 400, webGroup: "BIA - NƯỚC NGỌT" },
   { webCode: "1100031", webName: "Nước suối Lavie 500ml", webPrice: 25000, availableQty: 400, webGroup: "BIA - NƯỚC NGỌT" },
   { webCode: "1000029", webName: "Xúc xích tiệt trùng", webPrice: 15000, availableQty: 400, webGroup: "DOKHO" },
-  { webCode: "1000065", webName: "Hotdog Ponnie", webPrice: 15000, availableQty: 400, webGroup: "DOKHO" }
+  { webCode: "1000065", webName: "Hotdog Ponnie", webPrice: 15000, availableQty: 400, webGroup: "DOKHO" },
+  { webCode: "1000031", webName: "Khăn ướt", webPrice: 5000, availableQty: 400, webGroup: "DOKHO" }
 ];
 for (const [credit, currentHour, expectedCap] of [[560000, 600000, 178181], [1180000, 900000, 375454]]) {
   const existingPlan = spreadBox.calculateBatchPlan({
@@ -877,6 +899,10 @@ const ruleBox = {
 vm.createContext(ruleBox);
 vm.runInContext(
   `${extractConst("EXCLUDED_PRODUCT_GROUPS")}; ${extractFunction("isAutoSellableStock")}; ` +
+  // candidateFromStock gắn nhóm bắt buộc suy ra từ tên hàng.
+  `${extractFunction("normalizedProductName")}; ${extractFunction("isBeerStock")}; ` +
+  `${extractFunction("isWetTowelStock")}; ${extractConst("MANDATORY_GROUPS")}; ` +
+  `${extractFunction("mandatoryGroupFor")}; ` +
   `${extractFunction("candidateFromStock")}; ${extractFunction("stableDiversityRank")}; ${extractFunction("buildBatchCandidates")}; ` +
   "this.buildBatchCandidates = buildBatchCandidates;",
   ruleBox
@@ -884,6 +910,7 @@ vm.runInContext(
 const realisticRuleCandidates = ruleBox.buildBatchCandidates([
   { webCode: "1500007", webName: "Hoa quả to", webUnit: "đĩa", webPrice: 400000, availableQty: 1 },
   { webCode: "1100019", webName: "Bia Tiger Crystal", webUnit: "chai", webPrice: 55000, availableQty: 20 },
+  { webCode: "1000031", webName: "Khăn ướt", webUnit: "Chiếc", webPrice: 5000, availableQty: 200 },
   { webCode: "1000004", webName: "Bò khô", webUnit: "gói", webPrice: 90000, availableQty: 10 }
 ], 1500000, { id: "tx-rule", transactionDate: "2026-06-30", credit: 1500000 }, new Map());
 const fruitCandidate = realisticRuleCandidates.find(item => item.code === "1500007");
@@ -1161,3 +1188,94 @@ const baseTransaction = {
   console.error(error.message);
   process.exit(1);
 });
+
+// --- Món hàng bắt buộc: ≥3 bia, ≥2 khăn ướt --------------------------------
+
+// Phân loại phải theo TÊN, và không được nhận nhầm phụ kiện.
+if (!planBox.isBeerStock({ webName: "Bia Tiger Crystal" })) throw new Error("Bia Tiger phải là bia");
+if (!planBox.isBeerStock({ webName: "BIA CORONA EXTRA (250ml)" })) throw new Error("Bia Corona phải là bia");
+if (planBox.isBeerStock({ webName: "BÌNH RÓT BIA" })) throw new Error("BÌNH RÓT BIA là phụ kiện, không phải bia");
+if (!planBox.isWetTowelStock({ webName: "Khăn ướt V1020" })) throw new Error("Khăn ướt phải nhận đúng");
+if (!planBox.isWetTowelStock({ webName: "KHĂN LẠNH" })) throw new Error("Khăn lạnh cùng nhóm khăn ướt");
+if (planBox.isWetTowelStock({ webName: "Bò khô miếng" })) throw new Error("Bò khô không phải khăn");
+
+// Tồn của cả NHÓM mới là căn cứ, không phải từng mã: 2 mã bia mỗi mã 2 chai
+// vẫn đủ cho ràng buộc 3 chai.
+const splitBeerStock = [
+  { webCode: "1100019", webName: "Bia Tiger", webPrice: 45000, availableQty: 2 },
+  { webCode: "1100023", webName: "Bia Hà Nội", webPrice: 30000, availableQty: 2 },
+  { webCode: "1000031", webName: "Khăn ướt", webPrice: 5000, availableQty: 10 }
+];
+if (planBox.unmetMandatoryGroup(splitBeerStock)) {
+  throw new Error("Tồn trải qua nhiều mã bia vẫn phải được coi là đủ");
+}
+
+// Thiếu tồn thì phải báo rõ nhóm nào thiếu, không im lặng ra phương án thiếu hàng.
+const notEnoughBeer = planBox.unmetMandatoryGroup([
+  { webCode: "1100019", webName: "Bia Tiger", webPrice: 45000, availableQty: 2 },
+  { webCode: "1000031", webName: "Khăn ướt", webPrice: 5000, availableQty: 10 }
+]);
+if (!notEnoughBeer || notEnoughBeer.rule.group !== "beer") throw new Error("Thiếu bia phải bị bắt");
+if (notEnoughBeer.available !== 2) throw new Error(`Phải nêu đúng tồn còn lại: ${notEnoughBeer.available}`);
+
+const notEnoughTowel = planBox.unmetMandatoryGroup([
+  { webCode: "1100019", webName: "Bia Tiger", webPrice: 45000, availableQty: 10 },
+  { webCode: "1000031", webName: "Khăn ướt", webPrice: 5000, availableQty: 1 }
+]);
+if (!notEnoughTowel || notEnoughTowel.rule.group !== "wet_towel") throw new Error("Thiếu khăn phải bị bắt");
+
+// Trần mỗi hóa đơn cũng là giới hạn thật: mã còn nhiều nhưng trần thấp thì chỉ
+// góp được đúng phần trần vào một hóa đơn.
+const cappedBeer = planBox.mandatoryGroupAvailability(
+  [{ webCode: "1100019", webName: "Bia Tiger", webPrice: 45000, availableQty: 100 }],
+  planBox.MANDATORY_GROUPS[0]
+);
+if (cappedBeer !== 12) throw new Error(`Trần bia mỗi hóa đơn là 12, nhận được ${cappedBeer}`);
+
+// Hàng thuộc nhóm phụ phí không bao giờ được tính vào tồn khả dụng.
+const excludedOnly = planBox.mandatoryGroupAvailability(
+  [{ webCode: "1200001", webName: "Bia phụ phí", webPrice: 250000, availableQty: 50, webGroup: "PHUPHI" }],
+  planBox.MANDATORY_GROUPS[0]
+);
+if (excludedOnly !== 0) throw new Error("Hàng nhóm PHUPHI không được tính là tồn bán được");
+
+// CHỐNG ÂM KHO: gate phải chạy trên tồn ĐÃ TRỪ đặt chỗ của các giao dịch trước
+// trong cùng lô. Nếu chỉ xét tồn gốc thì giao dịch cuối ngày vẫn bị ép đủ số
+// lượng dù kho đã cạn — đúng đường dẫn tới tồn âm.
+const drainedMidBatch = planBox.calculateBatchPlan({
+  ready: true,
+  invoiceNo: "HD-DRAIN",
+  invoiceDateKey: "2026-06-30",
+  currentHour: 600000,
+  currentGrand: 0,
+  taxRate: 10
+}, { id: "drain", transactionDate: "2026-06-30", credit: 2000000 },
+// Bia đã bị các giao dịch trước dùng gần hết, chỉ còn 1 chai.
+[
+  { webCode: "1100019", webName: "Bia Tiger", webPrice: 45000, availableQty: 1 },
+  { webCode: "1000031", webName: "Khăn ướt", webPrice: 5000, availableQty: 50 },
+  { webCode: "1000004", webName: "Bò khô", webPrice: 90000, availableQty: 50 }
+]);
+if (drainedMidBatch.status !== "error") {
+  throw new Error("Tồn bia cạn giữa lô phải báo lỗi, không được ra phương án âm kho");
+}
+if (!drainedMidBatch.reason.includes("3 bia") || !drainedMidBatch.reason.includes("chỉ còn 1")) {
+  throw new Error(`Lý do phải nêu rõ thiếu bao nhiêu: ${drainedMidBatch.reason}`);
+}
+
+// Hóa đơn dưới 500.000đ giữ luật riêng 2 chai bia, KHÔNG áp luật nhóm bắt buộc.
+const smallStillTwoBeers = planBox.calculateBatchPlan({
+  ready: true,
+  invoiceNo: "HD-SMALL2",
+  invoiceDateKey: "2026-06-30",
+  currentHour: 0,
+  currentGrand: 0,
+  taxRate: 10
+}, { id: "small2", transactionDate: "2026-06-30", credit: 300062 },
+[{ webCode: "1100019", webName: "Bia Tiger Crystal", webUnit: "chai", webPrice: 45000, availableQty: 8 }]);
+if (smallStillTwoBeers.status !== "ready") {
+  throw new Error(`Hóa đơn nhỏ vẫn phải lập được dù không có khăn ướt: ${smallStillTwoBeers.reason || ""}`);
+}
+if (smallStillTwoBeers.specialRule !== "under-500k-two-beers") {
+  throw new Error("Hóa đơn nhỏ phải đi nhánh luật riêng");
+}

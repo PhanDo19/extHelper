@@ -4721,8 +4721,11 @@
       stockCodes: stock.stockCodes,
       minQty: Number(minQty || 0),
       selectionPenalty: Math.max(0, Number(selectionPenalty) || 0),
-      constraintGroup: stock.constraintGroup,
+      // Nhóm bắt buộc suy ra từ tên hàng nên gắn ở đây, nhưng không được ghi đè
+      // constraintGroup có sẵn của kho (ví dụ nhóm hoa quả giới hạn 1 đĩa/hóa đơn).
+      constraintGroup: stock.constraintGroup || mandatoryGroupFor(stock)?.group,
       constraintGroupMax: stock.constraintGroupMax,
+      constraintGroupMin: stock.constraintGroup ? 0 : (mandatoryGroupFor(stock)?.minQty || 0),
       // Nhóm hàng của website, dùng để cân đối cơ cấu hóa đơn cho giống đơn thật.
       productGroup: String(stock.webGroup || "")
     };
@@ -4779,6 +4782,53 @@
   function isBeerStock(stock) {
     // Tên phải bắt đầu bằng "Bia" để không chọn nhầm phụ kiện như BÌNH RÓT BIA.
     return /^BIA(?:\s|$)/.test(normalizedProductName(stock?.webName));
+  }
+
+  function isWetTowelStock(stock) {
+    // Gồm cả "Khăn ướt" lẫn "Khăn lạnh"; đây là cùng một mặt hàng nghiệp vụ.
+    return /KHAN\s+(UOT|LANH)/.test(normalizedProductName(stock?.webName));
+  }
+
+  // Món hàng bắt buộc trên mỗi hóa đơn, tính theo TỔNG của cả nhóm chứ không
+  // theo từng mã: "3 bia" là 3 chai bất kỳ mã bia nào, nên 2 Tiger + 1 Hà Nội
+  // vẫn hợp lệ. Ép theo từng mã sẽ dồn hết lên một mã và cạn tồn mã đó.
+  //
+  // Hóa đơn dưới 500.000đ KHÔNG áp luật này: nhánh đó có quy tắc riêng đúng 2
+  // chai bia, xem calculateSmallInvoiceBeerPlan.
+  const MANDATORY_GROUPS = Object.freeze([
+    { group: "beer", label: "bia", minQty: 3, matches: isBeerStock },
+    { group: "wet_towel", label: "khăn ướt", minQty: 2, matches: isWetTowelStock }
+  ]);
+
+  function mandatoryGroupFor(stock) {
+    return MANDATORY_GROUPS.find(rule => rule.matches(stock)) || null;
+  }
+
+  // Tồn khả dụng của cả nhóm. Phải chạy trên workingInventory (bản đã trừ đặt
+  // chỗ của các giao dịch trước trong cùng lô), nếu không giao dịch thứ 5 trong
+  // ngày vẫn bị ép 3 bia dù 4 giao dịch trước đã dùng hết tồn — đó là đường dẫn
+  // thẳng tới tồn âm.
+  function mandatoryGroupAvailability(inventoryState, rule) {
+    let available = 0;
+    for (const stock of inventoryState || []) {
+      if (!isAutoSellableStock(stock) || !rule.matches(stock)) continue;
+      if (Math.round(Number(stock.webPrice) || 0) <= 0) continue;
+      // Trần mỗi hóa đơn cũng là giới hạn thật: mã còn 10 chai nhưng trần 2 thì
+      // chỉ góp được 2 vào một hóa đơn.
+      const perInvoice = Math.floor(Number(InvoiceTargetSolver.recommendInvoiceLimit(stock)) || 0);
+      available += Math.min(Math.floor(Number(stock.availableQty) || 0), Math.max(0, perInvoice));
+    }
+    return available;
+  }
+
+  // Kiểm tra trước khi giải: thiếu tồn thì báo rõ thay vì để solver trả về
+  // phương án thiếu hàng trong im lặng.
+  function unmetMandatoryGroup(inventoryState) {
+    for (const rule of MANDATORY_GROUPS) {
+      const available = mandatoryGroupAvailability(inventoryState, rule);
+      if (available < rule.minQty) return { rule, available };
+    }
+    return null;
   }
 
   function selectSmallInvoiceBeer(inventoryState, transaction, productUsage) {
@@ -5004,6 +5054,25 @@
       Math.ceil(Math.max(0, Number(targets.preTaxTarget) || 0) / (maxHourToGoodsRatio + 1)),
       minGoodsForHourRange
     );
+    // Món hàng bắt buộc chỉ áp khi phương án thực sự phải thêm hàng. Phiếu mà
+    // toàn bộ phần trước VAT đã là Tiền giờ (goodsTarget = 0) không có dòng hàng
+    // nào để mà bắt buộc.
+    //
+    // inventoryState ở đây là workingInventory đã trừ đặt chỗ của các giao dịch
+    // trước trong cùng lô, nên gate bắt được cả trường hợp tồn cạn dần giữa lô —
+    // nếu chỉ xét tồn gốc thì giao dịch cuối ngày vẫn bị ép đủ số lượng và sinh
+    // phương án âm kho.
+    if (targets.goodsTarget > 0) {
+      const unmetGroup = unmetMandatoryGroup(inventoryState);
+      if (unmetGroup) {
+        return {
+          status: "error",
+          reason: `Mỗi hóa đơn cần ít nhất ${unmetGroup.rule.minQty} ${unmetGroup.rule.label}, ` +
+            `nhưng tồn khả dụng của cả nhóm chỉ còn ${unmetGroup.available}. ` +
+            "Nhập thêm hàng hoặc bỏ bớt giao dịch khỏi lô."
+        };
+      }
+    }
     const candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage);
     const activeLineLimit = maxActiveLines(targets.goodsTarget);
     const solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, {

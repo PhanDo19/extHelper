@@ -270,6 +270,35 @@
       return Math.round(excess + missingGroups * goodsAmount * 0.25);
     }
 
+    // Số lượng tối thiểu theo NHÓM, đối xứng với constraintGroupMax ở trên.
+    // "Ít nhất 3 bia" là ràng buộc trên tổng của mọi mã bia, không phải trên
+    // một mã cụ thể, nên 2 Tiger + 1 Hà Nội vẫn hợp lệ.
+    //
+    // Phải kiểm tra ở vòng chấm điểm này chứ không phải trong vòng mở rộng DP:
+    // tổng của một nhóm chỉ biết được khi đã duyệt hết mọi item của nhóm đó,
+    // mà DP mở rộng theo từng item một.
+    const groupMinimums = new Map();
+    for (const item of usable) {
+      const group = String(item.constraintGroup || "");
+      const minimum = Math.max(0, Math.floor(Number(item.constraintGroupMin) || 0));
+      if (!group || !minimum) continue;
+      groupMinimums.set(group, Math.max(groupMinimums.get(group) || 0, minimum));
+    }
+    function groupShortfall(quantities) {
+      if (!groupMinimums.size) return 0;
+      const totals = new Map();
+      for (let index = 0; index < quantities.length; index += 1) {
+        const group = String(usable[index].constraintGroup || "");
+        if (!group || !groupMinimums.has(group)) continue;
+        totals.set(group, (totals.get(group) || 0) + (Number(quantities[index]) || 0));
+      }
+      let shortfall = 0;
+      for (const [group, minimum] of groupMinimums) {
+        shortfall += Math.max(0, minimum - (totals.get(group) || 0));
+      }
+      return shortfall;
+    }
+
     let best = null;
     for (const [amount, quantities] of states) {
       const actual = amount * scale;
@@ -323,23 +352,36 @@
       for (let i = 0; i < quantities.length; i += 1) {
         if (Number(quantities[i]) > 0) rejection += Math.max(0, Number(usable[i]?.selectionPenalty) || 0);
       }
-      // Thứ tự: ràng buộc cứng (giờ, tỷ lệ hàng, khớp tuyệt đối) trước, rồi tới
-      // né tổ hợp vừa bị bỏ, cơ cấu nhóm, cuối cùng là các tiêu chí thẩm mỹ.
-      const better = !best ||
-        hourRangeViolation < best.hourRangeViolation ||
-        (hourRangeViolation === best.hourRangeViolation && goodsShortfall < best.goodsShortfall) ||
-        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall && finalAbs < best.finalAbs) ||
-        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall &&
-          finalAbs === best.finalAbs && hourDeviation < best.hourDeviation) ||
-        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall &&
-          finalAbs === best.finalAbs && hourDeviation === best.hourDeviation && rejection < best.rejection) ||
-        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall &&
-          finalAbs === best.finalAbs && hourDeviation === best.hourDeviation &&
-          rejection === best.rejection && imbalance < best.imbalance) ||
-        (hourRangeViolation === best.hourRangeViolation && goodsShortfall === best.goodsShortfall && finalAbs === best.finalAbs &&
-          hourDeviation === best.hourDeviation && rejection === best.rejection && imbalance === best.imbalance &&
-          quantityScore < best.quantityScore);
+      // Món hàng bắt buộc là ràng buộc nghiệp vụ cứng nhất: hóa đơn thiếu bia
+      // hoặc thiếu khăn ướt là sai luật, trong khi lệch tiền giờ chỉ là kém đẹp.
+      // Vì vậy nó được so sánh TRƯỚC mọi tiêu chí khác.
+      const missingRequired = groupShortfall(quantities);
+      // Thứ tự: món hàng bắt buộc trước, rồi tới ràng buộc cứng (giờ, tỷ lệ
+      // hàng, khớp tuyệt đối), rồi né tổ hợp vừa bị bỏ, cơ cấu nhóm, cuối cùng
+      // là các tiêu chí thẩm mỹ.
+      // So sanh theo thu tu uu tien tu dinh xuong day: tieu chi dung truoc quyet
+      // dinh truoc, chi khi hoa moi xet tieu chi sau. Truoc day day la mot chuoi
+      // dieu kien long nhau; moi lan them tieu chi phai sua lai toan bo cac nhanh
+      // phia sau, va sot mot nhanh la tieu chi moi bi bo qua trong im lang.
+      const ranking = [
+        missingRequired,      // mon hang bat buoc — rang buoc nghiep vu cung nhat
+        hourRangeViolation,   // tien gio phai nam trong khoang cho phep
+        goodsShortfall,       // ty le tien hang
+        finalAbs,             // do lech so voi muc tieu
+        hourDeviation,        // gan gio hien tai
+        rejection,            // ne to hop vua bi bo
+        imbalance,            // co cau nhom hang
+        quantityScore         // tieu chi tham my
+      ];
+      const better = !best || ranking.some((value, index) => {
+        for (let earlier = 0; earlier < index; earlier += 1) {
+          if (ranking[earlier] !== best.ranking[earlier]) return false;
+        }
+        return value < best.ranking[index];
+      });
       if (better) best = {
+        ranking,
+        missingRequired,
         actual,
         difference,
         quantities,

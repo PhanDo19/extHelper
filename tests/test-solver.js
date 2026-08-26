@@ -237,3 +237,57 @@ assert.strictEqual(
   undefined,
   "solver must reject every combination above the hard singing-fee cap"
 );
+
+// --- Món hàng bắt buộc theo NHÓM ------------------------------------------
+// "Ít nhất 3 bia" là ràng buộc trên TỔNG của mọi mã bia, không phải trên một mã
+// cụ thể: 2 Tiger + 1 Hà Nội vẫn hợp lệ. Đây là điểm khác biệt so với minQty
+// từng mã, vốn sẽ ép cùng một mã lên mọi hóa đơn và cạn tồn mã đó.
+const beerAndTowel = [
+  { code: "1100019", name: "Bia Tiger", price: 45000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMin: 3 },
+  { code: "1100023", name: "Bia Hà Nội", price: 30000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMin: 3 },
+  { code: "1000031", name: "Khăn ướt", price: 5000, qty: 0, maxQty: 4, constraintGroup: "wet_towel", constraintGroupMin: 2 },
+  { code: "1000009", name: "Đậu phộng", price: 30000, qty: 0, maxQty: 4 }
+];
+const groupTotal = (result, group) => result.items
+  .filter(item => item.constraintGroup === group)
+  .reduce((sum, item) => sum + item.newQty, 0);
+
+const withRequired = solver.solveQuantities(beerAndTowel, 500000, { maxQty: 20, tolerance: 20000 });
+assert(withRequired.items, "phải tìm được phương án khi tồn đủ");
+assert(groupTotal(withRequired, "beer") >= 3, "phải có ít nhất 3 bia trên tổng mọi mã bia");
+assert(groupTotal(withRequired, "wet_towel") >= 2, "phải có ít nhất 2 khăn ướt");
+
+// Tồn eo hẹp: mỗi mã bia chỉ còn 2, nên bắt buộc phải TRẢI qua hai mã mới đủ 3.
+// Nếu ràng buộc bị hiểu nhầm thành "3 cái của một mã" thì không có lời giải.
+const splitAcrossCodes = solver.solveQuantities([
+  { code: "1100019", name: "Bia Tiger", price: 45000, qty: 0, maxQty: 2, constraintGroup: "beer", constraintGroupMin: 3 },
+  { code: "1100023", name: "Bia Hà Nội", price: 30000, qty: 0, maxQty: 2, constraintGroup: "beer", constraintGroupMin: 3 },
+  { code: "1000031", name: "Khăn ướt", price: 5000, qty: 0, maxQty: 4, constraintGroup: "wet_towel", constraintGroupMin: 2 }
+], 300000, { maxQty: 20, tolerance: 50000 });
+assert(splitAcrossCodes.items, "phải giải được khi số lượng bắt buộc trải qua nhiều mã");
+assert(groupTotal(splitAcrossCodes, "beer") >= 3, "tổng bia vẫn phải đạt 3 dù mỗi mã chỉ còn 2");
+assert(splitAcrossCodes.items.filter(item =>
+  item.constraintGroup === "beer" && item.newQty > 0).length >= 2,
+  "phải dùng ít nhất hai mã bia mới đủ số lượng");
+
+// Ràng buộc nhóm KHÔNG được phép vượt trần từng mã: đó là đường dẫn tới tồn âm.
+for (const item of splitAcrossCodes.items) {
+  assert(item.newQty <= item.maxQty, `${item.code} vượt trần tồn: ${item.newQty} > ${item.maxQty}`);
+}
+
+// Món hàng bắt buộc phải thắng cả tiêu chí khớp tiền: thà lệch tiền còn hơn
+// phát hành hóa đơn thiếu bia. Ở đây phương án khớp tiền tuyệt đối (1 đậu phộng)
+// lại thiếu bia, nên solver phải bỏ nó.
+const beatsExactMatch = solver.solveQuantities([
+  { code: "1100023", name: "Bia Hà Nội", price: 30000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMin: 3 },
+  { code: "1000009", name: "Đậu phộng", price: 30000, qty: 0, maxQty: 4 }
+], 30000, { maxQty: 20, tolerance: 200000 });
+assert(groupTotal(beatsExactMatch, "beer") >= 3,
+  "ràng buộc bắt buộc phải thắng cả phương án khớp tiền tuyệt đối");
+
+// Không khai constraintGroupMin thì hành vi cũ giữ nguyên.
+const noConstraint = solver.solveQuantities([
+  { code: "A", name: "A", price: 50000, qty: 0, maxQty: 10 }
+], 200000, { maxQty: 20, tolerance: 0 });
+assert.strictEqual(noConstraint.items.reduce((sum, item) => sum + item.newQty, 0), 4,
+  "không có ràng buộc nhóm thì kết quả không đổi");

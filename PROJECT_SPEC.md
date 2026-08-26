@@ -24,6 +24,11 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 - Mọi mã bắt đầu từ số lượng 0.
 - `proposedQty <= floor(availableQty)`.
 - Ngoại lệ hoa quả: `TC` = đĩa nhỏ 350.000, `TCTO` = đĩa to 400.000 theo giá hiện hành trên web; tổng số lượng `TC + TCTO <= 1` trên mỗi hóa đơn.
+- Món hàng bắt buộc trên mỗi hóa đơn: ít nhất **3 bia** và **2 khăn ướt**. Tính theo tổng của cả nhóm chứ không theo từng mã — 2 Tiger + 1 Hà Nội là hợp lệ. Ép theo từng mã sẽ dồn hết lên một mã và cạn tồn mã đó.
+  - "Bia" là mặt hàng có tên bắt đầu bằng `Bia`; phụ kiện như `BÌNH RÓT BIA` không tính. "Khăn ướt" gồm cả `Khăn ướt` lẫn `Khăn lạnh`.
+  - Ràng buộc nhóm không được vượt trần từng mã (`recommendInvoiceLimit`) và không được vượt tồn khả dụng. Kiểm tra chạy trên tồn **đã trừ đặt chỗ** của các giao dịch trước trong cùng lô; thiếu thì báo lỗi rõ nhóm nào thiếu và còn bao nhiêu, không âm thầm ra phương án thiếu hàng.
+  - Chỉ áp khi phương án thực sự phải thêm hàng (`goodsTarget > 0`).
+  - **Ngoại lệ**: hóa đơn dưới 500.000đ giữ luật riêng đúng 2 chai bia, không áp luật nhóm bắt buộc.
 - Không giữ tiền của hàng cũ như khoản cố định.
 - Dùng giá web để tính phương án hóa đơn.
 
@@ -52,6 +57,11 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 - Mỗi hóa đơn phát hành xong được ghi sổ ngay; lô dừng giữa chừng vẫn giữ đủ số liệu phần đã chạy.
 - Sổ phát hành khóa theo `invoiceId`: phát hành lại hoặc chạy lại lô chỉ ghi đè, không cộng dồn số lượng.
 - Extension không tự hủy hóa đơn đã phát hành.
+- `SOHOADON` do máy chủ cấp tăng dần theo đúng thứ tự lời gọi `phatHanhHoaDon`, nên **thứ tự phát hành chính là thứ tự đánh số**. Cả lô chạy **một luồng**, không song song, không phân giai đoạn theo nguồn mặt hàng.
+- Lô được sắp theo ngày rồi tới **giờ giao dịch trong sao kê** (`requestedAt`), không theo `invoiceNo`: phiếu tạo mới luôn nhận số cuối dải nên `invoiceNo` lộn xộn, còn giờ giao dịch thì không. `invoiceNo` chỉ làm chốt phụ khi thiếu giờ.
+- Số hóa đơn là dải dùng chung hai cơ sở. Cờ thứ tự cơ sở, bảng sao kê đối chiếu và chốt tiến độ phát hành lưu ở khóa **dùng chung**, không qua `tenantKey()`; mặc định Linh Đàm phát hành trước.
+- Mọi cảnh báo chéo cơ sở là **chặn mềm**: nêu rõ trong hộp thoại xác nhận rồi để người dùng quyết định. Chặn cứng sẽ kẹt khi một cơ sở không có hóa đơn nào trong ngày.
+- Chốt tiến độ chỉ ghi sau khi người dùng đã xác nhận, và ghi cả khi lô lỗi giữa chừng vì phần đã chạy vẫn chiếm số thật trên máy chủ.
 
 ## Xuất kho để hạch toán
 
