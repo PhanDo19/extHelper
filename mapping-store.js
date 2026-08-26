@@ -34,6 +34,9 @@
   const API_TEMPLATE_KEY = "invoiceTargetApiTemplate";
   const ISSUED_INVOICE_BASE_KEY = "invoiceTargetIssuedInvoices";
   const SHARED_WAREHOUSE_KEY = "invoiceTargetSharedWarehouseV1";
+  // So hoa don dien tu la dai dung chung cua ca hai co so, nen co thu tu, bang
+  // sao ke doi chieu va chot tien do phat hanh KHONG duoc tach theo tenantKey.
+  const ISSUE_COORDINATION_KEY = "invoiceTargetIssueCoordinationV1";
   // webCode cua quy tac uu tien chi dung o chi nhanh mac dinh; chi nhanh khac
   // phai tu chon lai ma hang tuong ung trong panel.
   const DEFAULT_PRIORITY_RULES = [
@@ -223,6 +226,21 @@
     return warehouse;
   }
 
+  // Khong qua tenantKey: hai tab phai doc/ghi CUNG mot ban ghi, neu khong moi
+  // ben se tuong minh di truoc va so hoa don trong ngay bi tron.
+  async function loadIssueCoordination(fallback) {
+    if (!globalThis.chrome?.storage?.local) return structuredClone(fallback);
+    const stored = await chrome.storage.local.get(ISSUE_COORDINATION_KEY);
+    return stored[ISSUE_COORDINATION_KEY] || structuredClone(fallback);
+  }
+
+  async function saveIssueCoordination(state) {
+    if (globalThis.chrome?.storage?.local) {
+      await chrome.storage.local.set({ [ISSUE_COORDINATION_KEY]: state });
+    }
+    return state;
+  }
+
   async function commitVerifiedInvoice(dataset, statement, ledger, sharedWarehouse) {
     if (globalThis.chrome?.storage?.local) {
       const values = {
@@ -241,6 +259,7 @@
     loadPriorityRules, savePriorityRules, loadLedger, loadUiSession, saveUiSession,
     clearUiSession, commitVerifiedInvoice, loadStockStateMeta, saveStockStateMeta,
     importStockState, loadStockStateBackup, loadApiTemplate, saveApiTemplate, clearApiTemplate,
-    loadIssuedInvoices, saveIssuedInvoices, loadSharedWarehouse, saveSharedWarehouse, currentTenant
+    loadIssuedInvoices, saveIssuedInvoices, loadSharedWarehouse, saveSharedWarehouse, currentTenant,
+    loadIssueCoordination, saveIssueCoordination
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

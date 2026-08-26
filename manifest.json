@@ -22,7 +22,7 @@
         "http://banhang.thuanvietsoft.com/*",
         "https://banhang.thuanvietsoft.com/*"
       ],
-      "js": ["web-catalog.js", "web-catalog-parislinhdam.js", "inventory-data.js", "mapping-parislinhdam.js", "xlsx-reader.js", "xlsx-writer.js", "mapping-store.js", "mapping-engine.js", "shared-warehouse.js", "solver.js", "stock-state.js", "issued-invoices.js", "api-template.js", "content.js"],
+      "js": ["web-catalog.js", "web-catalog-parislinhdam.js", "inventory-data.js", "mapping-parislinhdam.js", "xlsx-reader.js", "xlsx-writer.js", "mapping-store.js", "mapping-engine.js", "shared-warehouse.js", "issue-coordination.js", "solver.js", "stock-state.js", "issued-invoices.js", "api-template.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }
