@@ -7,7 +7,7 @@ const content = fs.readFileSync(path.join(root, "content.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "content.css"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 
-assert.equal(manifest.version, "1.21.0");
+assert.equal(manifest.version, "1.22.0");
 assert(content.includes("E_INVOICE_AMOUNT_TOLERANCE = 1"), "Phát hành phải chấp nhận sai số làm tròn tối đa 1 đồng");
 assert(content.includes("function statementInvoiceMatch"), "Danh sách phát hành phải đối chiếu mã phiếu, ngày và tổng tiền với sao kê");
 assert(content.includes("Giao dịch liên kết"), "Danh sách phát hành phải hiển thị giao dịch sao kê liên kết");

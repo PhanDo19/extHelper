@@ -5356,7 +5356,20 @@
       if (fromDate && transactionDate < fromDate) return false;
       if (toDate && transactionDate > toDate) return false;
       return true;
-    }).slice(0, limit);
+    })
+      // Sắp theo ngày rồi tới giờ giao dịch TRƯỚC khi cắt theo limit: thứ tự lập
+      // phương án quyết định thứ tự cấp slot giờ/phòng cho phiếu mới, và cũng
+      // quyết định lô 10 giao dịch đầu là những giao dịch nào. Giữ nguyên thứ tự
+      // dòng trong file sao kê thì hai thứ đó đều tùy tiện.
+      //
+      // requestedAt trống thì rơi về rowNumber — thứ tự xuất hiện trong file —
+      // để kết quả luôn ổn định thay vì phụ thuộc thứ tự duyệt.
+      .sort((left, right) =>
+        String(left.transactionDate || "").localeCompare(String(right.transactionDate || "")) ||
+        String(left.requestedAt || "").localeCompare(String(right.requestedAt || "")) ||
+        (Number(left.rowNumber) || 0) - (Number(right.rowNumber) || 0)
+      )
+      .slice(0, limit);
   }
 
   async function buildBatchReview(options) {

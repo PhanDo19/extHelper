@@ -1279,3 +1279,36 @@ if (smallStillTwoBeers.status !== "ready") {
 if (smallStillTwoBeers.specialRule !== "under-500k-two-beers") {
   throw new Error("Hóa đơn nhỏ phải đi nhánh luật riêng");
 }
+
+// --- Thứ tự lập phương án theo giờ giao dịch -------------------------------
+// Thứ tự này quyết định slot giờ/phòng cấp cho phiếu mới và quyết định lô N
+// giao dịch đầu gồm những giao dịch nào, nên phải sắp TRƯỚC khi cắt theo limit.
+const orderedForReview = sandbox.selectBatchReviewTransactions([
+  { id: "c", status: "pending", transactionDate: "2026-07-01", requestedAt: "2026-07-01 20:05", rowNumber: 2 },
+  { id: "a", status: "pending", transactionDate: "2026-07-01", requestedAt: "2026-07-01 09:15", rowNumber: 7 },
+  { id: "d", status: "pending", transactionDate: "2026-07-02", requestedAt: "2026-07-02 08:00", rowNumber: 1 },
+  { id: "b", status: "pending", transactionDate: "2026-07-01", requestedAt: "2026-07-01 11:40", rowNumber: 5 }
+], {});
+if (orderedForReview.map(item => item.id).join("") !== "abcd") {
+  throw new Error(`Phải sắp theo ngày rồi giờ giao dịch: ${orderedForReview.map(item => item.id).join("")}`);
+}
+
+// Thiếu requestedAt thì rơi về thứ tự dòng trong file, không được vỡ thứ tự.
+const missingStamp = sandbox.selectBatchReviewTransactions([
+  { id: "y", status: "pending", transactionDate: "2026-07-01", requestedAt: "", rowNumber: 9 },
+  { id: "x", status: "pending", transactionDate: "2026-07-01", requestedAt: "", rowNumber: 3 }
+], {});
+if (missingStamp.map(item => item.id).join("") !== "xy") {
+  throw new Error("Thiếu giờ giao dịch phải rơi về rowNumber");
+}
+
+// Cắt theo limit phải diễn ra SAU khi sắp: lô 2 giao dịch đầu của ngày phải là
+// hai giao dịch sớm nhất, không phải hai dòng đầu trong file.
+const limited = sandbox.selectBatchReviewTransactions([
+  { id: "late", status: "pending", transactionDate: "2026-07-01", requestedAt: "2026-07-01 23:00", rowNumber: 1 },
+  { id: "mid", status: "pending", transactionDate: "2026-07-01", requestedAt: "2026-07-01 15:00", rowNumber: 2 },
+  { id: "early", status: "pending", transactionDate: "2026-07-01", requestedAt: "2026-07-01 08:00", rowNumber: 3 }
+], { limit: 2 });
+if (limited.map(item => item.id).join(",") !== "early,mid") {
+  throw new Error(`Limit phải cắt sau khi sắp: ${limited.map(item => item.id).join(",")}`);
+}

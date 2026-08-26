@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.22.0 (2026-08-24)
+
+### Phát hành hóa đơn tuần tự, số hóa đơn liên tục hai cơ sở
+
+- Số hóa đơn điện tử do máy chủ cấp theo đúng thứ tự lời gọi phát hành, nên cả lô nay chạy **một luồng**. Bỏ chạy song song 2 luồng và bỏ việc tách lô làm hai giai đoạn theo nguồn mặt hàng — cả hai đều làm thứ tự cấp số trở nên tùy tiện. **Lô toàn phiếu đã có mặt hàng trong sổ đối soát sẽ chậm khoảng gấp đôi**; đây là cái giá bắt buộc để số hóa đơn liên tục.
+- Lô phát hành sắp theo ngày rồi tới **giờ giao dịch trong sao kê**, không theo số phiếu. Phiếu tạo mới luôn nhận số cuối dải nên số phiếu lộn xộn, nhưng giờ giao dịch thì không.
+- Hộp thoại xác nhận liệt kê đúng thứ tự sẽ phát hành, để kiểm trước khi chạy.
+- Thêm ô chọn **cơ sở phát hành trước** ở bước 5 (mặc định Linh Đàm). Thiết lập này dùng chung cho cả hai tab.
+- Import sao kê nay trích thêm bảng tóm tắt để tab cơ sở kia biết **trước** ngày đó bên này có bao nhiêu giao dịch, thay vì chỉ biết sau khi đã phát hành xong.
+- Cảnh báo chéo cơ sở trước khi phát hành: cơ sở kia còn việc chưa chạy, đang chạy dở, đã vượt sang ngày sau, hoặc chưa import sao kê. Tất cả là chặn mềm — nêu rõ rồi để người dùng quyết định.
+- Sau mỗi lô: kiểm tra số hóa đơn trong ngày có liên tục không, và nhắc chuyển sang cơ sở còn lại kèm số giao dịch cụ thể.
+
+### Món hàng bắt buộc
+
+- Mỗi hóa đơn phải có ít nhất **3 bia** và **2 khăn ướt**, tính theo tổng của cả nhóm chứ không theo từng mã — 2 Tiger + 1 Hà Nội là hợp lệ.
+- Thiếu tồn thì báo rõ nhóm nào thiếu và còn bao nhiêu. Kiểm tra chạy trên tồn đã trừ đặt chỗ của các giao dịch trước trong cùng lô, nên không sinh phương án âm kho khi tồn cạn dần giữa lô.
+- Hóa đơn dưới 500.000đ **giữ nguyên** luật riêng đúng 2 chai bia.
+
+### Khác
+
+- Batch Review sắp giao dịch theo ngày rồi giờ giao dịch trước khi cắt theo giới hạn, nên lô N giao dịch đầu là N giao dịch sớm nhất chứ không phải N dòng đầu trong file.
+
 ## 1.21.0 (2026-08-16)
 
 - Thêm kiểm tra sẵn sàng chốt kỳ với 6 điều kiện: danh mục web, tồn kho vật lý, ánh xạ, sao kê trong kỳ, giao dịch tồn đọng và hóa đơn điện tử chưa phát hành.
