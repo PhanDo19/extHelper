@@ -135,31 +135,56 @@ assert.match(contentSource, /function exportIssuedInvoices\(\)/);
 assert.match(contentSource, /function renderEInvoiceRows\(\)/);
 // Ghi sổ ngay sau từng hóa đơn để lô dừng giữa chừng vẫn có số liệu.
 assert.match(contentSource, /saveIssuedInvoices\(issuedInvoiceBook\)/);
-// Lô phát hành tách hai giai đoạn NỐI TIẾP: nhóm có sẵn mặt hàng chạy thuần API
-// nên song song được, nhóm thiếu mặt hàng phải mở/đóng form trên danh sách Bán
-// hàng nên bắt buộc tuần tự. Hai nhóm không được chồng lấn, nếu không sẽ có
-// luồng chạm vào DOM trong khi luồng khác đang mở phiếu và đọc nhầm số liệu.
+// Số hóa đơn điện tử (SOHOADON) do máy chủ cấp tăng dần theo đúng thứ tự lời gọi
+// phatHanhHoaDon đến, nên THỨ TỰ PHÁT HÀNH CHÍNH LÀ THỨ TỰ ĐÁNH SỐ.
+//
+// Bản trước chia lô làm hai giai đoạn nối tiếp: nhóm đã có mặt hàng trong sổ đối
+// soát chạy thuần API với 2 luồng song song, rồi mới tới nhóm phải mở giao diện.
+// Cách đó nhanh hơn nhưng làm rối số hóa đơn theo hai đường: hai luồng song song
+// về đích theo độ trễ mạng chứ không theo thứ tự gửi, và việc tách giai đoạn xáo
+// thứ tự theo tiêu chí "đã có mặt hàng hay chưa" — hoàn toàn không liên quan tới
+// giờ giao dịch. Nghiệp vụ cần số hóa đơn liên tục theo giờ, kể cả khi xen kẽ với
+// cơ sở còn lại, nên ở đây đổi tốc độ lấy thứ tự.
 const issueRunner = contentSource.slice(
-  contentSource.indexOf("const apiOnly = targets.filter"),
-  contentSource.indexOf("} finally {", contentSource.indexOf("const apiOnly = targets.filter"))
+  contentSource.indexOf("const orderedTargets = sortTargetsForIssue(targets)"),
+  contentSource.indexOf("} finally {", contentSource.indexOf("const orderedTargets = sortTargetsForIssue(targets)"))
 );
 assert(issueRunner, "Không tìm thấy phần chạy lô phát hành");
-assert.match(issueRunner, /const apiOnly = targets\.filter\(row => Boolean\(ledgerItemsForInvoiceNo\(row\.invoiceNo\)\)\)/,
-  "Nhóm chạy song song chỉ gồm phiếu đã có sẵn mặt hàng trong sổ đối soát");
-assert.match(issueRunner, /const needsUi = targets\.filter\(row => !ledgerItemsForInvoiceNo\(row\.invoiceNo\)\)/,
-  "Nhóm phải mở giao diện là phần còn lại");
-// Song song chỉ áp cho apiOnly, và trần vẫn là 2 luồng.
-assert.match(issueRunner, /Math\.min\(2, apiOnly\.length\)/,
-  "Chỉ nhóm thuần API mới chạy song song, tối đa 2 luồng");
-// needsUi phải nằm sau Promise.all, tức giai đoạn 2 chỉ bắt đầu khi giai đoạn 1 xong.
-assert(issueRunner.indexOf("Promise.all") < issueRunner.indexOf("for (const row of needsUi)"),
-  "Giai đoạn mở giao diện phải chạy sau khi nhóm song song kết thúc");
-// Từ chỗ needsUi bắt đầu chạy trở đi không được còn Promise.all nào.
-const needsUiPhase = issueRunner.slice(issueRunner.indexOf("for (const row of needsUi)"));
-assert(!needsUiPhase.includes("Promise.all"),
-  "Nhóm phải mở giao diện không được chạy song song");
-assert.match(issueRunner, /for \(const row of needsUi\) await processTarget\(row\);/,
-  "Nhóm phải mở giao diện chạy tuần tự từng phiếu");
+// Cả lô chạy MỘT luồng. Không được còn bất kỳ đường song song nào.
+assert(!issueRunner.includes("Promise.all"),
+  "Lô phát hành không được chạy song song: hai luồng sẽ trộn thứ tự cấp số hóa đơn");
+assert(!/apiOnly|needsUi/.test(issueRunner),
+  "Không được phân nhóm lại theo nguồn mặt hàng: việc đó xáo thứ tự theo tiêu chí không liên quan giờ giao dịch");
+assert.match(issueRunner, /for \(const row of orderedTargets\) await processTarget\(row\);/,
+  "Cả lô chạy tuần tự đúng một vòng theo thứ tự đã sắp");
+
+// Thứ tự phát hành phải bám giờ giao dịch trong sao kê, không bám invoiceNo:
+// phiếu tạo mới nhận số cuối dải nên invoiceNo lộn xộn, còn requestedAt thì không.
+assert.match(contentSource, /function sortTargetsForIssue\(rows\)/,
+  "Phải có hàm sắp thứ tự phát hành riêng để test được");
+const sortFn = contentSource.slice(
+  contentSource.indexOf("function issueOrderKey(row)"),
+  contentSource.indexOf("async function issueSelectedEInvoices(")
+);
+assert(sortFn.includes("dateKey") && sortFn.includes("requestedAt"),
+  "Sắp theo ngày rồi tới giờ giao dịch thật");
+// Giờ giao dịch phải tra ngược từ sao kê qua mã phiếu; bản thân dòng hóa đơn
+// trên website không mang dấu thời gian chuyển tiền.
+assert(sortFn.includes("statementTransactionsForInvoiceNo"),
+  "Giờ giao dịch lấy từ sao kê đã liên kết, không phải từ dòng hóa đơn");
+// invoiceNo chỉ được làm chốt phụ: phiếu tạo mới nhận số cuối dải nên nếu sắp
+// theo invoiceNo trước thì thứ tự nghiệp vụ trong ngày sẽ sai.
+assert(sortFn.indexOf("requestedAt") < sortFn.indexOf("localeCompare(String(right?.invoiceNo"),
+  "invoiceNo chỉ là chốt phụ, không được ưu tiên trước giờ giao dịch");
+
+// Hộp thoại xác nhận phải nêu đúng thứ tự sẽ chạy, không phải thứ tự dòng trong
+// bảng — người dùng cần thấy trước dải số hóa đơn sắp được cấp.
+const confirmBlock = contentSource.slice(
+  contentSource.indexOf("const confirmed = window.confirm("),
+  contentSource.indexOf("if (!confirmed)")
+);
+assert(confirmBlock.includes("orderedTargets") && !confirmBlock.includes("targets[0]"),
+  "Hộp thoại phải liệt kê theo orderedTargets, không dùng thứ tự bảng");
 
 // Hạn chờ phát hành phải tách theo đường chạy: thuần API thì ngắn, phải mở giao
 // diện thì giữ dài vì còn chuỗi polling Kendo.

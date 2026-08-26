@@ -3222,10 +3222,45 @@
     }
   }
 
+  // Giờ giao dịch thật của phiếu, lấy từ sao kê. requestedAt là dấu thời gian
+  // khách chuyển tiền; nó quyết định thứ tự nghiệp vụ của hóa đơn trong ngày.
+  function issueOrderKey(row) {
+    const linked = statementTransactionsForInvoiceNo(row?.invoiceNo);
+    // Một mã phiếu chỉ khớp đúng một giao dịch sau statementInvoiceMatch, nhưng
+    // vẫn lấy giá trị nhỏ nhất để thứ tự ổn định nếu có nhiều ứng viên.
+    let earliest = "";
+    for (const transaction of linked) {
+      const stamp = String(transaction?.requestedAt || "");
+      if (!stamp) continue;
+      if (!earliest || stamp < earliest) earliest = stamp;
+    }
+    return earliest;
+  }
+
+  // Số hóa đơn điện tử do máy chủ cấp tăng dần theo đúng thứ tự lời gọi
+  // phatHanhHoaDon, nên thứ tự phát hành CHÍNH LÀ thứ tự đánh số. Sắp theo ngày
+  // rồi tới giờ giao dịch trong sao kê — KHÔNG theo invoiceNo: phiếu tạo mới
+  // nhận số cuối dải nên invoiceNo lộn xộn, còn giờ giao dịch thì không.
+  // invoiceNo chỉ làm chốt phụ để thứ tự ổn định khi thiếu giờ.
+  function sortTargetsForIssue(rows) {
+    return [...(rows || [])].sort((left, right) =>
+      String(uiDateKey(left?.dateKey) || "").localeCompare(String(uiDateKey(right?.dateKey) || "")) ||
+      String(issueOrderKey(left) || "").localeCompare(String(issueOrderKey(right) || "")) ||
+      String(left?.invoiceNo || "").localeCompare(String(right?.invoiceNo || ""), "vi", {
+        numeric: true,
+        sensitivity: "base"
+      })
+    );
+  }
+
   async function issueSelectedEInvoices() {
     if (issuingInProgress) return;
     const targets = eInvoiceRows.filter(row => eInvoiceSelection.has(row.id) && !row.issued && !row.cancelled);
     if (!targets.length) return setStatus("Chưa chọn hóa đơn nào để phát hành.", "error");
+    // Thứ tự phát hành = thứ tự máy chủ cấp số hóa đơn, nên chốt ngay từ đây và
+    // dùng chung cho cả hộp thoại xác nhận lẫn vòng chạy. Người dùng phải nhìn
+    // thấy đúng thứ tự sẽ chạy, không phải thứ tự dòng trong bảng.
+    const orderedTargets = sortTargetsForIssue(targets);
     const mismatched = targets.filter(row => !statementInvoiceMatch(row).valid);
     if (mismatched.length) {
       const details = mismatched.slice(0, 5).map(row =>
@@ -3263,9 +3298,12 @@
           : " và màn hình danh sách Bán hàng chưa mở, nên sẽ KHÔNG có mặt hàng để hạch toán.")
       : "";
     const confirmed = window.confirm(
-      `Phát hành ${targets.length} hóa đơn với tổng tiền ${formatMoney(total)} đ?\n\n` +
-      `Từ ${targets[0].invoiceNo} đến ${targets[targets.length - 1].invoiceNo}.\n` +
-      "Hóa đơn đã phát hành không thể tự hủy trong extension." + outsideWarning + warning
+      `Phát hành ${orderedTargets.length} hóa đơn với tổng tiền ${formatMoney(total)} đ?\n\n` +
+      "Số hóa đơn sẽ được cấp theo đúng thứ tự này:\n" +
+      orderedTargets.slice(0, 10).map((row, index) =>
+        `${index + 1}. ${row.invoiceNo} · ${uiDateKey(row.dateKey)} · ${formatMoney(row.grandTotal)} đ`).join("\n") +
+      (orderedTargets.length > 10 ? `\n… và ${orderedTargets.length - 10} hóa đơn nữa.` : "") +
+      "\n\nHóa đơn đã phát hành không thể tự hủy trong extension." + outsideWarning + warning
     );
     if (!confirmed) return setStatus("Đã hủy thao tác phát hành.", "warn");
 
@@ -3373,33 +3411,21 @@
     };
     try {
       // Hai đường chạy có ràng buộc khác nhau:
-      //   - Có sẵn mặt hàng trong sổ đối soát: phát hành thuần API, không chạm
-      //     giao diện, nên chạy song song 2 luồng được.
-      //   - Thiếu mặt hàng: bridge phải mở/đóng form trên danh sách Bán hàng.
-      //     Đó là trạng thái DOM dùng chung nên BẮT BUỘC tuần tự; hai luồng
-      //     cùng mở phiếu sẽ đọc nhầm nhau.
+      // Số hóa đơn điện tử (SOHOADON) do máy chủ cấp tăng dần theo đúng thứ tự
+      // lời gọi phatHanhHoaDon đến. THỨ TỰ PHÁT HÀNH CHÍNH LÀ THỨ TỰ ĐÁNH SỐ,
+      // nên cả lô bắt buộc chạy MỘT luồng.
       //
-      // Trước đây chỉ cần MỘT phiếu thiếu mặt hàng là cả lô rơi về tuần tự.
-      // Giờ tách làm hai giai đoạn chạy NỐI TIẾP nhau: xong hẳn nhóm API rồi
-      // mới tới nhóm phải mở giao diện. Không bao giờ chồng lấn, nên bất biến
-      // "khi có luồng song song thì không ai chạm UI" vẫn được giữ nguyên.
-      const apiOnly = targets.filter(row => Boolean(ledgerItemsForInvoiceNo(row.invoiceNo)));
-      const needsUi = targets.filter(row => !ledgerItemsForInvoiceNo(row.invoiceNo));
-      if (apiOnly.length > 1) {
-        let nextIndex = 0;
-        const worker = async () => {
-          while (nextIndex < apiOnly.length) {
-            const current = apiOnly[nextIndex];
-            nextIndex += 1;
-            await processTarget(current);
-          }
-        };
-        await Promise.all(Array.from({ length: Math.min(2, apiOnly.length) }, worker));
-      } else {
-        for (const row of apiOnly) await processTarget(row);
-      }
-      // Giai đoạn 2 luôn tuần tự, kể cả khi chỉ có một phiếu.
-      for (const row of needsUi) await processTarget(row);
+      // Bản trước chia lô làm hai giai đoạn nối tiếp: nhóm đã có mặt hàng trong
+      // sổ đối soát chạy thuần API với 2 luồng song song, rồi mới tới nhóm phải
+      // mở giao diện. Cách đó nhanh hơn nhưng làm rối số hóa đơn theo hai đường:
+      // hai luồng song song về đích theo độ trễ mạng chứ không theo thứ tự gửi,
+      // và việc tách giai đoạn xáo thứ tự theo tiêu chí "đã có mặt hàng hay
+      // chưa" — hoàn toàn không liên quan tới giờ giao dịch.
+      //
+      // Nghiệp vụ cần số hóa đơn liên tục theo giờ giao dịch, kể cả khi xen kẽ
+      // với cơ sở còn lại, nên ở đây đổi tốc độ lấy thứ tự. Đừng phân nhóm lại
+      // theo bất cứ tiêu chí nào khác: orderedTargets đã là thứ tự cuối cùng.
+      for (const row of orderedTargets) await processTarget(row);
     } finally {
       // Luôn mở khóa nút, kể cả khi vòng lặp hỏng giữa chừng.
       issuingInProgress = false;
