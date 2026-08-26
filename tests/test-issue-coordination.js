@@ -151,4 +151,52 @@ assert(!/tenantKey\(ISSUE_COORDINATION_KEY\)/.test(storeSource),
   "Khóa điều phối phải dùng chung, không qua tenantKey");
 assert(coordBlock.includes("ISSUE_COORDINATION_KEY"), "load/save phải dùng đúng khóa dùng chung");
 
+// --- Đấu nối trong content.js ---------------------------------------------
+
+const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+
+// Bảng đối chiếu phải được trích ngay khi import sao kê, nếu không cơ sở kia
+// không bao giờ biết trước bên này có bao nhiêu việc.
+const importFlow = contentSource.slice(
+  contentSource.indexOf("async function importStatementFile(event)"),
+  contentSource.indexOf("function stockReservationByCode(")
+);
+assert(importFlow.includes("InvoiceIssueCoordination.recordStatement"),
+  "Import sao kê phải trích bảng đối chiếu cho cơ sở kia");
+assert(importFlow.includes("pageTenantSlug"),
+  "Bảng đối chiếu phải gắn đúng cơ sở của tab đang mở");
+
+const issueFlow = contentSource.slice(
+  contentSource.indexOf("async function issueSelectedEInvoices("),
+  contentSource.indexOf("function stockNameByWebCode(")
+);
+// Lô trộn nhiều ngày không xen kẽ đúng được với cơ sở kia.
+assert(issueFlow.includes("batchDates.length > 1"), "Phải cảnh báo khi lô trộn nhiều ngày");
+assert(issueFlow.includes("const batchDateKey = batchDates.length === 1"),
+  "Cảnh báo chéo cơ sở chỉ tính khi lô gói gọn một ngày");
+// Trạng thái điều phối phải đọc lại ngay trước khi đánh giá: tab kia có thể vừa ghi.
+assert(issueFlow.indexOf("loadIssueCoordination") < issueFlow.indexOf("InvoiceIssueCoordination.evaluate"),
+  "Phải đọc lại chốt từ storage trước khi đánh giá cảnh báo");
+assert(issueFlow.includes("coordinationWarning"), "Cảnh báo chéo cơ sở phải vào hộp thoại xác nhận");
+// Đánh dấu running trước khi chạy, done sau khi chạy.
+assert(issueFlow.includes('status: "running"'), "Phải đánh dấu đang chạy cho tab kia biết");
+assert(issueFlow.includes('status: "done"'), "Chạy xong phải ghi chốt");
+assert(issueFlow.indexOf('status: "running"') < issueFlow.indexOf('status: "done"'),
+  "running phải được đặt trước khi vòng phát hành bắt đầu");
+// Chốt chỉ được ghi sau khi hộp thoại đã xác nhận, không phải trước.
+assert(issueFlow.indexOf("if (!confirmed)") < issueFlow.indexOf('status: "running"'),
+  "Không được ghi chốt khi người dùng còn chưa xác nhận");
+assert(issueFlow.includes("InvoiceIssueCoordination.checkContinuity"),
+  "Chạy xong phải kiểm tra tính liên tục của số hóa đơn");
+assert(issueFlow.includes("handoffNote"), "Xong phải nhắc chuyển sang cơ sở còn lại");
+
+// Cờ thứ tự là thiết lập dùng chung nên khi đổi phải đọc lại rồi mới ghi, tránh
+// xóa mất chốt mà tab kia vừa ghi vào cùng bản ghi.
+const tenantPicker = contentSource.slice(
+  contentSource.indexOf('node.querySelector("#it-einvoice-first-tenant")')
+);
+assert(tenantPicker.indexOf("loadIssueCoordination") < tenantPicker.indexOf("saveIssueCoordination"),
+  "Đổi cờ phải đọc lại bản ghi dùng chung trước khi ghi đè");
+assert(contentSource.includes('id="it-einvoice-first-tenant"'), "Thiếu ô chọn cơ sở phát hành trước");
+
 console.log("Issue coordination tests passed");

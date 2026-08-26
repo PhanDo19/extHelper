@@ -47,6 +47,9 @@
   let latestScan = null;
   let apiTemplate = null;
   let issuedInvoiceBook = { entries: [] };
+  // Điều phối phát hành giữa hai cơ sở: cờ thứ tự, bảng sao kê đối chiếu và
+  // chốt tiến độ. Dùng chung cả hai tab nên không đi qua tenantKey.
+  let issueCoordination = InvoiceIssueCoordination.empty();
   let eInvoiceRows = [];
   let eInvoiceSelection = new Set();
   let issuingInProgress = false;
@@ -2261,6 +2264,13 @@
       });
       statementDataset = { source: file.name, importedAt: new Date().toISOString(), transactions };
       await InvoiceMappingStore.saveStatement(statementDataset);
+      // Trích bảng tóm tắt cho cơ sở kia đọc: ngày, giờ, số tiền — vừa đủ để
+      // biết trước ngày đó bên này có bao nhiêu việc. Parse đã dùng đúng
+      // tenantSlug của tab hiện tại nên requestedAt là giờ giao dịch thật.
+      issueCoordination = InvoiceIssueCoordination.recordStatement(
+        issueCoordination, pageTenantSlug, transactions, statementDataset.importedAt
+      );
+      await InvoiceMappingStore.saveIssueCoordination(issueCoordination);
       renderStatementAdmin();
       setStatementMode(true);
       const pending = transactions.filter(item => item.status === "pending").length;
@@ -2848,12 +2858,38 @@
       <div><b>Phát hành hóa đơn điện tử</b><br><small>Chọn các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small></div>
       <label>Từ ngày<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
       <label>Đến ngày<input id="it-einvoice-to-date" type="date" value="${escapeHtml(toDate)}"></label>
+      <label title="Số hóa đơn là dải dùng chung hai cơ sở. Cơ sở đi trước phát hành hết một ngày rồi cơ sở kia mới tiếp, để số trong ngày liền mạch.">Cơ sở phát hành trước<select id="it-einvoice-first-tenant">${
+        InvoiceIssueCoordination.TENANTS.map(slug =>
+          `<option value="${escapeHtml(slug)}"${issueCoordination.firstTenant === slug ? " selected" : ""}>${
+            escapeHtml(TENANT_LABELS[slug] || slug)}</option>`).join("")
+      }</select></label>
       <button id="it-load-einvoice" type="button" class="primary">Tải danh sách</button>
     </div>
     <div id="it-einvoice-summary"></div>
     <div id="it-einvoice-table"></div>`;
     node.querySelector("#it-load-einvoice")?.addEventListener("click", () => {
       loadEInvoiceList().catch(error => setStatus(error.message, "error"));
+    });
+    node.querySelector("#it-einvoice-first-tenant")?.addEventListener("change", async event => {
+      const chosen = String(event.target.value || "");
+      try {
+        // Đọc lại trước khi ghi: tab kia có thể vừa đổi cờ hoặc vừa ghi chốt,
+        // ghi đè cả bản ghi sẽ xóa mất phần đó.
+        issueCoordination = InvoiceIssueCoordination.setFirstTenant(
+          InvoiceIssueCoordination.normalize(
+            await InvoiceMappingStore.loadIssueCoordination(issueCoordination)
+          ),
+          chosen
+        );
+        await InvoiceMappingStore.saveIssueCoordination(issueCoordination);
+        setStatus(
+          `Cơ sở phát hành trước: ${TENANT_LABELS[issueCoordination.firstTenant] || issueCoordination.firstTenant}. ` +
+          "Cả hai tab dùng chung thiết lập này.",
+          "ok"
+        );
+      } catch (error) {
+        setStatus(`Không lưu được thứ tự cơ sở: ${error.message}`, "error");
+      }
     });
     renderEInvoiceRows();
   }
@@ -3297,15 +3333,43 @@
           ? "; extension sẽ mở từng phiếu để đọc mặt hàng (chậm hơn)."
           : " và màn hình danh sách Bán hàng chưa mở, nên sẽ KHÔNG có mặt hàng để hạch toán.")
       : "";
+    // Số hóa đơn là dải dùng chung hai cơ sở. Lô trộn nhiều ngày không thể xen
+    // kẽ đúng với cơ sở kia, nên phải nêu rõ trước khi chạy.
+    const batchDates = [...new Set(orderedTargets.map(row => uiDateKey(row.dateKey)).filter(Boolean))].sort();
+    const multiDayWarning = batchDates.length > 1
+      ? `\n\n⚠ Lô này trộn ${batchDates.length} ngày (${batchDates.join(", ")}). ` +
+        "Số hóa đơn sẽ không xen kẽ đúng được với cơ sở kia; nên phát hành từng ngày một."
+      : "";
+    // Cảnh báo chéo cơ sở chỉ tính được khi lô gói gọn trong một ngày.
+    const batchDateKey = batchDates.length === 1 ? batchDates[0] : "";
+    issueCoordination = InvoiceIssueCoordination.normalize(
+      await InvoiceMappingStore.loadIssueCoordination(issueCoordination)
+    );
+    const coordination = batchDateKey
+      ? InvoiceIssueCoordination.evaluate(issueCoordination, pageTenantSlug, batchDateKey)
+      : { warnings: [], goesFirst: true, expectedOtherCount: null };
+    const coordinationWarning = coordination.warnings.length
+      ? `\n\n${coordination.warnings.map(item => `⚠ ${item.text}`).join("\n")}`
+      : "";
     const confirmed = window.confirm(
       `Phát hành ${orderedTargets.length} hóa đơn với tổng tiền ${formatMoney(total)} đ?\n\n` +
       "Số hóa đơn sẽ được cấp theo đúng thứ tự này:\n" +
       orderedTargets.slice(0, 10).map((row, index) =>
         `${index + 1}. ${row.invoiceNo} · ${uiDateKey(row.dateKey)} · ${formatMoney(row.grandTotal)} đ`).join("\n") +
       (orderedTargets.length > 10 ? `\n… và ${orderedTargets.length - 10} hóa đơn nữa.` : "") +
-      "\n\nHóa đơn đã phát hành không thể tự hủy trong extension." + outsideWarning + warning
+      "\n\nHóa đơn đã phát hành không thể tự hủy trong extension." +
+      outsideWarning + warning + multiDayWarning + coordinationWarning
     );
     if (!confirmed) return setStatus("Đã hủy thao tác phát hành.", "warn");
+
+    // Đánh dấu đang chạy để tab của cơ sở kia biết mà không chạy chồng lên.
+    if (batchDateKey) {
+      issueCoordination = InvoiceIssueCoordination.markCursor(
+        issueCoordination, pageTenantSlug, batchDateKey,
+        { status: "running", count: orderedTargets.length }
+      );
+      await InvoiceMappingStore.saveIssueCoordination(issueCoordination);
+    }
 
     const progress = document.getElementById("it-einvoice-progress");
     const button = document.getElementById("it-issue-einvoices");
@@ -3435,16 +3499,55 @@
       const entry = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
       return entry && !entry.items.length;
     }).length;
+    // Ghi chốt cho tab của cơ sở kia: đã phát hành ngày nào, tới số nào. Ghi cả
+    // khi lô lỗi giữa chừng — phần đã chạy vẫn chiếm số thật trên máy chủ.
+    let continuity = null;
+    if (batchDateKey) {
+      const issuedNumbers = orderedTargets
+        .map(row => String(row.soHoaDon || "").trim())
+        .filter(Boolean);
+      continuity = InvoiceIssueCoordination.checkContinuity(issuedNumbers);
+      issueCoordination = InvoiceIssueCoordination.markCursor(
+        issueCoordination, pageTenantSlug, batchDateKey,
+        {
+          status: "done",
+          lastSoHoaDon: continuity.to == null ? "" : String(continuity.to),
+          count: succeeded
+        }
+      );
+      await InvoiceMappingStore.saveIssueCoordination(issueCoordination)
+        .catch(error => console.error("Không lưu được chốt phát hành", error));
+    }
     const progressMessages = [];
     if (failures.length) progressMessages.push(`Thất bại ${failures.length} hóa đơn:\n${failures.join("\n")}`);
     if (warnings.length) progressMessages.push(`Cảnh báo ${warnings.length} hóa đơn:\n${warnings.join("\n")}`);
+    // Đứt quãng thường nghĩa là cơ sở kia đã chen vào giữa, hoặc có hóa đơn
+    // phát hành ngoài extension. Phải báo ngay thay vì để phát hiện lúc quyết toán.
+    if (continuity && !continuity.ok) {
+      progressMessages.push(
+        `⚠ Số hóa đơn ngày ${batchDateKey} không liên tục (${continuity.from}–${continuity.to}): ` +
+        continuity.gaps.map(gap => `thiếu ${gap.missing} số giữa ${gap.after} và ${gap.before}`).join("; ") +
+        ". Kiểm tra xem cơ sở kia có phát hành xen vào không."
+      );
+    }
     showProgress(progressMessages.join("\n\n"));
     // Việc cuối sau khi phát hành là xuất file hạch toán. Chỉ mời khi đã có hóa
     // đơn phát hành được và mọi hóa đơn đều đọc đủ mặt hàng — thiếu mặt hàng mà
     // xuất luôn thì file hạch toán bị hụt dòng, phải kiểm tra trước.
     const canExportIssued = succeeded > 0 && !missingItems && !failures.length;
+    // Nhắc chuyển cơ sở: chỉ khi cơ sở này đi trước và cơ sở kia còn việc cùng
+    // ngày. Có sao kê đối chiếu nên nêu được số giao dịch cụ thể, thay vì nhắc chung chung.
+    const otherPending = batchDateKey && coordination.goesFirst
+      ? InvoiceIssueCoordination.statementSummary(
+        issueCoordination, InvoiceIssueCoordination.otherTenant(pageTenantSlug), batchDateKey
+      )
+      : null;
+    const handoffNote = otherPending?.count && succeeded > 0
+      ? ` Tiếp theo: mở tab cơ sở còn lại và phát hành cùng ngày ${batchDateKey} ` +
+        `(${otherPending.count} giao dịch) trước khi sang ngày kế.`
+      : "";
     setStatus(
-      `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` +
+      `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` + handoffNote +
       (failures.length ? ` ${failures.length} hóa đơn lỗi, xem chi tiết bên dưới.` : "") +
       (warnings.length ? ` ${warnings.length} hóa đơn có cảnh báo nhưng đã xác nhận phát hành.` : "") +
       (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : "") +
@@ -6776,6 +6879,9 @@
     verificationLedger = await InvoiceMappingStore.loadLedger();
     stockStateMeta = await InvoiceMappingStore.loadStockStateMeta();
     issuedInvoiceBook = await InvoiceMappingStore.loadIssuedInvoices();
+    issueCoordination = InvoiceIssueCoordination.normalize(
+      await InvoiceMappingStore.loadIssueCoordination(InvoiceIssueCoordination.empty())
+    );
     priorityRules = await InvoiceMappingStore.loadPriorityRules();
     apiTemplate = await InvoiceMappingStore.loadApiTemplate();
     if (apiTemplate) {
