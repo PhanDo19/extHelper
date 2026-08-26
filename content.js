@@ -831,13 +831,28 @@
     }
   }
 
+  // Phát hành có hai đường chạy rất khác nhau về thời gian, nên không dùng chung
+  // một hạn chờ:
+  //   - Có sẵn mặt hàng (knownItems): bridge chỉ gọi kiemTraThongTin +
+  //     phatHanhHoaDon, không đụng giao diện, không polling. 30s là rất rộng.
+  //   - Không có: bridge phải mở phiếu trên danh sách Bán hàng, chờ lưới Kendo,
+  //     đọc dòng hàng rồi đóng form. Chuỗi polling này có thể mất hàng chục giây
+  //     nên vẫn cần 90s.
+  // Hạn chờ chỉ là ngưỡng báo lỗi phía content script; nó KHÔNG hủy request đang
+  // chạy trong bridge. Phiếu quá hạn vẫn có thể đã phát hành xong trên server,
+  // và đúng tình huống đó được confirmIssuedAfterFailure đọc lại và ghi sổ.
+  const ISSUE_TIMEOUT_FAST_MS = 30000;
+  const ISSUE_TIMEOUT_UI_MS = 90000;
+
+  function issueTimeoutMs(payload) {
+    return payload?.knownItems?.length ? ISSUE_TIMEOUT_FAST_MS : ISSUE_TIMEOUT_UI_MS;
+  }
+
   function request(action, payload) {
     return new Promise((resolve, reject) => {
       const id = `it-${Date.now()}-${sequence += 1}`;
       const timeoutMs = ["replaceInvoiceItems", "applyInvoicePlan"].includes(action) ? 90000
-        // Phát hành phải mở phiếu trên giao diện để đọc mặt hàng, đóng lại,
-        // rồi mới kiểm tra + phát hành qua cơ quan thuế.
-        : action === "issueEInvoice" ? 90000
+        : action === "issueEInvoice" ? issueTimeoutMs(payload)
         : action === "readInvoiceItems" ? 45000
         : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog"].includes(action) ? 30000
         : 5000;
@@ -875,16 +890,43 @@
     }
   }
 
+  // Gộp 4 dòng bối cảnh thành một dòng chip: đây là thông tin tham chiếu, đọc
+  // lướt để biết đang làm trên dữ liệu nào, không phải thứ cần đọc kỹ mỗi lần.
+  // Chi tiết đầy đủ đưa vào tooltip của từng chip.
   function stockSummaryHtml() {
     const warehouseSource = sharedWarehouse.initialized ? sharedWarehouse.source : "chưa khởi tạo";
     const warehouseTime = sharedWarehouse.updatedAt
       ? new Date(sharedWarehouse.updatedAt).toLocaleString("vi-VN")
       : "chưa cập nhật";
-    return `Cơ sở đang làm: <b>${escapeHtml(pageTenantLabel)}</b> · Kho vật lý: <b>Dùng chung Kim Giang + Linh Đàm</b><br>` +
-      `Nguồn kho: <b>${escapeHtml(warehouseSource)}</b> · Cập nhật: ${escapeHtml(warehouseTime)}<br>` +
-      `${inventory.length} mã đủ điều kiện · ${mappingSummary.confirmed || 0} đã xác nhận · ` +
-      `${mappingSummary.review || 0} cần duyệt · ${mappingSummary.unmatched || 0} chưa khớp<br>` +
-      `Danh mục web: ${webCatalog.length} mã từ ${escapeHtml(catalogDataset.source || "data.xlsx")}`;
+    const pending = Number(mappingSummary.review || 0) + Number(mappingSummary.unmatched || 0);
+    const chips = [
+      {
+        text: `<b>${escapeHtml(pageTenantLabel)}</b>`,
+        title: "Cơ sở đang làm · Kho vật lý dùng chung Kim Giang + Linh Đàm"
+      },
+      {
+        text: `Kho: <b>${escapeHtml(warehouseSource)}</b>`,
+        title: `Nguồn kho: ${warehouseSource} · Cập nhật: ${warehouseTime}`
+      },
+      {
+        text: `<b>${inventory.length}</b> mã kho`,
+        title: `${inventory.length} mã đủ điều kiện đưa vào hóa đơn`
+      },
+      {
+        // Chỉ nêu số còn phải xử lý; đã xác nhận là trạng thái bình thường.
+        text: pending
+          ? `<b class="warn">${pending}</b> mã chờ ánh xạ`
+          : `<b>${mappingSummary.confirmed || 0}</b> mã đã ánh xạ`,
+        title: `${mappingSummary.confirmed || 0} đã xác nhận · ${mappingSummary.review || 0} cần duyệt · ${mappingSummary.unmatched || 0} chưa khớp`
+      },
+      {
+        text: `Web: <b>${webCatalog.length}</b> mã`,
+        title: `Danh mục web: ${webCatalog.length} mã từ ${catalogDataset.source || "data.xlsx"}`
+      }
+    ];
+    return chips
+      .map(chip => `<span title="${escapeHtml(chip.title)}">${chip.text}</span>`)
+      .join("");
   }
 
   const OPEN_STATEMENT_STATUSES = new Set([
@@ -1048,6 +1090,71 @@
     };
   }
 
+  // Kế toán chỉ cần biết "bây giờ làm gì". Extension đã tính đủ trạng thái ở
+  // accountingCloseSnapshot(); hàm này chọn ra đúng một việc kế tiếp và nhãn nút
+  // tương ứng, để màn hình chính không bắt người dùng tự đọc rồi tự so sánh.
+  const NEXT_ACTION_LABELS = {
+    catalog: { button: "Đồng bộ danh mục", hint: "Lấy danh mục mới nhất từ website." },
+    stock: { button: "Cập nhật kho", hint: "Khởi tạo hoặc cập nhật tồn kho dùng chung." },
+    mapping: { button: "Duyệt ánh xạ", hint: "Ghép nốt các mặt hàng còn chờ xác nhận." },
+    statement: { button: "Nhập sao kê", hint: "Nhập file sao kê của kỳ đang chọn." },
+    reconciliation: { button: "Lập hóa đơn", hint: "Tạo và duyệt phương án cho giao dịch còn lại." },
+    issuance: { button: "Phát hành hóa đơn", hint: "Phát hành HĐĐT cho các phiếu đã đối soát." }
+  };
+
+  // snapshot: nhận lại kết quả accountingCloseSnapshot() của hàm gọi. Snapshot
+  // duyệt toàn bộ giao dịch trong kỳ (sao kê một tháng có thể hàng trăm dòng) và
+  // setStatus chạy trong vòng lặp lưu từng phiếu, nên không tính lại ở đây.
+  function nextWorkflowAction(snapshot) {
+    const state = snapshot || accountingCloseSnapshot();
+    const blocker = state.blockers[0];
+    if (!blocker) {
+      return { done: true, state, title: "Kỳ này đã xử lý xong", detail: `${state.done.length} giao dịch đã đối soát · ${state.issued} hóa đơn đã phát hành.` };
+    }
+    const copy = NEXT_ACTION_LABELS[blocker.key] || { button: "Mở màn hình", hint: blocker.detail };
+    return {
+      done: false,
+      state,
+      blocker,
+      // Chỉ đồng bộ danh mục là chạy được ngay tại chỗ; các việc khác cần mở màn hình.
+      inline: blocker.key === "catalog",
+      action: blocker.action,
+      title: blocker.label,
+      detail: blocker.detail,
+      hint: copy.hint,
+      button: copy.button,
+      remaining: state.blockers.length
+    };
+  }
+
+  function renderNextAction(snapshot) {
+    const node = document.getElementById("it-next-action");
+    if (!node) return;
+    // Việc chạy tại chỗ (đồng bộ danh mục) tự gọi setStatus, mà setStatus lại vẽ
+    // lại chính thanh này. Vẽ đè sẽ xóa nút đang khóa, làm mất nhãn "Đang đồng
+    // bộ…" và cho bấm lại giữa chừng. Giữ nguyên cho tới khi việc chạy xong.
+    if (node.querySelector("#it-next-action-go:disabled")) return;
+    const next = nextWorkflowAction(snapshot);
+    node.className = `it-next-action ${next.done ? "done" : ""}`;
+    node.innerHTML = `<div class="it-next-copy">
+        <span class="it-eyebrow">${next.done ? "HOÀN TẤT" : `VIỆC TIẾP THEO${next.remaining > 1 ? ` · CÒN ${next.remaining} MỤC` : ""}`}</span>
+        <b>${escapeHtml(next.title)}</b>
+        <small>${escapeHtml(next.done ? next.detail : next.hint)}</small>
+      </div>
+      ${next.done
+        ? `<button id="it-next-action-go" type="button" data-action="export">Xuất Excel đối soát</button>`
+        : `<button id="it-next-action-go" type="button" class="primary" data-action="${escapeHtml(next.action)}">${escapeHtml(next.button)}</button>`}`;
+    const go = node.querySelector("#it-next-action-go");
+    go?.addEventListener("click", () => {
+      if (next.done) return exportAccountingReport();
+      // Truyền đúng nút vừa bấm: syncLatestWebCatalog dùng currentTarget để khóa
+      // nút và đổi nhãn "Đang đồng bộ…". Không truyền thì nó khóa nút ở thẻ bước
+      // 1, còn nút này vẫn bấm lại được nhiều lần.
+      if (next.inline) return syncLatestWebCatalog({ currentTarget: go });
+      openAccountingDashboardAction({ target: go });
+    });
+  }
+
   function accountingStatusLabel(item) {
     return {
       pending: "Chờ xử lý",
@@ -1063,10 +1170,10 @@
     }[String(item?.status || "pending")] || String(item?.status || "Chưa rõ");
   }
 
-  function renderAccountingCloseStatus() {
+  function renderAccountingCloseStatus(snapshot) {
     const node = document.getElementById("it-accounting-close-status");
     if (!node) return;
-    const state = accountingCloseSnapshot();
+    const state = snapshot || accountingCloseSnapshot();
     node.className = `it-accounting-close-status ${state.ready ? "ready" : "blocked"}`;
     node.innerHTML = `<div class="it-accounting-close-head"><div><b>${state.ready ? "Sẵn sàng chốt kỳ" : `Chưa thể chốt kỳ · ${state.blockers.length} mục cần xử lý`}</b><span>${escapeHtml(state.period.fromDate || "…")} → ${escapeHtml(state.period.toDate || "…")} · ${escapeHtml(pageTenantLabel)}</span></div><span class="it-close-badge">${state.ready ? "ĐỦ ĐIỀU KIỆN" : "CẦN HOÀN TẤT"}</span></div>
       <div class="it-accounting-check-list">${state.checks.map(check => `<button type="button" data-action="${check.action}" class="${check.ok ? "ok" : "warn"}"><i>${check.ok ? "✓" : "!"}</i><span><b>${escapeHtml(check.label)}</b><small>${escapeHtml(check.detail)}</small></span></button>`).join("")}</div>`;
@@ -1182,6 +1289,10 @@
     else if (action === "statement") setStatementMode(true);
     else if (action === "batch") showBatchReviewMode(true, true);
     else if (action === "einvoice") openEInvoiceAdmin().catch(error => setStatus(error.message, "error"));
+    // Xuất file hạch toán là việc cuối của quy trình. Cho gọi thẳng từ dòng trạng
+    // thái vừa báo phát hành xong, không bắt kế toán sang tab Kho tìm nút.
+    else if (action === "issued-export") exportIssuedInvoices().catch(error => setStatus(error.message, "error"));
+    else if (action === "export") exportAccountingReport().catch(error => setStatus(error.message, "error"));
   }
 
   function refreshAccountingDashboard() {
@@ -1231,7 +1342,10 @@
       ? `<div class="it-accounting-queue-head"><div><b>Việc cần xử lý</b><span>${globalIssues.length + state.issues.length} mục cần chú ý trong kỳ</span></div>${state.issues.length > 12 ? `<small>Đang hiện 12/${state.issues.length} giao dịch</small>` : ""}</div><div class="it-table-wrap"><table class="it-accounting-table"><thead><tr><th>Ngày</th><th>Giao dịch/Phiếu</th><th>Số tiền</th><th>Nguyên nhân</th><th>Tiếp theo</th></tr></thead><tbody>${globalRows}${issueRows}</tbody></table></div>`
       : `<div class="it-accounting-empty"><b>Không có việc tồn đọng trong kỳ đã chọn</b><span>Các giao dịch đã được đối soát hoặc bỏ qua.</span></div>`;
     queue.querySelectorAll("button[data-action]").forEach(button => button.addEventListener("click", openAccountingDashboardAction));
-    renderAccountingCloseStatus();
+    // Một snapshot dùng cho cả dải kiểm tra và thanh Việc tiếp theo.
+    const closeState = accountingCloseSnapshot();
+    renderAccountingCloseStatus(closeState);
+    renderNextAction(closeState);
   }
 
   function workflowSnapshot() {
@@ -1302,40 +1416,47 @@
       <button id="it-toggle" type="button" title="Lập phương án theo tồn kho">Σ</button>
       <section id="it-panel" class="home-mode" hidden>
         <header>
-          <span id="it-resize-handle" title="Giữ và kéo để thay đổi kích thước">↖</span>
+          <span id="it-resize-handle" role="button" tabindex="0" aria-label="Thay đổi kích thước bảng. Giữ và kéo, hoặc bấm đúp để trả về mặc định." title="Giữ và kéo để thay đổi kích thước · Bấm đúp để trả về mặc định">↖</span>
           <div class="it-header-copy"><strong id="it-screen-title">Trợ lý xuất hóa đơn</strong><small id="it-screen-subtitle">${escapeHtml(pageTenantLabel)}${extensionVersion ? ` · v${escapeHtml(extensionVersion)}` : ""}</small></div>
           <button id="it-close" type="button" aria-label="Đóng">×</button>
         </header>
-        <nav id="it-screen-nav" class="it-screen-nav" hidden>
-          <button id="it-home-back" type="button">← Về quy trình</button>
-          <p id="it-screen-help"></p>
+        <nav id="it-screen-tabs" class="it-screen-tabs" aria-label="Chuyển nhanh giữa các bước">
+          <button id="it-home-back" type="button" data-screen="home">Quy trình</button>
+          <button type="button" data-screen="stock"><i>1</i>Kho</button>
+          <button type="button" data-screen="mapping"><i>2</i>Ánh xạ</button>
+          <button type="button" data-screen="statement"><i>3</i>Sao kê</button>
+          <button type="button" data-screen="batch"><i>4</i>Hóa đơn</button>
+          <button type="button" data-screen="einvoice"><i>5</i>Phát hành</button>
         </nav>
+        <p id="it-screen-help" class="it-screen-help" hidden></p>
         <div id="it-status" class="it-status">Chọn bước cần làm. Nên bắt đầu từ bước có màu vàng.</div>
         <section id="it-home-dashboard" class="it-home-dashboard">
-          <div class="it-welcome-card">
-            <div><span class="it-eyebrow">QUY TRÌNH DÀNH CHO KẾ TOÁN</span><h2>Xuất hóa đơn theo sao kê</h2><p>Làm lần lượt từ bước 1 đến bước 5. Extension sẽ báo rõ bước nào đã sẵn sàng và bước nào cần xử lý.</p></div>
-            <span class="it-branch-badge">${escapeHtml(pageTenantLabel)}</span>
+          <div class="it-period-bar">
+            <div class="it-period-copy"><span class="it-eyebrow">KỲ ĐANG XEM</span><b>${escapeHtml(pageTenantLabel)}</b></div>
+            <div class="it-accounting-filters">
+              <label>Cơ sở<select id="it-accounting-tenant" disabled><option>${escapeHtml(pageTenantLabel)}</option></select></label>
+              <label>Từ ngày<input id="it-accounting-from" type="date"></label>
+              <label>Đến ngày<input id="it-accounting-to" type="date"></label>
+              <button id="it-accounting-refresh" type="button">Cập nhật</button>
+            </div>
           </div>
+          <div id="it-next-action" class="it-next-action"></div>
           <section class="it-accounting-dashboard">
-            <div class="it-accounting-toolbar">
-              <div><span class="it-eyebrow">TỔNG QUAN KẾ TOÁN</span><h3>Tình hình xử lý trong kỳ</h3></div>
-              <div class="it-accounting-filters">
-                <label>Cơ sở<select id="it-accounting-tenant" disabled><option>${escapeHtml(pageTenantLabel)}</option></select></label>
-                <label>Từ ngày<input id="it-accounting-from" type="date"></label>
-                <label>Đến ngày<input id="it-accounting-to" type="date"></label>
-                <button id="it-accounting-refresh" type="button">Cập nhật</button>
-              </div>
-            </div>
             <div id="it-accounting-kpis" class="it-accounting-kpis"></div>
-            <div class="it-accounting-close-actions">
-              <div><b>Kiểm tra và chốt kỳ</b><span>Kiểm tra toàn bộ điều kiện trước khi bàn giao số liệu cho kế toán.</span></div>
-              <button id="it-accounting-close-check" type="button">Kiểm tra sẵn sàng</button>
-              <button id="it-accounting-export" type="button" class="primary">Xuất Excel đối soát</button>
-            </div>
-            <div id="it-accounting-close-status" class="it-accounting-close-status"></div>
-            <div id="it-accounting-queue" class="it-accounting-queue"></div>
+            <details id="it-accounting-details" class="it-accounting-details">
+              <summary>Chi tiết chốt kỳ và việc tồn đọng</summary>
+              <div class="it-accounting-close-actions">
+                <div><b>Kiểm tra và chốt kỳ</b><span>Kiểm tra toàn bộ điều kiện trước khi bàn giao số liệu cho kế toán.</span></div>
+                <button id="it-accounting-close-check" type="button">Kiểm tra sẵn sàng</button>
+                <button id="it-accounting-export" type="button" class="primary">Xuất Excel đối soát</button>
+              </div>
+              <div id="it-accounting-close-status" class="it-accounting-close-status"></div>
+              <div id="it-accounting-queue" class="it-accounting-queue"></div>
+            </details>
           </section>
           <div id="it-workflow-progress" class="it-workflow-progress"></div>
+          <details id="it-workflow-steps" class="it-workflow-steps">
+            <summary>Xem chi tiết 5 bước</summary>
           <div class="it-workflow-list">
             <article class="it-workflow-card" data-workflow-step="data">
               <span class="it-step-number">1</span><div class="it-step-copy"><h3>Chuẩn bị dữ liệu</h3><p>Đồng bộ danh mục web của cơ sở và kiểm tra kho vật lý dùng chung.</p><span id="it-step-data-status" class="it-step-status"></span></div>
@@ -1358,6 +1479,7 @@
               <div class="it-step-actions"><button id="it-manage-einvoice" type="button" class="primary">Mở phát hành hóa đơn</button></div>
             </article>
           </div>
+          </details>
           <div class="it-home-secondary">
             <button id="it-open-single" type="button">Điều chỉnh một phiếu đang mở</button>
             <details><summary>Công cụ dữ liệu nâng cao</summary><div class="it-advanced-actions">
@@ -1454,6 +1576,8 @@
     enablePanelResize(root.querySelector("#it-panel"), root.querySelector("#it-resize-handle"));
     root.querySelector("#it-toggle").addEventListener("click", () => {
       root.querySelector("#it-panel").hidden = false;
+      // Panel vừa hiện lại mới đo được chiều cao thật của menu tab.
+      syncTabsOffset();
       if (root.querySelector("#it-panel").classList.contains("batch-mode")) {
         saveBatchUiSession({ panelOpen: true }).catch(error => console.error("Không lưu được phiên Batch Review", error));
       } else if (root.querySelector("#it-panel").classList.contains("stock-mode")) {
@@ -1464,11 +1588,27 @@
         showHomeDashboard();
       }
     });
-    root.querySelector("#it-close").addEventListener("click", () => {
-      root.querySelector("#it-panel").hidden = true;
-      if (root.querySelector("#it-panel").classList.contains("batch-mode")) {
+    const closePanel = () => {
+      const panel = root.querySelector("#it-panel");
+      if (panel.hidden) return;
+      panel.hidden = true;
+      if (panel.classList.contains("batch-mode")) {
         saveBatchUiSession({ panelOpen: false }).catch(error => console.error("Không lưu được phiên Batch Review", error));
       }
+      // Trả tiêu điểm về nút mở để người dùng bàn phím không bị rơi ra đầu trang.
+      root.querySelector("#it-toggle")?.focus();
+    };
+    root.querySelector("#it-close").addEventListener("click", closePanel);
+    // Esc đóng bảng như mọi hộp thoại khác, nhưng không cướp phím khi người dùng
+    // đang gõ trong ô nhập hoặc đang mở danh sách chọn của trang web.
+    root.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const active = root.contains(document.activeElement) ? document.activeElement : null;
+      if (active && (active.tagName === "INPUT" || active.tagName === "SELECT" || active.tagName === "TEXTAREA")) {
+        active.blur();
+        return;
+      }
+      closePanel();
     });
     root.querySelector("#it-scan").addEventListener("click", scanInvoice);
     root.querySelector("#it-solve").addEventListener("click", solveInvoice);
@@ -1514,7 +1654,21 @@
     root.querySelector("#it-manage-einvoice").addEventListener("click", () => {
       openEInvoiceAdmin().catch(error => setStatus(error.message, "error"));
     });
-    root.querySelector("#it-home-back").addEventListener("click", showHomeDashboard);
+    // Menu tab: chuyển thẳng giữa các bước, không phải quay về màn hình chính rồi
+    // mới bấm tiếp. Dùng lại đúng các hàm mở màn hình đã có.
+    root.querySelector("#it-screen-tabs").addEventListener("click", event => {
+      const screen = event.target.closest("button[data-screen]")?.dataset.screen;
+      if (!screen) return;
+      if (screen === "home") return showHomeDashboard();
+      if (screen === "stock") return setStockMode(true);
+      if (screen === "mapping") return setMappingMode(true);
+      if (screen === "statement") {
+        statementSubtab = "statement";
+        return setStatementMode(true);
+      }
+      if (screen === "batch") return showBatchReviewMode(true, true);
+      if (screen === "einvoice") openEInvoiceAdmin().catch(error => setStatus(error.message, "error"));
+    });
     root.querySelector("#it-open-single").addEventListener("click", () => {
       applyPanelScreen("single-mode");
       scanInvoice();
@@ -1529,11 +1683,24 @@
     renderWorkflowDashboard();
   }
 
-  function setStatus(message, kind) {
+  // next (tùy chọn): { label, action } gắn nút đi thẳng tới bước kế tiếp ngay
+  // trên dòng trạng thái, để kế toán không phải tự tìm đường sang màn hình sau.
+  function setStatus(message, kind, next) {
     const node = document.getElementById("it-status");
     if (!node) return;
-    node.textContent = message;
     node.className = `it-status ${kind || ""}`;
+    // Dựng bằng DOM node: message có thể chứa số phiếu, diễn giải sao kê hoặc
+    // thông báo lỗi lấy từ website, không được diễn giải như thẻ HTML.
+    node.replaceChildren(document.createTextNode(message));
+    if (next?.label && next?.action) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "it-status-next";
+      button.dataset.action = next.action;
+      button.textContent = next.label;
+      button.addEventListener("click", () => openAccountingDashboardAction({ target: button }));
+      node.append(button);
+    }
     renderWorkflowDashboard();
   }
 
@@ -1725,6 +1892,11 @@
       handle.addEventListener("pointerup", onUp);
       handle.addEventListener("pointercancel", onUp);
     });
+
+    // Panel hẹp lại thì menu tab xuống hai hàng; đo lại để mốc dính luôn đúng.
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(() => syncTabsOffset()).observe(panel);
+    }
   }
 
   function localTimestamp(value) {
@@ -2225,13 +2397,58 @@
     const screen = PANEL_SCREENS.find(item => item.mode === mode);
     const title = document.getElementById("it-screen-title");
     const subtitle = document.getElementById("it-screen-subtitle");
-    const nav = document.getElementById("it-screen-nav");
     const help = document.getElementById("it-screen-help");
     if (title) title.textContent = screen?.title || "Điều chỉnh một phiếu";
     if (subtitle) subtitle.textContent = `${pageTenantLabel}${extensionVersion ? ` · v${extensionVersion}` : ""}`;
-    if (nav) nav.hidden = mode === "home-mode";
-    if (help) help.textContent = screen?.help || "Đọc phiếu đang mở, tính phương án và kiểm tra trước khi lưu.";
+    // Ở màn hình chính không cần câu hướng dẫn của bước; chỗ đó đã có thẻ chào
+    // mừng và thanh Việc tiếp theo nói rõ hơn.
+    if (help) {
+      help.hidden = mode === "home-mode";
+      help.textContent = screen?.help || "Đọc phiếu đang mở, tính phương án và kiểm tra trước khi lưu.";
+    }
+    markActiveScreenTab(mode);
     return true;
+  }
+
+  // Bước 5 là sub-tab của màn Giao dịch nên không có mode riêng; dựa thêm vào
+  // statementSubtab để tô đúng tab đang mở.
+  const SCREEN_TAB_BY_MODE = {
+    "home-mode": "home",
+    "stock-mode": "stock",
+    "mapping-mode": "mapping",
+    "statement-mode": "statement",
+    "batch-mode": "batch"
+  };
+
+  // Thanh tab có flex-wrap nên chiều cao đổi theo bề rộng panel (1 hay 2 hàng).
+  // Đo thật rồi ghi vào --it-tabs-offset để thanh công cụ của từng màn hình dính
+  // ngay dưới menu, thay vì dựa vào một hằng số chỉ đúng ở một cỡ panel.
+  function syncTabsOffset() {
+    const root = document.getElementById("invoice-target-mvp");
+    const tabs = document.getElementById("it-screen-tabs");
+    if (!root || !tabs) return;
+    const header = document.querySelector("#it-panel header");
+    const headerHeight = header?.offsetHeight || 58;
+    const panelPadding = parseFloat(getComputedStyle(document.getElementById("it-panel")).paddingTop) || 18;
+    // Header dính ở top:-padding nên mép dưới của nó là (cao header - padding).
+    const offset = headerHeight - panelPadding + tabs.offsetHeight;
+    root.style.setProperty("--it-header-offset", `${Math.round(headerHeight - panelPadding)}px`);
+    root.style.setProperty("--it-tabs-offset", `${Math.round(offset)}px`);
+  }
+
+  function markActiveScreenTab(mode) {
+    const tabs = document.getElementById("it-screen-tabs");
+    if (!tabs) return;
+    syncTabsOffset();
+    let active = SCREEN_TAB_BY_MODE[mode] || "";
+    if (mode === "statement-mode" && statementSubtab === "einvoice") active = "einvoice";
+    for (const button of tabs.querySelectorAll("button[data-screen]")) {
+      const current = button.dataset.screen === active;
+      button.classList.toggle("active", current);
+      // aria-current để trình đọc màn hình biết đang ở bước nào.
+      if (current) button.setAttribute("aria-current", "step");
+      else button.removeAttribute("aria-current");
+    }
   }
 
   async function syncLatestWebCatalog(event) {
@@ -2272,6 +2489,9 @@
         button.disabled = false;
         button.textContent = oldLabel;
       }
+      // Mở khóa xong mới vẽ lại: trong lúc chạy, thanh Việc tiếp theo cố ý không
+      // vẽ đè để giữ nút đang khóa, nên phải làm mới ở đây để nó hiện việc kế tiếp.
+      renderNextAction();
     }
   }
 
@@ -2524,6 +2744,77 @@
     await loadEInvoiceList();
   }
 
+  // Ba tra cứu dưới đây trước kia quét tuyến tính toàn bộ sổ đối soát, sao kê và
+  // danh mục web MỖI LẦN gọi. Vẽ lại bảng hóa đơn gọi chúng một lần cho mỗi
+  // dòng, nên chi phí là bậc hai theo số phiếu và thấy rõ khi phát hành cả lô.
+  //
+  // Index được dựng lười và tự dựng lại khi mảng nguồn bị gán mới (so sánh bằng
+  // identity, không phải nội dung). Các chỗ ghi vào dataset trong file này đều
+  // thay cả mảng chứ không mutate tại chỗ, nên kiểm tra identity là đủ và không
+  // cần đụng tới từng điểm gán.
+  const lookupIndex = { ledgerSource: null, ledger: null, catalogSource: null, catalog: null, statementSource: null, statement: null };
+
+  function ledgerEntryIndex() {
+    const entries = verificationLedger.entries || [];
+    if (lookupIndex.ledgerSource !== entries) {
+      const byInvoiceNo = new Map();
+      for (const item of entries) {
+        const key = String(item.invoiceNo || "").trim();
+        if (!key) continue;
+        // Giữ bản ghi mới nhất theo verifiedAt, đúng như sort giảm dần + [0] cũ.
+        const current = byInvoiceNo.get(key);
+        if (!current || String(item.verifiedAt || "").localeCompare(String(current.verifiedAt || "")) > 0) {
+          byInvoiceNo.set(key, item);
+        }
+      }
+      lookupIndex.ledgerSource = entries;
+      lookupIndex.ledger = byInvoiceNo;
+    }
+    return lookupIndex.ledger;
+  }
+
+  function catalogIndex() {
+    if (lookupIndex.catalogSource !== webCatalog) {
+      const byCode = new Map();
+      // Giữ mã đầu tiên khớp, đúng như find() cũ.
+      for (const row of webCatalog) {
+        const key = String(row.code);
+        if (!byCode.has(key)) byCode.set(key, row);
+      }
+      lookupIndex.catalogSource = webCatalog;
+      lookupIndex.catalog = byCode;
+    }
+    return lookupIndex.catalog;
+  }
+
+  function statementTransactionIndex() {
+    const transactions = statementDataset.transactions || [];
+    if (lookupIndex.statementSource !== transactions) {
+      const byInvoiceNo = new Map();
+      for (const transaction of transactions) {
+        // Một giao dịch có thể mang tối đa 3 mã phiếu; gom về mọi mã của nó và
+        // giữ nguyên thứ tự xuất hiện để find() phía sau chọn đúng ứng viên cũ.
+        const keys = new Set();
+        for (const value of [
+          transaction.invoiceNo,
+          transaction.pendingPlan?.invoiceNo,
+          transaction.batchApprovedPlan?.invoiceNo
+        ]) {
+          const invoiceNo = String(value || "").trim();
+          if (invoiceNo) keys.add(invoiceNo);
+        }
+        for (const key of keys) {
+          const bucket = byInvoiceNo.get(key);
+          if (bucket) bucket.push(transaction);
+          else byInvoiceNo.set(key, [transaction]);
+        }
+      }
+      lookupIndex.statementSource = transactions;
+      lookupIndex.statement = byInvoiceNo;
+    }
+    return lookupIndex.statement;
+  }
+
   // Sổ đối soát sau lưu đã giữ sẵn mặt hàng + số lượng của đúng phiếu đó, và số
   // liệu này đã được kiểm tra lại với phiếu trên website trước khi trừ tồn. Dùng
   // lại nó thay vì mở lại phiếu để đọc: không phụ thuộc màn hình đang mở, không
@@ -2531,14 +2822,13 @@
   function ledgerItemsForInvoiceNo(invoiceNo) {
     const wanted = String(invoiceNo || "").trim();
     if (!wanted) return null;
-    const entry = (verificationLedger.entries || [])
-      .filter(item => String(item.invoiceNo || "").trim() === wanted)
-      .sort((a, b) => String(b.verifiedAt || "").localeCompare(String(a.verifiedAt || "")))[0];
+    const entry = ledgerEntryIndex().get(wanted);
     if (!entry || !Array.isArray(entry.items) || !entry.items.length) return null;
+    const catalog = catalogIndex();
     return entry.items.map(item => {
       const qty = Math.round(Number(item.qty ?? item.newQty) || 0);
       const price = Math.round(Number(item.price) || 0);
-      const product = webCatalog.find(row => String(row.code) === String(item.code));
+      const product = catalog.get(String(item.code));
       return {
         code: String(item.code || "").trim(),
         name: String(item.name || product?.name || "").trim(),
@@ -2586,9 +2876,12 @@
     const visibleRows = showEInvoicesOutsideStatement
       ? eInvoiceRows
       : eInvoiceRows.filter(row => isStatementInvoice(row, linked));
+    // Tính đối chiếu sao kê một lần cho mỗi dòng rồi dùng lại ở cả `selectable`
+    // lẫn phần dựng HTML bên dưới, thay vì gọi statementInvoiceMatch hai lần.
+    const matchByRowId = new Map(visibleRows.map(row => [row.id, statementInvoiceMatch(row)]));
     const selectable = new Set(
       visibleRows
-        .filter(row => !row.issued && !row.cancelled && statementInvoiceMatch(row).valid)
+        .filter(row => !row.issued && !row.cancelled && matchByRowId.get(row.id).valid)
         .map(row => row.id));
     // Bỏ khỏi lựa chọn những dòng không còn phát hành được (hoặc đã bị ẩn).
     eInvoiceSelection = new Set(Array.from(eInvoiceSelection).filter(id => selectable.has(id)));
@@ -2614,7 +2907,7 @@
     }
     const rows = visibleRows.map(row => {
       const recorded = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
-      const statementMatch = statementInvoiceMatch(row);
+      const statementMatch = matchByRowId.get(row.id);
       const statusHtml = row.cancelled
         ? '<span class="it-bank-status skipped">Đã hủy</span>'
         : row.issued
@@ -2662,7 +2955,7 @@
       </span>
     </div>
     <div id="it-einvoice-progress"></div>
-    <div class="it-table-wrap"><table class="it-batch-table"><thead><tr><th></th><th>Phiếu</th><th>Tổng cộng</th><th>Giao dịch liên kết</th><th>Người mua</th><th>Trạng thái</th><th>Mặt hàng đã ghi</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="it-table-wrap"><table class="it-batch-table it-einvoice-table"><thead><tr><th></th><th>Phiếu</th><th>Tổng cộng</th><th>Giao dịch liên kết</th><th>Người mua</th><th>Trạng thái</th><th>Mặt hàng đã ghi</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     table.querySelector("#it-einvoice-select-all")?.addEventListener("change", event => {
       table.querySelectorAll(".it-einvoice-select").forEach(input => { input.checked = event.target.checked; });
       updateEInvoiceSelection();
@@ -2853,18 +3146,7 @@
   // sinh từ luồng của extension; phiếu ngoài danh sách giao dịch là của nghiệp vụ
   // khác nên mặc định không đưa vào lô phát hành.
   function statementInvoiceNos() {
-    const numbers = new Set();
-    for (const transaction of statementDataset.transactions || []) {
-      for (const value of [
-        transaction.invoiceNo,
-        transaction.pendingPlan?.invoiceNo,
-        transaction.batchApprovedPlan?.invoiceNo
-      ]) {
-        const invoiceNo = String(value || "").trim();
-        if (invoiceNo) numbers.add(invoiceNo);
-      }
-    }
-    return numbers;
+    return new Set(statementTransactionIndex().keys());
   }
 
   function isStatementInvoice(row, linked) {
@@ -2874,11 +3156,7 @@
   function statementTransactionsForInvoiceNo(invoiceNo) {
     const wanted = String(invoiceNo || "").trim();
     if (!wanted) return [];
-    return (statementDataset.transactions || []).filter(transaction => [
-      transaction.invoiceNo,
-      transaction.pendingPlan?.invoiceNo,
-      transaction.batchApprovedPlan?.invoiceNo
-    ].some(value => String(value || "").trim() === wanted));
+    return statementTransactionIndex().get(wanted) || [];
   }
 
   const E_INVOICE_AMOUNT_TOLERANCE = 1;
@@ -3000,9 +3278,21 @@
     const failures = [];
     const warnings = [];
     let completed = 0;
-    const processTarget = async (row, index) => {
-        showProgress(`Đang phát hành ${index + 1}/${targets.length}: ${row.invoiceNo}…`);
-        setStatus(`Đang phát hành ${row.invoiceNo} (${index + 1}/${targets.length})…`, "warn");
+    // Vẽ lại cả bảng sau MỖI hóa đơn là chi phí bậc hai: mỗi lần vẽ đụng tới
+    // toàn bộ dòng đang hiển thị và dựng lại mọi node + listener. Thanh tiến
+    // trình ở trên đã cập nhật riêng bằng textContent nên người dùng vẫn thấy
+    // tiến độ từng phiếu; bảng chỉ cần làm mới thưa hơn, và khối `finally` luôn
+    // vẽ lại lần cuối nên trạng thái kết thúc vẫn chính xác.
+    const RENDER_EVERY = 10;
+    const renderIssueProgress = (done, totalCount) => {
+      if (done % RENDER_EVERY === 0 || done === totalCount) renderEInvoiceRows();
+    };
+    const processTarget = async row => {
+        // Hai giai đoạn chạy không theo thứ tự chỉ số ban đầu, nên tiến độ bám
+        // theo số phiếu đã xong thay vì vị trí trong danh sách.
+        const position = Math.min(completed + 1, targets.length);
+        showProgress(`Đang phát hành ${position}/${targets.length}: ${row.invoiceNo}…`);
+        setStatus(`Đang phát hành ${row.invoiceNo} (${position}/${targets.length})…`, "warn");
         try {
           const ledgerItems = ledgerItemsForInvoiceNo(row.invoiceNo);
           const result = await request("issueEInvoice", {
@@ -3047,7 +3337,7 @@
           eInvoiceSelection.delete(row.id);
           completed += 1;
           showProgress(`\u0110\u00e3 x\u1eed l\u00fd ${completed}/${targets.length} h\u00f3a \u0111\u01a1n...`);
-          renderEInvoiceRows();
+          renderIssueProgress(completed, targets.length);
         } catch (error) {
           // Hết thời gian chờ hoặc mất phản hồi KHÔNG có nghĩa là chưa phát hành:
           // server có thể đã phát hành xong. Đọc lại danh sách để lấy trạng thái
@@ -3078,27 +3368,38 @@
           }
           completed += 1;
           showProgress(`\u0110\u00e3 x\u1eed l\u00fd ${completed}/${targets.length} h\u00f3a \u0111\u01a1n...`);
-          renderEInvoiceRows();
+          renderIssueProgress(completed, targets.length);
         }
     };
     try {
-      // Fast lane: with ledger items available, issuing never touches the
-      // website UI. Two concurrent pipelines reduce network waiting while
-      // keeping load on the tax endpoint bounded. UI-reading stays sequential.
-      const canUseFastLane = targets.every(row => Boolean(ledgerItemsForInvoiceNo(row.invoiceNo)));
-      if (canUseFastLane && targets.length > 1) {
+      // Hai đường chạy có ràng buộc khác nhau:
+      //   - Có sẵn mặt hàng trong sổ đối soát: phát hành thuần API, không chạm
+      //     giao diện, nên chạy song song 2 luồng được.
+      //   - Thiếu mặt hàng: bridge phải mở/đóng form trên danh sách Bán hàng.
+      //     Đó là trạng thái DOM dùng chung nên BẮT BUỘC tuần tự; hai luồng
+      //     cùng mở phiếu sẽ đọc nhầm nhau.
+      //
+      // Trước đây chỉ cần MỘT phiếu thiếu mặt hàng là cả lô rơi về tuần tự.
+      // Giờ tách làm hai giai đoạn chạy NỐI TIẾP nhau: xong hẳn nhóm API rồi
+      // mới tới nhóm phải mở giao diện. Không bao giờ chồng lấn, nên bất biến
+      // "khi có luồng song song thì không ai chạm UI" vẫn được giữ nguyên.
+      const apiOnly = targets.filter(row => Boolean(ledgerItemsForInvoiceNo(row.invoiceNo)));
+      const needsUi = targets.filter(row => !ledgerItemsForInvoiceNo(row.invoiceNo));
+      if (apiOnly.length > 1) {
         let nextIndex = 0;
         const worker = async () => {
-          while (nextIndex < targets.length) {
-            const index = nextIndex;
+          while (nextIndex < apiOnly.length) {
+            const current = apiOnly[nextIndex];
             nextIndex += 1;
-            await processTarget(targets[index], index);
+            await processTarget(current);
           }
         };
-        await Promise.all(Array.from({ length: Math.min(2, targets.length) }, worker));
+        await Promise.all(Array.from({ length: Math.min(2, apiOnly.length) }, worker));
       } else {
-        for (const [index, row] of targets.entries()) await processTarget(row, index);
+        for (const row of apiOnly) await processTarget(row);
       }
+      // Giai đoạn 2 luôn tuần tự, kể cả khi chỉ có một phiếu.
+      for (const row of needsUi) await processTarget(row);
     } finally {
       // Luôn mở khóa nút, kể cả khi vòng lặp hỏng giữa chừng.
       issuingInProgress = false;
@@ -3112,12 +3413,18 @@
     if (failures.length) progressMessages.push(`Thất bại ${failures.length} hóa đơn:\n${failures.join("\n")}`);
     if (warnings.length) progressMessages.push(`Cảnh báo ${warnings.length} hóa đơn:\n${warnings.join("\n")}`);
     showProgress(progressMessages.join("\n\n"));
+    // Việc cuối sau khi phát hành là xuất file hạch toán. Chỉ mời khi đã có hóa
+    // đơn phát hành được và mọi hóa đơn đều đọc đủ mặt hàng — thiếu mặt hàng mà
+    // xuất luôn thì file hạch toán bị hụt dòng, phải kiểm tra trước.
+    const canExportIssued = succeeded > 0 && !missingItems && !failures.length;
     setStatus(
       `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` +
       (failures.length ? ` ${failures.length} hóa đơn lỗi, xem chi tiết bên dưới.` : "") +
       (warnings.length ? ` ${warnings.length} hóa đơn có cảnh báo nhưng đã xác nhận phát hành.` : "") +
-      (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : ""),
-      failures.length ? "error" : warnings.length ? "warn" : "ok"
+      (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : "") +
+      (canExportIssued ? " Bước cuối: xuất file hạch toán cho kỳ này." : ""),
+      failures.length ? "error" : warnings.length ? "warn" : "ok",
+      canExportIssued ? { label: "Xuất file hạch toán", action: "issued-export" } : undefined
     );
   }
 
@@ -3192,11 +3499,9 @@
     if (!node) return;
     const statementTransactions = statementDataset.transactions || [];
     const statementTotal = statementTransactions.reduce((sum, item) => sum + Number(item.credit || 0), 0);
-    node.innerHTML = `<div class="it-subtabs">
-        <button id="it-subtab-statement" type="button" class="active">Giao dịch</button>
-        <button id="it-subtab-einvoice" type="button">Phát hành hóa đơn</button>
-      </div>
-      <div id="it-statement-view">
+    // Không còn hàng sub-tab riêng: menu chuyển bước ở đầu panel đã có sẵn
+    // "3 Sao kê" và "5 Phát hành", hai hàng nút cùng chức năng gây rối.
+    node.innerHTML = `<div id="it-statement-view">
         <div class="it-statement-toolbar"><div class="it-statement-source"><b>Sao kê: ${escapeHtml(statementDataset.source || "chưa nhập")}</b><button id="it-statement-import-button" type="button" class="primary">Nhập sao kê Excel</button></div>
         <div class="it-statement-total"><small>Tổng tiền sao kê</small><strong>${formatMoney(statementTotal)} đ</strong><span id="it-statement-visible-total"></span></div>
         <select id="it-statement-filter"><option value="open">Chưa xử lý</option><option value="all">Tất cả</option><option value="pending">Chờ xử lý</option><option value="review">Cần kiểm tra</option><option value="done">Đã xử lý</option></select></div>
@@ -3207,17 +3512,12 @@
     node.querySelector("#it-statement-import-button").addEventListener("click", () => {
       document.getElementById("it-statement-file")?.click();
     });
-    node.querySelector("#it-subtab-statement").addEventListener("click", () => showStatementSubtab("statement"));
-    node.querySelector("#it-subtab-einvoice").addEventListener("click", () => {
-      showStatementSubtab("einvoice");
-      loadEInvoiceList().catch(error => setStatus(error.message, "error"));
-    });
     renderStatementRows();
     showStatementSubtab(statementSubtab);
   }
 
-  // Phát hành hóa đơn là một bước của luồng giao dịch nên nằm ngay trong tab
-  // Giao dịch ngân hàng, không tách thành màn hình riêng.
+  // Phát hành hóa đơn dùng chung section với màn Giao dịch (cùng dữ liệu sao kê),
+  // nhưng người dùng chuyển giữa hai bước bằng menu ở đầu panel.
   function showStatementSubtab(name) {
     statementSubtab = name === "einvoice" ? "einvoice" : "statement";
     const statementView = document.getElementById("it-statement-view");
@@ -3226,8 +3526,16 @@
     const showEInvoice = statementSubtab === "einvoice";
     statementView.hidden = showEInvoice;
     eInvoiceView.hidden = !showEInvoice;
-    document.getElementById("it-subtab-statement")?.classList.toggle("active", !showEInvoice);
-    document.getElementById("it-subtab-einvoice")?.classList.toggle("active", showEInvoice);
+    // Tiêu đề panel phải nói đúng bước đang xem, vì cùng một section phục vụ hai bước.
+    const title = document.getElementById("it-screen-title");
+    const help = document.getElementById("it-screen-help");
+    if (title) title.textContent = showEInvoice ? "Bước 5 · Phát hành hóa đơn" : "Bước 3 · Giao dịch ngân hàng";
+    if (help) {
+      help.textContent = showEInvoice
+        ? "Chọn các hóa đơn đã đối soát rồi phát hành theo lô. Phát hành xong không hoàn tác được."
+        : "Nhập sao kê và kiểm tra trạng thái từng giao dịch trước khi lập hóa đơn.";
+    }
+    markActiveScreenTab("statement-mode");
     if (showEInvoice) renderEInvoiceAdmin();
   }
 
@@ -5304,7 +5612,7 @@
       <button id="it-approve-batch" type="button" class="primary" ${ready.length ? "" : "disabled"}>Accept các phương án đã chọn</button>
       <button id="it-run-batch-api" type="button" class="primary" ${apiQueue.length ? "" : "disabled"}>Lưu API ${apiQueue.length} phiếu đã Accept</button>
     </div>
-    <div class="it-table-wrap"><table class="it-batch-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>Giờ vào → ra</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="it-table-wrap"><table class="it-batch-table it-batch-plan-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>Giờ vào → ra</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     table.querySelector("#it-batch-select-all")?.addEventListener("change", event => {
       table.querySelectorAll(".it-batch-select:not(:disabled)").forEach(input => { input.checked = event.target.checked; });
     });
@@ -5462,7 +5770,11 @@
     await saveBatchUiSession({ panelOpen: true });
     renderBatchPlans();
     renderStatementAdmin();
-    setStatus(`Đã Accept ${selectedIndexes.length} phương án vào hàng đợi. Chưa sửa hoặc lưu hóa đơn.`, "ok");
+    setStatus(
+      `Đã Accept ${selectedIndexes.length} phương án vào hàng đợi. Chưa sửa hoặc lưu hóa đơn. ` +
+      `Bước tiếp theo: bấm "Lưu API ${selectedIndexes.length} phiếu đã Accept" ngay phía dưới.`,
+      "ok"
+    );
   }
 
   // Số tiền sao kê không tạo được hóa đơn khớp tuyệt đối (website làm tròn VAT).
@@ -6003,7 +6315,14 @@
       }
       renderBatchPlans();
       renderStatementAdmin();
-      setStatus(`Đã lưu API và đối soát thành công ${completed}/${indexes.length} phiếu.`, "ok");
+      // Lưu xong là dữ liệu bước 5 đã sẵn sàng. Mời sang thẳng màn phát hành thay
+      // vì bắt kế toán tự thoát ra, đổi tab rồi bấm Tải danh sách. Vẫn phải bấm
+      // vì phát hành hóa đơn là thao tác không hoàn tác được.
+      setStatus(
+        `Đã lưu API và đối soát thành công ${completed}/${indexes.length} phiếu.`,
+        "ok",
+        { label: `Phát hành ${completed} hóa đơn này`, action: "einvoice" }
+      );
     } catch (error) {
       renderBatchPlans();
       renderStatementAdmin();

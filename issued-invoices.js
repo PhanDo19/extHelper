@@ -85,9 +85,13 @@
     return { entries };
   }
 
+  // Tìm trước rồi mới chuẩn hóa đúng một bản ghi. Chuẩn hóa cả sổ trước khi tìm
+  // khiến mỗi lần gọi tốn O(số hóa đơn đã ghi), mà hàm này được gọi một lần cho
+  // mỗi dòng khi vẽ bảng phát hành.
   function findByInvoiceId(book, invoiceId) {
     const wanted = String(invoiceId || "");
-    return (book?.entries || []).map(normalizeEntry).find(item => item.invoiceId === wanted) || null;
+    const found = (book?.entries || []).find(item => String(item?.invoiceId || "") === wanted);
+    return found ? normalizeEntry(found) : null;
   }
 
   function inRange(dateKey, fromDate, toDate) {

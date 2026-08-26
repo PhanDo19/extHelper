@@ -108,7 +108,13 @@ assert.strictEqual(serialized.includes("availableQty"), false);
 // riêng; nút xuất hạch toán nằm ở tab Kho.
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 assert(contentSource.includes('id="it-einvoice-admin"'), "Missing e-invoice section");
-assert(contentSource.includes('id="it-subtab-einvoice"'), "Missing e-invoice sub-tab");
+// Điều hướng sang bước 5 nay dùng menu chuyển bước ở đầu panel; hàng sub-tab cũ
+// đã bỏ vì trùng chức năng. Điều bắt buộc vẫn là section phát hành nằm chung
+// màn Giao dịch (cùng dữ liệu sao kê), không tách thành màn hình riêng.
+assert(!contentSource.includes('id="it-subtab-einvoice"'),
+  "Hàng sub-tab cũ trùng với menu chuyển bước nên phải bỏ");
+assert(contentSource.includes('data-screen="einvoice"'),
+  "Menu chuyển bước phải có lối vào bước Phát hành");
 assert(contentSource.includes('id="it-manage-einvoice"'),
   "Dashboard phải có lối tắt rõ ràng tới bước Phát hành hóa đơn");
 assert(contentSource.includes('function openEInvoiceAdmin()'),
@@ -129,8 +135,43 @@ assert.match(contentSource, /function exportIssuedInvoices\(\)/);
 assert.match(contentSource, /function renderEInvoiceRows\(\)/);
 // Ghi sổ ngay sau từng hóa đơn để lô dừng giữa chừng vẫn có số liệu.
 assert.match(contentSource, /saveIssuedInvoices\(issuedInvoiceBook\)/);
-assert.match(contentSource, /canUseFastLane/);
-assert.match(contentSource, /Math\.min\(2, targets\.length\)/);
+// Lô phát hành tách hai giai đoạn NỐI TIẾP: nhóm có sẵn mặt hàng chạy thuần API
+// nên song song được, nhóm thiếu mặt hàng phải mở/đóng form trên danh sách Bán
+// hàng nên bắt buộc tuần tự. Hai nhóm không được chồng lấn, nếu không sẽ có
+// luồng chạm vào DOM trong khi luồng khác đang mở phiếu và đọc nhầm số liệu.
+const issueRunner = contentSource.slice(
+  contentSource.indexOf("const apiOnly = targets.filter"),
+  contentSource.indexOf("} finally {", contentSource.indexOf("const apiOnly = targets.filter"))
+);
+assert(issueRunner, "Không tìm thấy phần chạy lô phát hành");
+assert.match(issueRunner, /const apiOnly = targets\.filter\(row => Boolean\(ledgerItemsForInvoiceNo\(row\.invoiceNo\)\)\)/,
+  "Nhóm chạy song song chỉ gồm phiếu đã có sẵn mặt hàng trong sổ đối soát");
+assert.match(issueRunner, /const needsUi = targets\.filter\(row => !ledgerItemsForInvoiceNo\(row\.invoiceNo\)\)/,
+  "Nhóm phải mở giao diện là phần còn lại");
+// Song song chỉ áp cho apiOnly, và trần vẫn là 2 luồng.
+assert.match(issueRunner, /Math\.min\(2, apiOnly\.length\)/,
+  "Chỉ nhóm thuần API mới chạy song song, tối đa 2 luồng");
+// needsUi phải nằm sau Promise.all, tức giai đoạn 2 chỉ bắt đầu khi giai đoạn 1 xong.
+assert(issueRunner.indexOf("Promise.all") < issueRunner.indexOf("for (const row of needsUi)"),
+  "Giai đoạn mở giao diện phải chạy sau khi nhóm song song kết thúc");
+// Từ chỗ needsUi bắt đầu chạy trở đi không được còn Promise.all nào.
+const needsUiPhase = issueRunner.slice(issueRunner.indexOf("for (const row of needsUi)"));
+assert(!needsUiPhase.includes("Promise.all"),
+  "Nhóm phải mở giao diện không được chạy song song");
+assert.match(issueRunner, /for \(const row of needsUi\) await processTarget\(row\);/,
+  "Nhóm phải mở giao diện chạy tuần tự từng phiếu");
+
+// Hạn chờ phát hành phải tách theo đường chạy: thuần API thì ngắn, phải mở giao
+// diện thì giữ dài vì còn chuỗi polling Kendo.
+assert.match(contentSource, /action === "issueEInvoice" \? issueTimeoutMs\(payload\)/,
+  "issueEInvoice phải lấy hạn chờ theo payload");
+assert.match(contentSource, /return payload\?\.knownItems\?\.length \? ISSUE_TIMEOUT_FAST_MS : ISSUE_TIMEOUT_UI_MS;/,
+  "Có sẵn mặt hàng mới được dùng hạn chờ ngắn");
+assert.match(contentSource, /ISSUE_TIMEOUT_UI_MS = 90000/, "Đường phải mở giao diện vẫn giữ 90s");
+// Hạn chờ ngắn chỉ an toàn vì quá hạn KHÔNG kết luận là chưa phát hành:
+// confirmIssuedAfterFailure đọc lại trạng thái thật từ server rồi mới ghi sổ.
+assert.match(contentSource, /async function confirmIssuedAfterFailure\(row\)/,
+  "Phải còn bước đọc lại trạng thái thật sau khi một phiếu báo lỗi");
 
 const bridgeSource = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 assert.match(bridgeSource, /HoaDonDienTu\/\$\{action\}/);
@@ -307,11 +348,15 @@ function evalContentFunction(...names) {
     }
     return "";
   });
+  // lookupIndex là state cache ở cấp module của content.js; cấp cho đoạn eval
+  // một bản rỗng để hàm dựng index chạy được ngoài ngữ cảnh content script.
   return new Function("statementDataset",
+    `const lookupIndex = { ledgerSource: null, ledger: null, catalogSource: null, catalog: null, statementSource: null, statement: null };\n` +
     `${parts.join("\n")}\nreturn { ${names.join(", ")} };`);
 }
 
-const linkage = evalContentFunction("statementInvoiceNos", "isStatementInvoice")({
+// statementInvoiceNos đọc qua index dựng lười, nên phải nạp kèm hàm dựng index.
+const linkage = evalContentFunction("statementTransactionIndex", "statementInvoiceNos", "isStatementInvoice")({
   transactions: [
     { id: 1, invoiceNo: "HD0126060001" },
     { id: 2, invoiceNo: "", pendingPlan: { invoiceNo: "HD0126060002" } },
@@ -329,8 +374,12 @@ assert.match(contentSource, /showEInvoicesOutsideStatement\s*\?\s*eInvoiceRows\s
 assert(contentSource.includes('id="it-einvoice-show-outside"'), "Thiếu ô bật xem phiếu ngoài giao dịch");
 // Chỉ được chọn trong số dòng đang hiện, tránh phát hành nhầm dòng đã bị ẩn.
 assert.match(contentSource, /const selectable = new Set\(\s*visibleRows\s*\.filter/);
-assert.match(contentSource, /!row\.issued && !row\.cancelled && statementInvoiceMatch\(row\)\.valid/,
+// Đối chiếu được tính một lần cho mỗi dòng rồi tra lại qua matchByRowId, nhưng
+// điều kiện chọn vẫn phải là: chưa phát hành, chưa hủy, và khớp sao kê.
+assert.match(contentSource, /!row\.issued && !row\.cancelled && matchByRowId\.get\(row\.id\)\.valid/,
   "Chỉ phiếu khớp mã, ngày và tổng tiền sao kê mới được chọn phát hành");
+assert.match(contentSource, /const matchByRowId = new Map\(visibleRows\.map\(row => \[row\.id, statementInvoiceMatch\(row\)\]\)\)/,
+  "matchByRowId phải được dựng từ chính statementInvoiceMatch cho mọi dòng đang hiện");
 assert.match(issueFlow, /KHÔNG thuộc danh sách giao dịch/);
 
 // Hóa đơn đã phát hành trên website nhưng chưa vào sổ hạch toán phải ghi bổ sung

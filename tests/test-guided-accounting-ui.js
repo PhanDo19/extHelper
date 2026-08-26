@@ -79,4 +79,190 @@ assert(css.includes(".it-accounting-queue"), "Thiếu hàng đợi công việc 
 assert(content.includes("isInAccountingPeriod(item, period)"), "Dashboard phải lọc giao dịch theo kỳ");
 assert(content.includes('data-action="${next.action}"'), "Mỗi lỗi phải có hành động tiếp theo");
 
+// Một việc tiếp theo, một nút: kế toán không phải tự đọc 5 thẻ rồi tự chọn.
+assert(content.includes("function nextWorkflowAction("), "Thiếu hàm chọn việc tiếp theo");
+assert(content.includes("function renderNextAction("), "Thiếu thanh Việc tiếp theo trên màn hình chính");
+assert.equal((content.match(/id="it-next-action"/g) || []).length, 1, "it-next-action phải tồn tại đúng một lần");
+const nextAction = content.slice(
+  content.indexOf("function nextWorkflowAction("),
+  content.indexOf("function renderNextAction(")
+);
+assert(nextAction.includes("state.blockers[0]"),
+  "Việc tiếp theo phải lấy mục chưa đạt đầu tiên, đúng thứ tự quy trình");
+assert(nextAction.includes("done: true"), "Khi hết việc phải báo đã hoàn tất thay vì gợi ý bước sai");
+// Thứ tự các bước quyết định việc nào hiện ra trước; đảo thứ tự sẽ dẫn kế toán sai bước.
+const checkKeys = content
+  .slice(content.indexOf("function accountingCloseSnapshot("), content.indexOf("const NEXT_ACTION_LABELS"))
+  .match(/key: "(\w+)"/g) || [];
+assert.deepEqual(
+  checkKeys.map(item => item.replace(/key: "|"/g, "")),
+  ["catalog", "stock", "mapping", "statement", "reconciliation", "issuance"],
+  "Thứ tự kiểm tra phải đúng luồng 5 bước để việc tiếp theo không nhảy cóc"
+);
+for (const key of ["catalog", "stock", "mapping", "statement", "reconciliation", "issuance"]) {
+  assert(new RegExp(`${key}: \\{ button:`).test(content), `Thiếu nhãn nút cho bước ${key}`);
+}
+assert(/renderNextAction\([a-zA-Z]*\);/.test(content), "Thanh Việc tiếp theo phải được cập nhật theo trạng thái");
+// Snapshot duyệt toàn bộ giao dịch trong kỳ; setStatus chạy trong vòng lặp lưu
+// từng phiếu nên dải kiểm tra và thanh Việc tiếp theo phải dùng chung một lần tính.
+assert(content.includes("renderAccountingCloseStatus(closeState);") && content.includes("renderNextAction(closeState);"),
+  "Không được tính lại accountingCloseSnapshot cho mỗi khối trên dashboard");
+// Việc chạy tại chỗ tự gọi setStatus, mà setStatus vẽ lại chính thanh này. Không
+// chặn thì nút đang khóa bị xóa giữa chừng và bấm lại được nhiều lần.
+const renderNext = content.slice(
+  content.indexOf("function renderNextAction(snapshot)"),
+  content.indexOf("function accountingStatusLabel(")
+);
+assert(renderNext.includes('querySelector("#it-next-action-go:disabled")'),
+  "Đang chạy việc tại chỗ thì không được vẽ đè nút lên chính nó");
+assert(renderNext.includes("syncLatestWebCatalog({ currentTarget: go })"),
+  "Phải truyền đúng nút vừa bấm để khóa được nút đó, không phải nút ở thẻ bước 1");
+const syncCatalog = content.slice(
+  content.indexOf("async function syncLatestWebCatalog("),
+  content.indexOf("function showHomeDashboard(")
+);
+assert(/finally \{[\s\S]*renderNextAction\(\);[\s\S]*\}/.test(syncCatalog),
+  "Đồng bộ xong phải vẽ lại thanh Việc tiếp theo, nếu không nhãn Đang đồng bộ… sẽ kẹt lại");
+assert(css.includes(".it-next-action"), "Thiếu giao diện thanh Việc tiếp theo");
+assert(css.includes('.it-workflow-card[data-state="done"] .it-step-copy p { display: none; }'),
+  "Bước đã xong phải thu gọn để phần cần làm nổi lên trước");
+
+// Nối bước 4 → 5: lưu API xong là mời sang phát hành ngay trên dòng trạng thái.
+assert(/function setStatus\(message, kind, next\)/.test(content),
+  "setStatus phải nhận được hành động tiếp theo");
+const setStatusFn = content.slice(
+  content.indexOf("function setStatus(message, kind, next)"),
+  content.indexOf("function priorityInventory(")
+);
+assert(setStatusFn.includes("createTextNode(message)"),
+  "Thông báo chứa số phiếu và lỗi từ website nên phải chèn bằng text node, không innerHTML");
+// Bỏ comment trước khi kiểm tra, tránh báo nhầm khi comment có nhắc tên thuộc tính.
+assert(!setStatusFn.replace(/\/\/[^\n]*/g, "").includes("innerHTML"),
+  "setStatus không được dựng thông báo bằng innerHTML");
+const runBatchApi = content.slice(
+  content.indexOf("async function runAcceptedBatchApi("),
+  content.indexOf("async function confirmAlreadyIssued(")
+);
+assert(/action: "einvoice"/.test(runBatchApi),
+  "Lưu API xong phải mời sang bước phát hành hóa đơn");
+assert(!/openEInvoiceAdmin\(\)/.test(runBatchApi),
+  "Phát hành hóa đơn không hoàn tác được nên không được tự chạy sau khi lưu API");
+assert(css.includes(".it-status-next"), "Thiếu giao diện nút đi tiếp trên dòng trạng thái");
+// Kỳ sao kê theo tháng: kế toán vẫn phải tự xem lại và sửa được khoảng ngày.
+for (const id of ["it-einvoice-from-date", "it-einvoice-to-date", "it-batch-from-date", "it-batch-to-date"]) {
+  assert.equal((content.match(new RegExp(`id=\\"${id}\\"`, "g")) || []).length, 1,
+    `${id} phải giữ nguyên để kế toán xem xét kỳ sao kê`);
+}
+
+// Nối bước 5 → xuất hạch toán: phát hành xong là mời xuất file ngay tại chỗ.
+const issueFlowEnd = content.slice(
+  content.indexOf("async function issueSelectedEInvoices("),
+  content.indexOf("function stockNameByWebCode(")
+);
+assert(issueFlowEnd.includes('action: "issued-export"'),
+  "Phát hành xong phải mời xuất file hạch toán");
+assert(issueFlowEnd.includes("const canExportIssued = succeeded > 0 && !missingItems && !failures.length"),
+  "Chỉ mời xuất hạch toán khi đã phát hành được và không hóa đơn nào thiếu mặt hàng");
+assert(!/exportIssuedInvoices\(\)/.test(issueFlowEnd),
+  "Không được tự xuất file; kế toán phải chủ động bấm sau khi xem kết quả phát hành");
+const dashboardAction = content.slice(
+  content.indexOf("function openAccountingDashboardAction("),
+  content.indexOf("function refreshAccountingDashboard(")
+);
+for (const [action, handler] of [
+  ["issued-export", "exportIssuedInvoices"],
+  ["export", "exportAccountingReport"]
+]) {
+  assert(new RegExp(`action === "${action}"\\) ${handler}\\(\\)`).test(dashboardAction),
+    `Action ${action} phải gọi ${handler}`);
+}
+// Thanh Việc tiếp theo lúc hoàn tất phát ra data-action="export"; thiếu nhánh này
+// thì nút chỉ chạy nhờ lối gọi riêng, bấm từ chỗ khác sẽ im lặng không làm gì.
+assert(/data-action="export"/.test(content) && dashboardAction.includes('action === "export"'),
+  "data-action phát ra trên UI phải có nhánh xử lý tương ứng");
+
+// Panel kéo tay được, nên lưới bên trong phải đo bề rộng PANEL chứ không phải
+// bề rộng cửa sổ. Hỏng chỗ này thì CSS vẫn chạy, chỉ layout sai khi thu nhỏ panel.
+assert(/#it-panel \{[^}]*container: it-panel \/ inline-size/.test(css),
+  "#it-panel phải là container để lưới bên trong bám bề rộng panel");
+assert(!/#it-panel \{[^}]*min-width: 430px/.test(css),
+  "min-width cứng 430px chặn panel hẹp lại; giới hạn dưới do enablePanelResize giữ");
+const containerBlocks = css.match(/@container it-panel \(max-width: 700px\)/g) || [];
+assert(containerBlocks.length >= 3, "Các lưới bên trong panel phải chuyển sang @container");
+// Rule định nghĩa kích thước CHÍNH panel không thể tự đo mình bằng container query.
+for (const block of css.split("@container it-panel").slice(1)) {
+  const body = block.slice(0, block.indexOf("\n}"));
+  assert(!/^\s*#it-panel\s*[,{]/m.test(body),
+    "@container không được chứa selector đặt kích thước cho chính #it-panel");
+}
+const viewportBlock = css.slice(css.indexOf("@media (max-width: 700px) {"));
+assert(/#it-panel[^}]*width: calc\(100vw - 16px\)/.test(viewportBlock),
+  "Bề rộng panel khi cửa sổ hẹp vẫn phải theo viewport");
+// Header mỏng lại ở màn hẹp nên mép dính của thanh công cụ phải đổi theo.
+assert(/@media \(max-width: 700px\)[\s\S]*--it-header-offset: 46px/.test(css),
+  "Màn hẹp header cao 46px (top:-12px + 58px), thanh dính phải dùng đúng số này");
+// Bảng rộng phải cuộn trong khung riêng, nếu không sẽ đẩy phình chính container.
+assert(/\.it-table-wrap \{[^}]*overflow: auto/.test(css),
+  "Bảng rộng hơn panel phải cuộn trong .it-table-wrap");
+
+// Menu chuyển bước: nhảy thẳng giữa các bước, không phải quay về màn hình chính.
+assert.equal((content.match(/id="it-screen-tabs"/g) || []).length, 1, "Thiếu menu chuyển bước");
+for (const screen of ["home", "stock", "mapping", "statement", "batch", "einvoice"]) {
+  assert(new RegExp(`data-screen="${screen}"`).test(content), `Menu thiếu tab ${screen}`);
+}
+assert(content.includes("function markActiveScreenTab("), "Phải đánh dấu tab đang mở");
+// Bước 5 là sub-tab của màn Giao dịch nên không có mode riêng.
+const markTab = content.slice(
+  content.indexOf("function markActiveScreenTab("),
+  content.indexOf("async function syncLatestWebCatalog(")
+);
+assert(markTab.includes('statementSubtab === "einvoice"'),
+  "Tab Phát hành phải sáng khi đang ở sub-tab phát hành");
+assert(/markActiveScreenTab\("statement-mode"\)/.test(content),
+  "Đổi sub-tab cũng phải cập nhật menu");
+assert(css.includes(".it-screen-tabs"), "Thiếu giao diện menu chuyển bước");
+// Thanh tab có flex-wrap nên chiều cao đổi theo bề rộng panel; hằng số CSS không
+// đủ, phải đo thật rồi ghi vào biến mốc dính.
+assert(content.includes("function syncTabsOffset("), "Thiếu hàm đo mốc dính của menu");
+assert(/--it-tabs-offset/.test(css) && /setProperty\("--it-tabs-offset"/.test(content),
+  "Mốc dính dưới menu phải được đo và ghi lại");
+for (const sel of [".it-mapping-toolbar", ".it-batch-actions"]) {
+  assert(new RegExp(`\\${sel} \\{[^}]*top: var\\(--it-tabs-offset\\)`).test(css),
+    `${sel} phải dính dưới menu, không chồng lên menu`);
+}
+assert(/ResizeObserver/.test(content), "Panel đổi kích thước thì phải đo lại mốc dính");
+// Giảm mật độ ở tab đầu: chi tiết gập lại, thiết lập kỳ đưa lên trên cùng.
+assert(content.includes('id="it-workflow-steps"') && content.includes('id="it-accounting-details"'),
+  "Phần chi tiết ở màn hình chính phải gập được để giảm mật độ");
+assert(content.indexOf('class="it-period-bar"') < content.indexOf('id="it-next-action"'),
+  "Thiết lập kỳ phải nằm trên cùng màn hình chính");
+assert(!content.includes("it-welcome-card") && !css.includes(".it-welcome-card"),
+  "Thẻ chào mừng đã gộp vào thanh kỳ; không để lại CSS mồ côi");
+// Hàng sub-tab cũ trùng chức năng với menu chuyển bước nên đã bỏ.
+assert(!content.includes('class="it-subtabs"') && !css.includes(".it-subtabs"),
+  "Không để lại hàng sub-tab trùng menu, kể cả CSS mồ côi");
+// Bước 3 và bước 5 dùng chung một section, nên tiêu đề panel phải tự đổi theo
+// bước đang xem; nếu không, ở bước 5 vẫn đề "Bước 3 · Giao dịch ngân hàng".
+const subtabFn = content.slice(
+  content.indexOf("function showStatementSubtab(name)"),
+  content.indexOf("function renderStatementRows(")
+);
+assert(subtabFn.includes("Bước 5 · Phát hành hóa đơn") && subtabFn.includes("Bước 3 · Giao dịch ngân hàng"),
+  "Tiêu đề panel phải đổi theo bước đang xem");
+assert(subtabFn.includes("markActiveScreenTab"), "Đổi bước phải cập nhật menu");
+// Dòng bối cảnh gộp 4 dòng thành một hàng chip; chi tiết chuyển vào tooltip.
+const stockSummary = content.slice(
+  content.indexOf("function stockSummaryHtml()"),
+  content.indexOf("const OPEN_STATEMENT_STATUSES")
+);
+assert(!/<br>/.test(stockSummary), "Dòng bối cảnh phải gộp một hàng, không xuống dòng bằng <br>");
+assert(/title="\$\{escapeHtml\(chip\.title\)\}"/.test(stockSummary),
+  "Chi tiết đầy đủ phải nằm ở tooltip và được escape");
+// Nhãn cơ sở và nguồn kho là chuỗi tự do nên bắt buộc escape trước khi nội suy.
+for (const value of ["pageTenantLabel", "warehouseSource"]) {
+  assert(new RegExp(`escapeHtml\\(${value}\\)`).test(stockSummary),
+    `${value} phải qua escapeHtml`);
+}
+assert(css.includes(".it-stock-source span"), "Thiếu giao diện chip cho dòng bối cảnh");
+
 console.log("Guided accounting UI tests passed");

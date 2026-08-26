@@ -1,18 +1,29 @@
-#invoice-target-mvp { all: initial; font-family: Inter, "Segoe UI", Arial, sans-serif; position: fixed; z-index: 2147483647; right: 20px; bottom: 18px; color: #172033; }
+#invoice-target-mvp {
+  all: initial;
+  /* Mép dưới của header dính (top:-18px + min-height:58px). Các thanh công cụ
+     dính bên dưới phải dùng đúng số này, nếu không sẽ chồng lên header. */
+  --it-header-offset: 40px;
+  /* Mép dưới của menu chuyển bước. Thanh tab có flex-wrap nên chiều cao đổi theo
+     bề rộng panel; syncTabsOffset() đo thật rồi ghi đè hai biến này. Giá trị ở
+     đây chỉ là dự phòng cho lần vẽ đầu tiên trước khi JS chạy. */
+  --it-tabs-offset: 86px;
+  font-family: Inter, "Segoe UI", Arial, sans-serif; position: fixed; z-index: 2147483647; right: 20px; bottom: 18px; color: #172033;
+}
 #invoice-target-mvp * { box-sizing: border-box; font-family: inherit; }
 #it-toggle { width: 52px; height: 52px; border: 0; border-radius: 50%; background: #1769e0; color: #fff; font-size: 25px; box-shadow: 0 7px 24px #0f172a55; cursor: pointer; float: right; }
 #it-toggle:hover { background: #0f5dcc; transform: translateY(-1px); }
-#it-panel { position: relative; width: min(560px, calc(100vw - 28px)); min-width: 430px; min-height: 360px; max-height: calc(100vh - 34px); overflow: auto; background: #fff; border: 1px solid #c4cedc; border-radius: 14px; box-shadow: 0 18px 55px #0f172a45; margin-bottom: 62px; padding: 18px; font-size: 13px; line-height: 1.35; }
+/* container-type: inline-size cho phép các khối bên trong bám theo bề rộng THẬT
+   của panel (người dùng kéo tay được) thay vì bề rộng cửa sổ trình duyệt. Trước
+   đây panel thu nhỏ vẫn giữ layout desktop vì @media chỉ đo viewport.
+   min-width để 0: bề rộng tối thiểu do enablePanelResize giữ, không phải CSS —
+   khóa cứng ở đây thì panel không hẹp xuống được và container query vô nghĩa. */
+#it-panel { container: it-panel / inline-size; position: relative; width: min(560px, calc(100vw - 28px)); min-width: 0; min-height: 360px; max-height: calc(100vh - 34px); overflow: auto; background: #fff; border: 1px solid #c4cedc; border-radius: 14px; box-shadow: 0 18px 55px #0f172a45; margin-bottom: 62px; padding: 18px; font-size: 13px; line-height: 1.35; }
 #it-panel.home-mode { width: min(780px, calc(100vw - 28px)); background: #f5f8fc; }
 #it-panel.mapping-mode, #it-panel.stock-mode { width: min(1040px, calc(100vw - 28px)); }
 /* Tab Giao dịch chứa cả bảng phát hành hóa đơn nên cần rộng hơn. */
 #it-panel.statement-mode { width: min(1180px, calc(100vw - 28px)); }
 #it-panel.review-mode { width: min(960px, calc(100vw - 28px)); }
 #it-panel.batch-mode { width: min(1180px, calc(100vw - 28px)); }
-.it-subtabs { display: flex; gap: 6px; margin: 12px 0 0; border-bottom: 1px solid #dce4ef; }
-.it-subtabs button { padding: 8px 16px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: transparent; color: #4a5a72; font-size: 12px; font-weight: 600; cursor: pointer; }
-.it-subtabs button:hover { background: #f2f6fc; color: #18365f; }
-.it-subtabs button.active { border-color: #dce4ef; background: #fff; color: #0f52b8; margin-bottom: -1px; }
 #it-panel.is-resizing { cursor: nwse-resize; box-shadow: 0 22px 65px #0f172a66; }
 #it-resize-handle { display: inline-grid; flex: 0 0 34px; width: 34px; height: 34px; margin-right: 8px; place-items: center; color: #fff; border: 1px solid #ffffff66; border-radius: 8px; cursor: nwse-resize; touch-action: none; font-size: 20px; font-weight: 800; line-height: 1; user-select: none; }
 #it-resize-handle:hover { color: #0f52b8; background: #fff; transform: scale(1.04); }
@@ -23,28 +34,51 @@
 #it-panel header .it-header-copy small { color: #d9e8ff; font-size: 10px; font-weight: 600; }
 #it-panel header strong small { font-size: 11px; font-weight: 600; opacity: .78; }
 #it-close { border: 0 !important; padding: 2px 7px !important; background: transparent !important; color: #fff; font-size: 25px; cursor: pointer; }
-.it-screen-nav { display: flex; align-items: center; gap: 12px; margin: -2px 0 12px; padding: 9px 10px; border: 1px solid #d9e4f2; border-radius: 9px; background: #f7faff; }
-.it-screen-nav[hidden] { display: none !important; }
-#it-panel .it-screen-nav button { flex: 0 0 auto; padding: 7px 10px; border-color: #8eabd0; color: #174d8f; background: #fff; }
-.it-screen-nav p { margin: 0; color: #596b82; font-size: 11px; line-height: 1.4; }
+/* Menu chuyển bước: luôn hiện ở mọi màn hình để nhảy thẳng giữa các bước, không
+   phải quay về màn hình chính rồi mới bấm tiếp. Dính dưới header khi cuộn. */
+.it-screen-tabs { position: sticky; top: var(--it-header-offset); z-index: 7; display: flex; flex-wrap: wrap; gap: 4px; margin: -2px 0 10px; padding: 7px 8px; border: 1px solid #d9e4f2; border-radius: 9px; background: #f7faff; }
+#it-panel .it-screen-tabs button { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 6px 11px; border-color: transparent; border-radius: 999px; background: transparent; color: #4a5a72; font-size: 12px; }
+#it-panel .it-screen-tabs button:hover { background: #e8f1fd; color: #18365f; }
+#it-panel .it-screen-tabs button.active { border-color: #1769e0; background: #1769e0; color: #fff; }
+.it-screen-tabs button i { display: grid; width: 17px; height: 17px; flex: 0 0 17px; place-items: center; border-radius: 50%; background: #dce7f5; color: #3f5673; font-size: 9px; font-style: normal; font-weight: 800; }
+#it-panel .it-screen-tabs button.active i { background: #ffffff33; color: #fff; }
+.it-screen-help { margin: -4px 0 10px; padding: 0 2px; color: #596b82; font-size: 11px; line-height: 1.4; }
+.it-screen-help[hidden] { display: none !important; }
 .it-home-dashboard { display: grid; gap: 12px; }
 #it-panel:not(.home-mode) .it-home-dashboard { display: none !important; }
 .home-mode #it-stock-source, .home-mode .it-calc-only { display: none !important; }
-.it-welcome-card { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; padding: 18px 20px; border-radius: 12px; color: #fff; background: linear-gradient(135deg, #153c73, #2479e7); box-shadow: 0 8px 24px #174f9826; }
-.it-welcome-card h2 { margin: 3px 0 5px; font-size: 21px; }
-.it-welcome-card p { max-width: 520px; margin: 0; color: #deebff; font-size: 12px; line-height: 1.5; }
 .it-eyebrow { color: #bcd8ff; font-size: 9px; font-weight: 800; letter-spacing: .13em; }
-.it-branch-badge { flex: 0 0 auto; padding: 6px 9px; border: 1px solid #ffffff55; border-radius: 999px; background: #ffffff18; font-size: 10px; font-weight: 800; white-space: nowrap; }
+/* Việc tiếp theo: một dòng, một nút. Đặt ngay đầu màn hình để kế toán không
+   phải đọc hết 5 thẻ bước rồi mới biết cần bấm gì. */
+.it-next-action { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid #e0a93a; border-left: 5px solid #e09a13; border-radius: 11px; background: #fffdf6; box-shadow: 0 4px 14px #a9760c14; }
+.it-next-action.done { border-color: #9ed3b3; border-left-color: #24a25a; background: #f4fbf7; }
+.it-next-copy { display: grid; min-width: 0; gap: 3px; }
+.it-next-action .it-eyebrow { color: #96650a; }
+.it-next-action.done .it-eyebrow { color: #17703b; }
+.it-next-action b { color: #1d314d; font-size: 16px; }
+.it-next-action small { color: #65758a; font-size: 11px; }
+#it-panel .it-next-action button { min-height: 42px; flex: 0 0 auto; padding: 10px 18px; font-size: 13px; white-space: nowrap; }
+/* Thiết lập kỳ nằm trên cùng: đây là thứ kế toán chỉnh trước khi xem bất cứ số
+   liệu nào, nên không để chìm giữa dashboard như trước. */
+.it-period-bar { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding: 11px 14px; border: 1px solid #d5e0ee; border-radius: 11px; background: #fff; box-shadow: 0 3px 12px #17345f0c; }
+.it-period-copy { display: grid; min-width: 0; gap: 2px; }
+.it-period-bar .it-eyebrow { color: #4c78af; }
+.it-period-bar b { color: #193b68; font-size: 15px; }
+/* Gập bớt phần chi tiết: mặc định chỉ hiện KPI, mở ra khi cần soi việc tồn đọng. */
+.it-accounting-details > summary, .it-workflow-steps > summary { padding: 9px 13px; color: #445871; cursor: pointer; font-size: 12px; font-weight: 700; }
+.it-accounting-details > summary { border-top: 1px solid #e1e8f1; background: #f8fbff; }
+.it-accounting-details[open] > summary { border-bottom: 1px solid #e1e8f1; }
+.it-workflow-steps { overflow: hidden; border: 1px solid #d9e4f2; border-radius: 10px; background: #fff; }
+.it-workflow-steps[open] > summary { border-bottom: 1px solid #e1e8f1; }
+.it-workflow-steps .it-workflow-list { padding: 9px; }
 .it-accounting-dashboard { overflow: hidden; border: 1px solid #d5e0ee; border-radius: 12px; background: #fff; box-shadow: 0 4px 16px #17345f0c; }
-.it-accounting-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding: 13px 14px; border-bottom: 1px solid #e1e8f1; background: #f8fbff; }
-.it-accounting-toolbar h3 { margin: 2px 0 0; color: #193b68; font-size: 15px; }
-.it-accounting-toolbar .it-eyebrow { color: #4c78af; }
 .it-accounting-filters { display: grid; grid-template-columns: 130px 124px 124px auto; align-items: end; gap: 7px; }
 #it-panel .it-accounting-filters label { margin: 0; color: #5d6e84; font-size: 9px; text-transform: uppercase; }
 #it-panel .it-accounting-filters input, #it-panel .it-accounting-filters select { min-height: 32px; margin-top: 3px; padding: 5px 7px; font-size: 11px; text-transform: none; }
 #it-panel .it-accounting-filters select:disabled { color: #344b69; background: #edf2f8; opacity: 1; }
 #it-panel .it-accounting-filters button { min-height: 32px; padding: 6px 10px; color: #fff; border-color: #1769e0; background: #1769e0; white-space: nowrap; }
-.it-accounting-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: #dfe7f1; }
+/* KPI giờ là khối đầu của dashboard (bộ lọc kỳ đã tách lên trên). */
+.it-accounting-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: #dfe7f1; border-radius: 11px 11px 0 0; }
 .it-accounting-kpis > div { display: grid; min-width: 0; gap: 3px; padding: 11px 12px; background: #fff; }
 .it-accounting-kpis small { overflow: hidden; color: #65758a; font-size: 9px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .it-accounting-kpis strong { overflow: hidden; color: #183a67; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
@@ -103,6 +137,13 @@
 .it-workflow-list { display: grid; gap: 9px; }
 .it-workflow-card { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 92px; padding: 13px 14px; border: 1px solid #d9e3ef; border-left: 4px solid #c4cfdd; border-radius: 11px; background: #fff; box-shadow: 0 3px 12px #193b6c0b; }
 .it-workflow-card[data-state="done"] { border-left-color: #24a25a; }
+/* Bước đã xong chỉ cần xác nhận là xong: thu gọn để phần cần làm nổi lên trước.
+   Mô tả dài chỉ hiện ở bước chưa hoàn tất. */
+.it-workflow-card[data-state="done"] { min-height: 0; padding: 9px 14px; background: #fbfdfb; }
+.it-workflow-card[data-state="done"] .it-step-copy p { display: none; }
+.it-workflow-card[data-state="done"] .it-step-copy h3 { font-size: 13px; }
+.it-workflow-card[data-state="done"] .it-step-number { width: 26px; height: 26px; font-size: 13px; }
+.it-workflow-card[data-state="done"] .it-step-actions button { min-height: 32px; font-size: 11px; }
 .it-workflow-card[data-state="attention"] { border-left-color: #e09a13; background: #fffdfa; }
 .it-workflow-card[data-state="ready"] { border-left-color: #1769e0; }
 .it-step-number { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 50%; color: #53647a; background: #eaf0f7; font-size: 15px; font-weight: 800; }
@@ -127,24 +168,39 @@
 .it-help-box dt { color: #203e67; font-weight: 800; }
 .it-help-box dd { margin: 0; color: #64748b; }
 .it-file-inputs { display: none !important; }
-@media (max-width: 700px) {
-  #it-panel.home-mode { min-width: 0; }
-  .it-welcome-card { display: grid; }
-  .it-branch-badge { justify-self: start; }
+/* Bám bề rộng panel, không bám cửa sổ: kế toán kéo hẹp panel trên màn hình lớn
+   thì các lưới bên trong cũng phải xếp lại, nếu không nội dung bị bóp hoặc tràn. */
+@container it-panel (max-width: 700px) {
+  .it-period-bar { align-items: stretch; flex-direction: column; }
   .it-workflow-card { grid-template-columns: 34px minmax(0, 1fr); }
   .it-step-actions { grid-column: 2; width: 100%; }
   .it-home-secondary { grid-template-columns: 1fr; }
   .it-home-secondary details, .it-help-box { grid-column: 1 !important; }
-  .it-accounting-toolbar { display: grid; }
   .it-accounting-filters { grid-template-columns: 1fr 1fr; }
   .it-accounting-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .it-accounting-close-actions { align-items: stretch; flex-wrap: wrap; }
   .it-accounting-close-actions > div { flex-basis: 100%; }
   .it-accounting-check-list { grid-template-columns: 1fr 1fr; }
+  .it-next-action { align-items: stretch; flex-direction: column; }
+  #it-panel .it-next-action button { width: 100%; }
 }
 #it-panel label { display: block; margin: 10px 0; font-weight: 650; }
 #it-panel input:not([type="checkbox"]), #it-panel select { width: 100%; min-height: 38px; border: 1px solid #aebbd0; border-radius: 7px; padding: 8px 10px; margin-top: 4px; font-size: 13px; color: #172033; background: #fff; }
 #it-panel input:focus, #it-panel select:focus { outline: 2px solid #1769e033; border-color: #1769e0; }
+/* Bàn phím phải thấy được vị trí đang đứng: nút trước đây không có viền focus
+   nên người dùng Tab bị "mất dấu" giữa hàng chục nút của mỗi màn hình. */
+#it-panel button:focus-visible,
+#it-panel summary:focus-visible,
+#it-panel a:focus-visible,
+#it-toggle:focus-visible { outline: 2px solid #1769e0; outline-offset: 2px; border-radius: 7px; }
+#it-panel header button:focus-visible, #it-resize-handle:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  #invoice-target-mvp *, #invoice-target-mvp *::before, #invoice-target-mvp *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
+  #it-toggle:hover, #it-resize-handle:hover { transform: none; }
+}
 .it-options { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .it-actions { display: flex; flex-wrap: wrap; gap: 9px; margin: 12px 0; }
 #it-panel button { border: 1px solid #a8b5c8; background: #f7f9fc; color: #1f2937; border-radius: 7px; padding: 9px 14px; cursor: pointer; font-weight: 600; }
@@ -157,7 +213,14 @@
 .it-status.ok { background: #e3f6e9; color: #176936; }
 .it-status.warn { background: #fff3d6; color: #805600; }
 .it-status.error { background: #fee8e6; color: #9a241b; }
-.it-stock-source { margin: 10px 0; padding: 10px 12px; background: #eef4ff; border: 1px solid #dbe7fa; border-radius: 8px; font-size: 12px; line-height: 1.45; }
+/* Nút đi thẳng tới bước kế tiếp, nằm ngay trên dòng trạng thái vừa báo xong. */
+#it-panel button.it-status-next { margin-left: 10px; padding: 5px 11px; border-color: #1769e0; background: #1769e0; color: #fff; font-size: 12px; vertical-align: middle; }
+#it-panel button.it-status-next:hover { background: #0f5dcc; border-color: #0f5dcc; }
+/* Dòng bối cảnh: một hàng chip đọc lướt, chi tiết nằm ở tooltip từng chip. */
+.it-stock-source { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 8px 0; padding: 7px 11px; background: #eef4ff; border: 1px solid #dbe7fa; border-radius: 8px; color: #4a5f7d; font-size: 11px; line-height: 1.4; }
+.it-stock-source span { white-space: nowrap; cursor: help; }
+.it-stock-source b { color: #1c4a86; }
+.it-stock-source b.warn { color: #9a6500; }
 .it-state-preview { margin: 10px 0; padding: 12px; border: 1px solid #9db9e5; border-radius: 9px; background: #f7faff; }
 .it-state-preview-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 10px; }
 .it-state-preview-head small { overflow-wrap: anywhere; }
@@ -167,7 +230,7 @@
 .it-state-cards { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 8px; margin: 10px 0; }
 .it-state-cards > div { display: flex; flex-direction: column; gap: 3px; padding: 9px; border: 1px solid #dbe7fa; border-radius: 7px; background: #fff; }
 .it-state-cards small { color: #5b6472; }
-@media (max-width: 700px) { .it-state-cards { grid-template-columns: repeat(2, minmax(110px, 1fr)); } }
+@container it-panel (max-width: 700px) { .it-state-cards { grid-template-columns: repeat(2, minmax(110px, 1fr)); } }
 #it-panel label.it-confirm { display: flex; gap: 8px; align-items: flex-start; padding: 10px; background: #fff3d6; border-radius: 7px; font-weight: 500; }
 #it-panel label.it-confirm input { width: auto; margin: 2px 0 0; }
 #it-summary dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 16px; padding: 11px; background: #f7f9fc; border-radius: 8px; }
@@ -261,7 +324,7 @@
 .it-mapping-kpis .pending b { color: #9a6500; }
 .it-mapping-kpis .confirmed { border-color: #bde4cb; background: #f0fbf4; }
 .it-mapping-kpis .confirmed b { color: #16713a; }
-.it-mapping-toolbar { position: sticky; top: 48px; z-index: 5; display: grid; grid-template-columns: minmax(220px, 1fr) 160px auto auto; align-items: center; gap: 8px; margin-bottom: 10px; padding: 9px; border: 1px solid #d5e1f0; border-radius: 9px; background: #fff; box-shadow: 0 3px 12px #193b6c12; }
+.it-mapping-toolbar { position: sticky; top: var(--it-tabs-offset); z-index: 5; display: grid; grid-template-columns: minmax(220px, 1fr) 160px auto auto; align-items: center; gap: 8px; margin-bottom: 10px; padding: 9px; border: 1px solid #d5e1f0; border-radius: 9px; background: #fff; box-shadow: 0 3px 12px #193b6c12; }
 .it-mapping-toolbar input, .it-mapping-toolbar select { width: 100% !important; min-width: 0; margin: 0 !important; }
 .it-select-visible { display: flex !important; align-items: center; gap: 6px; margin: 0 !important; padding: 0 5px; white-space: nowrap; font-size: 11px; }
 .it-select-visible input { width: auto !important; }
@@ -345,15 +408,18 @@
 .it-statement-total strong { font-size: 18px; line-height: 1.2; }
 .it-statement-total span { color: #526780; font-size: 10px; white-space: nowrap; }
 #it-statement-admin .it-table-wrap { max-height: calc(100vh - 300px); min-height: 360px; }
-#it-statement-admin table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
-#it-statement-admin th, #it-statement-admin td { border-bottom: 1px solid #e4e9f0; padding: 8px; text-align: left; vertical-align: middle; }
-#it-statement-admin th { position: sticky; top: 0; z-index: 2; background: #eef3f9; }
-#it-statement-admin th:nth-child(1) { width: 15%; }
-#it-statement-admin th:nth-child(2) { width: 27%; }
-#it-statement-admin th:nth-child(3) { width: 16%; }
-#it-statement-admin th:nth-child(4) { width: 13%; text-align: right; }
-#it-statement-admin th:nth-child(5) { width: 14%; }
-#it-statement-admin th:nth-child(6) { width: 15%; }
+/* Tab "Phát hành hóa đơn" nằm lồng trong #it-statement-admin và dùng bảng
+   .it-batch-table riêng, nên các rule dưới đây phải bám đúng bảng giao dịch —
+   nếu để selector con chung thì bảng phát hành bị ghi đè bề rộng và padding. */
+.it-statement-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.it-statement-table th, .it-statement-table td { border-bottom: 1px solid #e4e9f0; padding: 8px; text-align: left; vertical-align: middle; }
+.it-statement-table th { position: sticky; top: 0; z-index: 2; background: #eef3f9; }
+.it-statement-table th:nth-child(1) { width: 15%; }
+.it-statement-table th:nth-child(2) { width: 27%; }
+.it-statement-table th:nth-child(3) { width: 16%; }
+.it-statement-table th:nth-child(4) { width: 13%; text-align: right; }
+.it-statement-table th:nth-child(5) { width: 14%; }
+.it-statement-table th:nth-child(6) { width: 15%; }
 #it-statement-admin td.it-money { text-align: right; font-weight: 700; white-space: nowrap; }
 /* Diễn giải chỉ cần đọc lướt; nội dung đầy đủ đã có ở tooltip title. Cắt trên
    từng dòng con vì ô có cả mô tả lẫn mã tham chiếu. */
@@ -377,7 +443,7 @@
   line-height: 1.35;
   white-space: normal;
 }
-#it-statement-admin button { margin: 2px; padding: 7px 9px; white-space: nowrap; font-size: 11px; }
+#it-statement-admin .it-statement-table button { margin: 2px; padding: 7px 9px; white-space: nowrap; font-size: 11px; }
 .it-bank-status { display: inline-block; padding: 3px 7px; border-radius: 999px; background: #edf2f7; font-size: 11px; }
 .it-bank-status.pending { color: #805600; background: #fff3d6; }
 .it-bank-status.review { color: #9a241b; background: #fee8e6; }
@@ -422,22 +488,34 @@
 .it-batch-kpis strong { color: #18365f; font-size: 18px; }
 .it-batch-kpis .ok strong { color: #176936; }
 .it-batch-kpis .error strong { color: #9a241b; }
-.it-batch-actions { position: sticky; top: 47px; z-index: 4; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px; border: 1px solid #dce4ef; border-radius: 8px 8px 0 0; background: #fff; }
+.it-batch-actions { position: sticky; top: var(--it-tabs-offset); z-index: 6; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px; border: 1px solid #dce4ef; border-radius: 8px 8px 0 0; background: #fff; }
 #it-panel .it-batch-actions label { display: flex; align-items: center; gap: 7px; margin: 0; }
 #it-panel .it-batch-actions input { width: auto; }
 #it-batch-table .it-table-wrap { max-height: calc(100vh - 335px); min-height: 350px; border-radius: 0 0 8px 8px; }
 .it-batch-table { min-width: 1100px; width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11px; }
 .it-batch-table > thead th { position: sticky; top: 0; z-index: 2; padding: 8px; background: #eef3f9; white-space: nowrap; }
 .it-batch-table > tbody > tr > td { padding: 8px; border-bottom: 1px solid #e4e9f0; vertical-align: top; }
-.it-batch-table > thead th:nth-child(1) { width: 28px; }
-.it-batch-table > thead th:nth-child(2) { width: 220px; }
-.it-batch-table > thead th:nth-child(3) { width: 112px; }
-.it-batch-table > thead th:nth-child(4),
-.it-batch-table > thead th:nth-child(5),
-.it-batch-table > thead th:nth-child(6) { width: 90px; }
-.it-batch-table > thead th:nth-child(7) { width: 76px; }
-.it-batch-table > thead th:nth-child(8) { width: 230px; }
-.it-batch-table > thead th:nth-child(9) { width: 68px; }
+/* Hai bảng dùng chung class .it-batch-table nhưng khác số cột (Batch Review 10
+   cột, Phát hành hóa đơn 7 cột). Đặt bề rộng theo từng bảng để cột cuối không
+   bị đẩy ra ngoài vùng nhìn thấy. */
+.it-batch-plan-table > thead th:nth-child(1) { width: 28px; }
+.it-batch-plan-table > thead th:nth-child(2) { width: 220px; }
+.it-batch-plan-table > thead th:nth-child(3) { width: 112px; }
+.it-batch-plan-table > thead th:nth-child(4),
+.it-batch-plan-table > thead th:nth-child(5),
+.it-batch-plan-table > thead th:nth-child(6) { width: 90px; }
+.it-batch-plan-table > thead th:nth-child(7) { width: 76px; }
+.it-batch-plan-table > thead th:nth-child(8) { width: 68px; }
+.it-batch-plan-table > thead th:nth-child(9) { width: 230px; }
+.it-batch-plan-table > thead th:nth-child(10) { width: 92px; }
+.it-einvoice-table { min-width: 940px; }
+.it-einvoice-table > thead th:nth-child(1) { width: 32px; }
+.it-einvoice-table > thead th:nth-child(2) { width: 150px; }
+.it-einvoice-table > thead th:nth-child(3) { width: 110px; }
+.it-einvoice-table > thead th:nth-child(4) { width: 190px; }
+.it-einvoice-table > thead th:nth-child(5) { width: 130px; }
+.it-einvoice-table > thead th:nth-child(6) { width: 150px; }
+.it-einvoice-table > thead th:nth-child(7) { width: 180px; }
 .it-batch-transaction b, .it-batch-transaction small { display: block; }
 .it-batch-transaction small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .it-batch-table td.it-money { text-align: right; font-weight: 700; white-space: nowrap; }
@@ -457,10 +535,21 @@
 .it-batch-status.done { color: #176936; background: #e3f6e9; }
 .it-batch-status.error { color: #9a241b; background: #fee8e6; }
 .it-unissued-choice, .it-issued-choice { min-width: 190px; margin-top: 6px; }
+/* Kích thước và vị trí CỦA panel phải theo cửa sổ: chúng định nghĩa chính cái
+   container nên không thể tự đo mình bằng container query. Khi cửa sổ hẹp thì
+   panel chiếm gần trọn bề ngang và thu nhỏ padding. */
 @media (max-width: 700px) {
   #invoice-target-mvp { right: 8px; bottom: 8px; }
-  #it-panel, #it-panel.mapping-mode, #it-panel.statement-mode, #it-panel.review-mode, #it-panel.batch-mode, #it-panel.stock-mode { width: calc(100vw - 16px); min-width: 320px; padding: 12px; }
+  #it-panel, #it-panel.home-mode, #it-panel.mapping-mode, #it-panel.statement-mode, #it-panel.review-mode, #it-panel.batch-mode, #it-panel.stock-mode { width: calc(100vw - 16px); min-width: 0; padding: 12px; }
   #it-panel header { top: -12px; margin: -12px -12px 12px; }
+  /* Dự phòng cho màn hẹp: header dính ở top:-12px nên mép dưới cao hơn. Khi JS
+     chạy, syncTabsOffset() đo thật và ghi đè bằng inline style. */
+  #invoice-target-mvp { --it-header-offset: 46px; --it-tabs-offset: 92px; }
+  .it-review-accept { bottom: -12px; }
+}
+/* Lưới BÊN TRONG panel bám bề rộng panel, nên xếp lại đúng cả khi cửa sổ rộng
+   mà kế toán kéo panel hẹp lại. */
+@container it-panel (max-width: 700px) {
   .it-mapping-toolbar { grid-template-columns: 1fr; }
   .it-mapping-head { flex-direction: column; }
   .it-mapping-kpis { grid-template-columns: 1fr 1fr; }
@@ -470,7 +559,7 @@
   .it-statement-toolbar { grid-template-columns: 1fr; }
   .it-review-kpis { grid-template-columns: 1fr 1fr; }
   .it-review-grid { grid-template-columns: 1fr; }
-  .it-review-accept { grid-template-columns: 1fr; bottom: -12px; }
+  .it-review-accept { grid-template-columns: 1fr; }
   .it-review-accept #it-apply-plan { width: 100%; }
   .it-batch-toolbar { grid-template-columns: 1fr; }
   .it-batch-kpis { grid-template-columns: 1fr 1fr; }
