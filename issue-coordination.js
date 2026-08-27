@@ -207,10 +207,25 @@
       }
     }
 
+    // Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: đăng nhập
+    // cơ sở này đá cơ sở kia ra màn hình login. Vì vậy KHÔNG thể có hai lô chạy
+    // đồng thời, và chốt còn kẹt ở "running" nghĩa là lô trước bị đứt giữa
+    // chừng — đóng tab, mất mạng, hoặc hết phiên. Đó mới là điều đáng cảnh báo:
+    // một phần hóa đơn có thể đã được cấp số mà chưa vào sổ.
     if (otherCursor?.status === "running") {
       warnings.push({
-        code: "other_running",
-        text: `Cơ sở kia đang phát hành dở ngày ${day}. Chạy cùng lúc sẽ trộn số hóa đơn.`
+        code: "other_interrupted",
+        text: `Lô phát hành của cơ sở kia ngày ${day} chưa chạy xong (dừng giữa chừng). ` +
+          "Kiểm tra bên đó đã phát hành tới số nào trước khi chạy tiếp, tránh bỏ sót hoặc trùng."
+      });
+    }
+    // Chính cơ sở này cũng có thể có lô đứt dở — cùng lý do, và còn sát sườn hơn.
+    const ownCursor = next.cursors[day]?.[slug] || null;
+    if (ownCursor?.status === "running") {
+      warnings.push({
+        code: "self_interrupted",
+        text: `Lô phát hành của chính cơ sở này ngày ${day} lần trước chưa chạy xong. ` +
+          "Kiểm tra lại danh sách để không phát hành trùng."
       });
     }
 

@@ -3543,8 +3543,11 @@
       )
       : null;
     const handoffNote = otherPending?.count && succeeded > 0
-      ? ` Tiếp theo: mở tab cơ sở còn lại và phát hành cùng ngày ${batchDateKey} ` +
-        `(${otherPending.count} giao dịch) trước khi sang ngày kế.`
+      // Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: không thể
+      // mở song song hai tab đã đăng nhập. Phải chuyển hẳn sang cơ sở kia.
+      ? ` Tiếp theo: chuyển sang ${TENANT_LABELS[InvoiceIssueCoordination.otherTenant(pageTenantSlug)] || "cơ sở còn lại"} ` +
+        `(đăng nhập lại) và phát hành cùng ngày ${batchDateKey} ` +
+        `— ${otherPending.count} giao dịch — trước khi sang ngày kế.`
       : "";
     setStatus(
       `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` + handoffNote +

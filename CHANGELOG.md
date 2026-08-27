@@ -18,6 +18,12 @@
 - Thiếu tồn thì báo rõ nhóm nào thiếu và còn bao nhiêu. Kiểm tra chạy trên tồn đã trừ đặt chỗ của các giao dịch trước trong cùng lô, nên không sinh phương án âm kho khi tồn cạn dần giữa lô.
 - Hóa đơn dưới 500.000đ **giữ nguyên** luật riêng đúng 2 chai bia.
 
+### Phát hiện mất phiên đăng nhập
+
+- Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: **đăng nhập cơ sở này sẽ đá cơ sở kia ra màn hình login**. Quy trình thực tế là đăng nhập luân phiên, không phải mở hai tab song song. Điều này không ảnh hưởng điều phối vì cờ thứ tự, sao kê đối chiếu và chốt tiến độ đều lưu ở `chrome.storage.local`, không phụ thuộc phiên đăng nhập.
+- Mất phiên thường trả HTTP 200 kèm HTML trang login chứ không phải 401/403. Trước đây `JSON.parse` thất bại lặng lẽ và lô phát hành **chạy tiếp như không có gì xảy ra**. Nay cả luồng phát hành lẫn luồng lưu phiếu đều nhận diện và dừng hẳn, báo rõ cần đăng nhập lại.
+- Chốt còn kẹt ở trạng thái "đang chạy" nay được hiểu đúng là **lô trước bị đứt giữa chừng** (đóng tab, mất mạng, hết phiên) và cảnh báo rằng một phần hóa đơn có thể đã được cấp số mà chưa vào sổ.
+
 ### Khác
 
 - Batch Review sắp giao dịch theo ngày rồi giờ giao dịch trước khi cắt theo giới hạn, nên lô N giao dịch đầu là N giao dịch sớm nhất chứ không phải N dòng đầu trong file.

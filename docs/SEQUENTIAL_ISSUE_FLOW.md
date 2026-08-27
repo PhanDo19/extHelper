@@ -62,6 +62,30 @@ cơ sở tự import sao kê của mình ở tab của mình; bảng tóm tắt 
 dùng chung. Nếu import cả hai file trong cùng một tab thì ô import phải có bộ chọn
 cơ sở để truyền đúng `tenantSlug`.
 
+## Ràng buộc nền: không thể mở song song hai cơ sở
+
+Hai cơ sở dùng **chung một domain** (`banhang.thuanvietsoft.com/<coso>/...`).
+Cookie phiên đăng nhập gắn theo **domain**, không theo đường dẫn, nên đăng nhập
+cơ sở này sẽ **ghi đè phiên của cơ sở kia** và đá tab đó ra màn hình login.
+
+Hệ quả:
+
+- Quy trình thực tế là **đăng nhập luân phiên**, không phải mở hai tab song song.
+- Điều phối tự động chéo tab (phương án B từng cân nhắc) là **bất khả thi** về
+  mặt kỹ thuật, không chỉ rủi ro.
+- Ba thành phần dùng chung vẫn hoạt động bình thường vì chúng đi qua
+  `chrome.storage.local`, **không phụ thuộc phiên đăng nhập** — miễn là cùng một
+  profile Chrome. Khác profile thì chúng không thấy nhau.
+- Không có chuyện hai lô chạy đồng thời. Chốt còn kẹt ở `running` nghĩa là lô
+  trước **bị đứt giữa chừng** (đóng tab, mất mạng, hết phiên), và một phần hóa
+  đơn có thể đã được cấp số mà chưa vào sổ.
+
+Mất phiên thường trả **HTTP 200 kèm HTML trang login**, không phải 401/403.
+`isLoginRedirect()` trong `bridge.js` nhận diện theo ba dấu hiệu độc lập (mã
+trạng thái, URL cuối cùng sau chuyển hướng, dấu vết form đăng nhập trong HTML)
+và dừng hẳn cả luồng phát hành lẫn luồng lưu phiếu. Không có bước này thì
+`JSON.parse` thất bại lặng lẽ và lô chạy tiếp như không có gì xảy ra.
+
 ## Thứ tự giữa hai cơ sở — cờ config
 
 Cơ sở nào phát hành trước trong cùng một ngày do **cờ config trên UI** quyết định.
@@ -70,12 +94,12 @@ Mặc định **Linh Đàm trước**.
 - Cờ nằm ở khóa **dùng chung**, không phải `uiSession` (`uiSession` lưu theo
   `tenantKey()` nên mỗi tab sẽ thấy một giá trị khác nhau — sai hoàn toàn với một
   quy ước phải thống nhất giữa hai cơ sở).
-- Cả hai tab đọc cùng một cờ, nên không có chuyện mỗi bên tưởng mình đi trước.
-- Extension dùng cờ để **chỉ định** cơ sở nào chạy trước, không chỉ cảnh báo: tab
-  của cơ sở đi sau sẽ nhắc rõ "theo cấu hình, Linh Đàm phát hành trước; ngày 01/07
+- Cả hai cơ sở đọc cùng một cờ (cùng profile Chrome), nên không có chuyện mỗi bên tưởng mình đi trước.
+- Extension dùng cờ để **chỉ định** cơ sở nào chạy trước, không chỉ cảnh báo: cơ
+  sở đi sau sẽ được nhắc rõ "theo cấu hình, Linh Đàm phát hành trước; ngày 01/07
   Linh Đàm còn 3 giao dịch chưa phát hành".
-- Cờ có thể đổi bất cứ lúc nào, nhưng đổi giữa chừng một ngày đang chạy dở thì
-  cảnh báo.
+- Đổi cờ phải đọc lại bản ghi dùng chung trước khi ghi, nếu không sẽ xóa mất chốt
+  mà phiên trước đã ghi vào cùng bản ghi đó.
 
 ## Bất biến bắt buộc
 
@@ -120,8 +144,8 @@ flowchart TD
     H -- Không --> J
     H1 --> J
 
-    J{Cơ sở kia đang chạy dở<br/>đúng ngày này?}
-    J -- Có --> J1[⚠ Cảnh báo: có tab khác đang phát hành<br/>chạy song song sẽ trộn số]
+    J{Chốt còn kẹt ở running?<br/>cơ sở kia HOẶC chính mình}
+    J -- Có --> J1[⚠ Lô trước bị đứt giữa chừng<br/>một phần hóa đơn có thể đã cấp số<br/>mà chưa vào sổ — kiểm tra trước khi chạy tiếp]
     J -- Không --> K
     J1 --> K
 
@@ -153,7 +177,7 @@ flowchart TD
     X -- Không --> Y[Ghi chốt tiến độ<br/>ngày, tenant, SOHOADON cuối, xong lúc]
 
     Y --> Y1[Kiểm tra tính liên tục<br/>SOHOADON trong ngày có đứt quãng?<br/>có số của cơ sở kia chèn giữa?]
-    Y1 --> Y2[Nhắc chuyển cơ sở:<br/>Ngày 01/07 Linh Đàm xong tới 124.<br/>Mở tab Kim Giang, phát hành cùng ngày 01/07<br/>trước khi sang 02/07]
+    Y1 --> Y2[Nhắc chuyển cơ sở:<br/>Ngày 01/07 Linh Đàm xong tới 124.<br/>Chuyển sang Kim Giang - đăng nhập lại -<br/>phát hành cùng ngày 01/07 trước khi sang 02/07]
     Y2 --> Y3{Đã phát hành được<br/>và không thiếu mặt hàng?}
     Y3 -- Có --> Y4[Mời xuất file hạch toán]
     Y3 -- Không --> Y5[Nêu rõ số hóa đơn lỗi / thiếu mặt hàng]
@@ -163,10 +187,10 @@ flowchart TD
 
 ```mermaid
 sequenceDiagram
-    participant LD as Tab Linh Đàm
+    participant LD as Phiên Linh Đàm
     participant S as chrome.storage<br/>issueCursor (dùng chung)
     participant SV as Máy chủ
-    participant KG as Tab Kim Giang
+    participant KG as Phiên Kim Giang (sau khi đăng nhập lại)
 
     Note over LD,KG: Ngày 01/07
 
@@ -178,7 +202,7 @@ sequenceDiagram
     LD->>SV: phatHanhHoaDon #3
     SV-->>LD: SOHOADON 124
     LD->>S: Ghi chốt {01/07, parislinhdam, 124, xong}
-    Note over LD: Nhắc: chuyển tab Kim Giang, cùng ngày 01/07
+    Note over LD: Nhắc: chuyển sang Kim Giang (đăng nhập lại), cùng ngày 01/07
 
     KG->>S: Đọc chốt — Linh Đàm xong 01/07 tới 124
     Note over KG: Không cảnh báo: cùng ngày, cơ sở kia đã xong
@@ -199,7 +223,7 @@ sequenceDiagram
 | Cơ sở đi trước đã xong ngày D | chốt `{ngày = D, xong}` | Chạy bình thường, số nối tiếp |
 | Chưa import sao kê cơ sở kia | thiếu bảng đối chiếu | ⚠ Không xác minh được — nêu rõ trong hộp thoại |
 | Cơ sở kia đã phát hành ngày > D | chốt `{ngày > D}` | ⚠ Cảnh báo mạnh — số chèn ngược vào dải đã dùng |
-| Cơ sở kia đang chạy dở ngày D | chốt `{ngày = D, đang chạy}` | ⚠ Cảnh báo — hai tab cùng chạy sẽ trộn số |
+| Chốt kẹt ở `running` (bên nào cũng vậy) | chốt `{ngày = D, running}` | ⚠ Lô trước đứt giữa chừng — một phần có thể đã cấp số mà chưa vào sổ |
 | Cơ sở kia không có giao dịch ngày D | sao kê đối chiếu: 0 dòng | Chạy bình thường |
 
 Tất cả đều **chặn mềm**: nêu rõ trong hộp thoại xác nhận, người dùng quyết định.

@@ -61,6 +61,7 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 - Lô được sắp theo ngày rồi tới **giờ giao dịch trong sao kê** (`requestedAt`), không theo `invoiceNo`: phiếu tạo mới luôn nhận số cuối dải nên `invoiceNo` lộn xộn, còn giờ giao dịch thì không. `invoiceNo` chỉ làm chốt phụ khi thiếu giờ.
 - Số hóa đơn là dải dùng chung hai cơ sở. Cờ thứ tự cơ sở, bảng sao kê đối chiếu và chốt tiến độ phát hành lưu ở khóa **dùng chung**, không qua `tenantKey()`; mặc định Linh Đàm phát hành trước.
 - Mọi cảnh báo chéo cơ sở là **chặn mềm**: nêu rõ trong hộp thoại xác nhận rồi để người dùng quyết định. Chặn cứng sẽ kẹt khi một cơ sở không có hóa đơn nào trong ngày.
+- Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: **không thể mở song song hai tab đã đăng nhập**. Quy trình là đăng nhập luân phiên. Mất phiên thường trả HTTP 200 kèm HTML trang login, phải nhận diện và dừng hẳn thay vì để `JSON.parse` thất bại lặng lẽ.
 - Chốt tiến độ chỉ ghi sau khi người dùng đã xác nhận, và ghi cả khi lô lỗi giữa chừng vì phần đã chạy vẫn chiếm số thật trên máy chủ.
 
 ## Xuất kho để hạch toán

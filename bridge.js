@@ -2645,6 +2645,14 @@
     });
     const responseText = await response.text();
     if (!response.ok) throw new Error(`Website tu choi DoSave (HTTP ${response.status}).`);
+    // Mat phien tra ve HTML trang login kem HTTP 200. Bao dung nguyen nhan thay
+    // vi "khong phai JSON", vi cach xu ly hoan toan khac nhau.
+    if (isLoginRedirect(response, responseText)) {
+      throw new Error(
+        "Phien dang nhap da het hoac bi co so khac chiem khi luu phieu. " +
+        "Dang nhap lai dung co so nay roi thu lai; phieu chua duoc luu."
+      );
+    }
     let body;
     try { body = JSON.parse(responseText); } catch (_) {
       throw new Error("Website tra ve DoSave khong phai JSON.");
@@ -2965,9 +2973,36 @@
     if (!response.ok) {
       throw new Error(`Website tu choi ${action} (HTTP ${response.status}).`);
     }
+    // Hai co so dung chung mot domain nen cookie phien ghi de nhau: dang nhap
+    // co so kia se da tab nay ra man hinh login. Khi do server thuong tra ve
+    // HTTP 200 kem HTML trang login chu khong phai loi, JSON.parse that bai va
+    // body = null — lo se chay tiep trong im lang. Phai dung han va noi ro.
+    if (isLoginRedirect(response, responseText)) {
+      throw new Error(
+        `Phien dang nhap da het hoac bi co so khac chiem (khi goi ${action}). ` +
+        "Dang nhap lai dung co so nay roi chay lai lo; cac hoa don da phat hanh truoc do van giu nguyen."
+      );
+    }
     let body = null;
     try { body = JSON.parse(responseText); } catch (_) {}
     return { body, responseText: responseText.slice(0, 4000), httpStatus: response.status };
+  }
+
+  // Mat phien it khi tra ve 401/403: server thuong chuyen huong sang trang
+  // login va tra ve HTML kem HTTP 200. Nhan dien theo ba dau hieu doc lap de
+  // khong bo sot, va khong duoc nham voi phan hoi JSON binh thuong.
+  function isLoginRedirect(response, responseText) {
+    if (response.status === 401 || response.status === 403) return true;
+    // fetch da di theo chuyen huong: URL cuoi cung khong con la endpoint API.
+    if (/\/(Account\/)?(Log[Ii]n|DangNhap)/i.test(String(response.url || ""))) return true;
+    const text = String(responseText || "").slice(0, 2000);
+    if (!text) return false;
+    // Phan hoi JSON hop le khong bao gio la trang login.
+    const trimmed = text.trimStart();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) return false;
+    return /<form[^>]+(login|dangnhap)/i.test(text) ||
+      /name=["']?(UserName|Username|TenDangNhap)["']?/i.test(text) ||
+      /<title>[^<]*(ang nh|Login)/i.test(text);
   }
 
   // /Date(1780246800000)/ -> yyyy-mm-dd theo gio local, dung chung dinh dang voi

@@ -99,12 +99,25 @@ view = Coordination.evaluate(emptyDay, "pariskimgiang", "2026-07-01");
 assert.deepStrictEqual(view.warnings.map(item => item.code), [],
   "Cơ sở kia 0 giao dịch thì không chặn");
 
-// 4. Cơ sở kia đang chạy dở.
+// 4. Lô của cơ sở kia bị đứt giữa chừng.
+// Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: đăng nhập bên
+// này đá bên kia ra login. Không thể có hai lô chạy đồng thời, nên chốt kẹt ở
+// "running" nghĩa là lô trước dừng giữa chừng — một phần hóa đơn có thể đã được
+// cấp số mà chưa vào sổ.
 const running = Coordination.markCursor(state, "parislinhdam", "2026-07-03",
   { status: "running", count: 2 });
 view = Coordination.evaluate(running, "pariskimgiang", "2026-07-03");
-assert(view.warnings.some(item => item.code === "other_running"),
-  "Phải cảnh báo khi cơ sở kia đang phát hành dở cùng ngày");
+assert(view.warnings.some(item => item.code === "other_interrupted"),
+  "Chốt kẹt running của cơ sở kia phải bị cảnh báo là lô đứt dở");
+assert(!view.warnings.some(item => item.code === "other_running"),
+  "Không còn khái niệm hai cơ sở chạy đồng thời");
+
+// 4b. Lô đứt dở của CHÍNH cơ sở này còn sát sườn hơn.
+const selfRunning = Coordination.markCursor(state, "pariskimgiang", "2026-07-04",
+  { status: "running", count: 3 });
+view = Coordination.evaluate(selfRunning, "pariskimgiang", "2026-07-04");
+assert(view.warnings.some(item => item.code === "self_interrupted"),
+  "Lô đứt dở của chính cơ sở này phải được cảnh báo");
 
 // 5. Cơ sở kia đã vượt sang ngày sau → số sẽ chèn ngược.
 const ahead = Coordination.markCursor(state, "parislinhdam", "2026-07-09",
