@@ -10,6 +10,7 @@
 - Thêm ô chọn **cơ sở phát hành trước** ở bước 5 (mặc định Linh Đàm). Thiết lập này dùng chung cho cả hai tab.
 - Import sao kê nay trích thêm bảng tóm tắt để tab cơ sở kia biết **trước** ngày đó bên này có bao nhiêu giao dịch, thay vì chỉ biết sau khi đã phát hành xong.
 - Cảnh báo chéo cơ sở trước khi phát hành: cơ sở kia còn việc chưa chạy, đang chạy dở, đã vượt sang ngày sau, hoặc chưa import sao kê. Tất cả là chặn mềm — nêu rõ rồi để người dùng quyết định.
+- Lô phát hành nay **khóa theo đúng một ngày**: ô Đến ngày tự bám theo Ngày phát hành và chuyển sang chỉ đọc, thêm nút ‹ Ngày trước / Ngày sau › để đi từng ngày. Lô trộn nhiều ngày bị chặn cứng thay vì chỉ cảnh báo — nó sẽ chiếm luôn phần số mà cơ sở kia cần cho ngày sớm hơn, và phát hành rồi thì không hoàn tác được.
 - Sau mỗi lô: kiểm tra số hóa đơn trong ngày có liên tục không, và nhắc chuyển sang cơ sở còn lại kèm số giao dịch cụ thể.
 
 ### Món hàng bắt buộc

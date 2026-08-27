@@ -107,8 +107,10 @@ Mặc định **Linh Đàm trước**.
   tiêu chí nào khác.
 - `targets` được sắp theo `dateKey` → `requestedAt` → `invoiceNo` **trước** khi
   vào vòng phát hành.
-- Một lô chỉ chứa **đúng một ngày**. Lô trộn nhiều ngày không thể xen kẽ đúng với
-  cơ sở còn lại.
+- Một lô chỉ chứa **đúng một ngày**, và điều này được **ép** ở hai tầng: danh sách
+  khóa `toDate = fromDate` ngay khi tải, còn luồng phát hành chặn cứng nếu vẫn lọt
+  nhiều ngày. Lô trộn nhiều ngày sẽ chiếm luôn phần số mà cơ sở kia cần cho ngày
+  sớm hơn, và phát hành rồi thì không hoàn tác được.
 - Chốt tiến độ chéo cơ sở là **chặn mềm**: cảnh báo rõ, người dùng vẫn quyết định.
 - Mọi phản hồi đi qua `respond()`; hết hạn chờ **không** kết luận là chưa phát hành.
 
@@ -117,16 +119,15 @@ Mặc định **Linh Đàm trước**.
 ```mermaid
 flowchart TD
     A[Người dùng mở bước 5<br/>Phát hành hóa đơn] --> B[loadEInvoiceList<br/>fetchEInvoiceList theo Từ/Đến ngày]
-    B --> C{Lô có đúng<br/>một ngày?}
-    C -- Không --> C1[Cảnh báo: lô nhiều ngày<br/>không xen kẽ đúng được<br/>Đề nghị khóa một ngày] --> C2{Vẫn tiếp tục?}
-    C2 -- Không --> Z1[Dừng, người dùng chỉnh lại ngày]
-    C2 -- Có --> D
-    C -- Có --> D[Người dùng tích chọn các dòng<br/>chỉ trong số dòng đang hiện]
+    B --> C[Danh sách KHÓA theo đúng một ngày<br/>toDate ép bằng fromDate<br/>nút ‹ Ngày trước / Ngày sau › để chuyển]
+    C --> D[Người dùng tích chọn các dòng<br/>chỉ trong số dòng đang hiện]
 
     D --> E[targets = dòng đã chọn<br/>chưa phát hành, chưa hủy]
     E --> F{Có dòng nào<br/>không khớp sao kê?<br/>statementInvoiceMatch}
     F -- Có --> Z2[Chặn cứng cả lô<br/>nêu rõ mã, ngày, số tiền lệch]
-    F -- Không --> G
+    F -- Không --> F2{Lô vẫn lọt<br/>nhiều ngày?}
+    F2 -- Có --> Z5[Chặn cứng: mỗi lô đúng một ngày<br/>phát hành rồi không hoàn tác được]
+    F2 -- Không --> G
 
     G[SẮP XẾP targets<br/>dateKey → requestedAt → invoiceNo] --> G1[Đọc dữ liệu dùng chung:<br/>cờ thứ tự cơ sở + sao kê đối chiếu + chốt tiến độ]
 

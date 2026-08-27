@@ -2741,10 +2741,16 @@
     return `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}`;
   }
 
+  // Lô phát hành khóa theo ĐÚNG MỘT NGÀY. Số hóa đơn là dải dùng chung hai cơ
+  // sở và phải liên tục trong ngày, nên lô trộn nhiều ngày không thể xen kẽ
+  // đúng với cơ sở kia: phát hành 01/07 và 02/07 cùng lúc sẽ chiếm luôn phần số
+  // mà cơ sở kia cần cho 01/07.
+  //
+  // Ô "Đến ngày" vẫn giữ để không phá thói quen đọc và các ràng buộc UI khác,
+  // nhưng luôn bám theo "Từ ngày".
   function suggestedEInvoiceRange() {
     const fromDate = uiSession?.batchFromDate || uiSession?.eInvoiceFromDate || todayDateKey();
-    const candidateTo = uiSession?.batchToDate || uiSession?.eInvoiceToDate || fromDate;
-    return { fromDate, toDate: candidateTo < fromDate ? fromDate : candidateTo };
+    return { fromDate, toDate: fromDate };
   }
 
   async function openEInvoiceAdmin() {
@@ -2856,8 +2862,10 @@
     const { fromDate, toDate } = suggestedEInvoiceRange();
     node.innerHTML = `<div class="it-batch-toolbar">
       <div><b>Phát hành hóa đơn điện tử</b><br><small>Chọn các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small></div>
-      <label>Từ ngày<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
-      <label>Đến ngày<input id="it-einvoice-to-date" type="date" value="${escapeHtml(toDate)}"></label>
+      <label title="Lô phát hành luôn đúng một ngày để số hóa đơn liên tục và xen kẽ được với cơ sở kia.">Ngày phát hành<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
+      <label class="it-locked-date" title="Lô phát hành khóa theo đúng một ngày nên Đến ngày luôn bằng Ngày phát hành.">Đến ngày<input id="it-einvoice-to-date" type="date" value="${escapeHtml(toDate)}" readonly tabindex="-1"></label>
+      <button id="it-einvoice-prev-day" type="button" title="Lùi một ngày">‹ Ngày trước</button>
+      <button id="it-einvoice-next-day" type="button" title="Sang ngày kế">Ngày sau ›</button>
       <label title="Số hóa đơn là dải dùng chung hai cơ sở. Cơ sở đi trước phát hành hết một ngày rồi cơ sở kia mới tiếp, để số trong ngày liền mạch.">Cơ sở phát hành trước<select id="it-einvoice-first-tenant">${
         InvoiceIssueCoordination.TENANTS.map(slug =>
           `<option value="${escapeHtml(slug)}"${issueCoordination.firstTenant === slug ? " selected" : ""}>${
@@ -2870,6 +2878,28 @@
     node.querySelector("#it-load-einvoice")?.addEventListener("click", () => {
       loadEInvoiceList().catch(error => setStatus(error.message, "error"));
     });
+    // Đổi ngày phát hành thì "Đến ngày" phải bám theo ngay, để người dùng không
+    // nhìn thấy một khoảng ngày mà hệ thống sẽ không dùng.
+    const fromInput = node.querySelector("#it-einvoice-from-date");
+    const syncLockedToDate = () => {
+      const toInput = node.querySelector("#it-einvoice-to-date");
+      if (toInput && fromInput) toInput.value = fromInput.value;
+    };
+    fromInput?.addEventListener("change", syncLockedToDate);
+    const shiftIssueDay = days => {
+      if (!fromInput) return;
+      const current = uiDateKey(fromInput.value) || todayDateKey();
+      const [year, month, day] = current.split("-").map(Number);
+      // Dùng UTC để việc cộng/trừ ngày không bị lệch bởi giờ mùa hè.
+      const moved = new Date(Date.UTC(year, month - 1, day + days));
+      const part = number => String(number).padStart(2, "0");
+      fromInput.value =
+        `${moved.getUTCFullYear()}-${part(moved.getUTCMonth() + 1)}-${part(moved.getUTCDate())}`;
+      syncLockedToDate();
+      loadEInvoiceList().catch(error => setStatus(error.message, "error"));
+    };
+    node.querySelector("#it-einvoice-prev-day")?.addEventListener("click", () => shiftIssueDay(-1));
+    node.querySelector("#it-einvoice-next-day")?.addEventListener("click", () => shiftIssueDay(1));
     node.querySelector("#it-einvoice-first-tenant")?.addEventListener("change", async event => {
       const chosen = String(event.target.value || "");
       try {
@@ -3155,8 +3185,12 @@
 
   async function loadEInvoiceList() {
     const fromDate = document.getElementById("it-einvoice-from-date")?.value || todayDateKey();
-    const toDate = document.getElementById("it-einvoice-to-date")?.value || fromDate;
-    if (toDate < fromDate) throw new Error("Đến ngày phải bằng hoặc sau Từ ngày.");
+    // Lô phát hành luôn đúng một ngày: số hóa đơn phải liên tục trong ngày và
+    // xen kẽ được với cơ sở kia. Ép ở đây thay vì chỉ cảnh báo lúc phát hành,
+    // để danh sách không bao giờ chứa sẵn nhiều ngày cho người dùng tích chọn.
+    const toDate = fromDate;
+    const toInput = document.getElementById("it-einvoice-to-date");
+    if (toInput && toInput.value !== fromDate) toInput.value = fromDate;
     setStatus("Đang tải danh sách hóa đơn điện tử…", "warn");
     const result = await request("fetchEInvoiceList", { fromDate, toDate });
     eInvoiceRows = result.rows || [];
@@ -3333,15 +3367,20 @@
           ? "; extension sẽ mở từng phiếu để đọc mặt hàng (chậm hơn)."
           : " và màn hình danh sách Bán hàng chưa mở, nên sẽ KHÔNG có mặt hàng để hạch toán.")
       : "";
-    // Số hóa đơn là dải dùng chung hai cơ sở. Lô trộn nhiều ngày không thể xen
-    // kẽ đúng với cơ sở kia, nên phải nêu rõ trước khi chạy.
+    // Số hóa đơn là dải dùng chung hai cơ sở và phải liên tục trong ngày, nên lô
+    // trộn nhiều ngày sẽ chiếm luôn phần số mà cơ sở kia cần cho ngày sớm hơn.
+    // loadEInvoiceList đã khóa danh sách theo đúng một ngày; nếu vẫn lọt nhiều
+    // ngày tới đây thì có gì đó sai, phải CHẶN CỨNG chứ không chỉ cảnh báo —
+    // phát hành rồi thì không hoàn tác được.
     const batchDates = [...new Set(orderedTargets.map(row => uiDateKey(row.dateKey)).filter(Boolean))].sort();
-    const multiDayWarning = batchDates.length > 1
-      ? `\n\n⚠ Lô này trộn ${batchDates.length} ngày (${batchDates.join(", ")}). ` +
-        "Số hóa đơn sẽ không xen kẽ đúng được với cơ sở kia; nên phát hành từng ngày một."
-      : "";
-    // Cảnh báo chéo cơ sở chỉ tính được khi lô gói gọn trong một ngày.
-    const batchDateKey = batchDates.length === 1 ? batchDates[0] : "";
+    if (batchDates.length > 1) {
+      throw new Error(
+        `Không phát hành: lô đang trộn ${batchDates.length} ngày (${batchDates.join(", ")}). ` +
+        "Mỗi lô chỉ được đúng một ngày để số hóa đơn liên tục và xen kẽ đúng với cơ sở kia. " +
+        "Hãy tải lại danh sách theo từng ngày."
+      );
+    }
+    const batchDateKey = batchDates[0] || "";
     issueCoordination = InvoiceIssueCoordination.normalize(
       await InvoiceMappingStore.loadIssueCoordination(issueCoordination)
     );
@@ -3358,7 +3397,7 @@
         `${index + 1}. ${row.invoiceNo} · ${uiDateKey(row.dateKey)} · ${formatMoney(row.grandTotal)} đ`).join("\n") +
       (orderedTargets.length > 10 ? `\n… và ${orderedTargets.length - 10} hóa đơn nữa.` : "") +
       "\n\nHóa đơn đã phát hành không thể tự hủy trong extension." +
-      outsideWarning + warning + multiDayWarning + coordinationWarning
+      outsideWarning + warning + coordinationWarning
     );
     if (!confirmed) return setStatus("Đã hủy thao tác phát hành.", "warn");
 

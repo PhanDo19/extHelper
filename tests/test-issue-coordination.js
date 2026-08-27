@@ -183,10 +183,35 @@ const issueFlow = contentSource.slice(
   contentSource.indexOf("async function issueSelectedEInvoices("),
   contentSource.indexOf("function stockNameByWebCode(")
 );
-// Lô trộn nhiều ngày không xen kẽ đúng được với cơ sở kia.
-assert(issueFlow.includes("batchDates.length > 1"), "Phải cảnh báo khi lô trộn nhiều ngày");
-assert(issueFlow.includes("const batchDateKey = batchDates.length === 1"),
-  "Cảnh báo chéo cơ sở chỉ tính khi lô gói gọn một ngày");
+// Lô trộn nhiều ngày sẽ chiếm phần số mà cơ sở kia cần cho ngày sớm hơn, và
+// phát hành rồi thì không hoàn tác được — nên đây là CHẶN CỨNG, không phải
+// cảnh báo cho qua.
+assert(/if \(batchDates\.length > 1\) \{[\s\S]{0,400}throw new Error/.test(issueFlow),
+  "Lô trộn nhiều ngày phải bị chặn cứng, không được chỉ cảnh báo");
+assert(issueFlow.indexOf("batchDates.length > 1") < issueFlow.indexOf("window.confirm"),
+  "Phải chặn TRƯỚC khi hỏi xác nhận, không để người dùng xác nhận rồi mới báo lỗi");
+
+// Danh sách phát hành phải được khóa theo đúng một ngày ngay từ lúc tải, để
+// không bao giờ có nhiều ngày cho người dùng tích chọn.
+const loadList = contentSource.slice(
+  contentSource.indexOf("async function loadEInvoiceList()"),
+  contentSource.indexOf("function statementInvoiceNos(")
+);
+assert(loadList.includes("const toDate = fromDate"),
+  "loadEInvoiceList phải ép Đến ngày bằng Ngày phát hành");
+const suggestRange = contentSource.slice(
+  contentSource.indexOf("function suggestedEInvoiceRange()"),
+  contentSource.indexOf("async function openEInvoiceAdmin(")
+);
+assert(suggestRange.includes("toDate: fromDate"),
+  "Khoảng ngày gợi ý cho màn phát hành cũng phải là một ngày");
+// Ô Đến ngày còn đó để không phá bố cục, nhưng không được sửa tay.
+assert(/id="it-einvoice-to-date"[^>]*readonly/.test(contentSource),
+  "Ô Đến ngày phải chỉ đọc vì lô luôn khóa một ngày");
+// Chuyển ngày nhanh: đây là cách thay thế cho việc quét cả khoảng.
+for (const id of ["it-einvoice-prev-day", "it-einvoice-next-day"]) {
+  assert(contentSource.includes(`id="${id}"`), `Thiếu nút chuyển ngày ${id}`);
+}
 // Trạng thái điều phối phải đọc lại ngay trước khi đánh giá: tab kia có thể vừa ghi.
 assert(issueFlow.indexOf("loadIssueCoordination") < issueFlow.indexOf("InvoiceIssueCoordination.evaluate"),
   "Phải đọc lại chốt từ storage trước khi đánh giá cảnh báo");
