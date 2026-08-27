@@ -201,6 +201,22 @@ assert(issueFlow.indexOf("if (!confirmed)") < issueFlow.indexOf('status: "runnin
   "Không được ghi chốt khi người dùng còn chưa xác nhận");
 assert(issueFlow.includes("InvoiceIssueCoordination.checkContinuity"),
   "Chạy xong phải kiểm tra tính liên tục của số hóa đơn");
+
+// Chốt phải được gỡ khỏi "running" NGAY TRONG khối finally. Nếu để ở phần tổng
+// kết bên dưới, một lỗi trong vòng lặp (mất phiên, mất mạng) sẽ thoát ra ngoài
+// và bỏ qua toàn bộ phần đó — chốt kẹt ở "running" vĩnh viễn, khiến mọi lần
+// chạy sau đều bị cảnh báo "lô trước đứt giữa chừng" dù thực tế đã xong.
+const finallyBlock = issueFlow.slice(
+  issueFlow.indexOf("} finally {"),
+  issueFlow.indexOf("const missingItems")
+);
+assert(finallyBlock.includes('status: "done"'),
+  "Chốt phải được ghi trong finally để lô hỏng giữa chừng không làm kẹt trạng thái running");
+assert(finallyBlock.includes("saveIssueCoordination"),
+  "finally phải lưu chốt xuống storage, không chỉ đổi trong bộ nhớ");
+// Lưu hỏng cũng không được kéo theo cả luồng: bắt lỗi tại chỗ.
+assert(/try \{[\s\S]{0,200}saveIssueCoordination[\s\S]{0,200}catch/.test(finallyBlock),
+  "Lỗi khi lưu chốt phải được bắt tại chỗ, không ném ra khỏi finally");
 assert(issueFlow.includes("handoffNote"), "Xong phải nhắc chuyển sang cơ sở còn lại");
 
 // Cờ thứ tự là thiết lập dùng chung nên khi đổi phải đọc lại rồi mới ghi, tránh

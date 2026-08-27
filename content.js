@@ -3494,30 +3494,44 @@
       // Luôn mở khóa nút, kể cả khi vòng lặp hỏng giữa chừng.
       issuingInProgress = false;
       renderEInvoiceRows();
+      // Chốt PHẢI được gỡ khỏi "running" ngay tại đây. Nếu vòng lặp ném lỗi
+      // (mất phiên, mất mạng), lỗi thoát ra ngoài và toàn bộ phần tổng kết bên
+      // dưới không chạy — chốt sẽ kẹt ở "running" vĩnh viễn, khiến mọi lần chạy
+      // sau đều bị cảnh báo "lô trước đứt giữa chừng" dù thực tế đã xong.
+      //
+      // Ghi ngay cả khi lô hỏng: phần đã phát hành vẫn chiếm số thật trên máy
+      // chủ, nên cơ sở kia cần biết đã dùng tới số nào.
+      if (batchDateKey) {
+        const issuedSoFar = orderedTargets
+          .map(row => String(row.soHoaDon || "").trim())
+          .filter(Boolean);
+        const reached = InvoiceIssueCoordination.checkContinuity(issuedSoFar);
+        issueCoordination = InvoiceIssueCoordination.markCursor(
+          issueCoordination, pageTenantSlug, batchDateKey,
+          {
+            status: "done",
+            lastSoHoaDon: reached.to == null ? "" : String(reached.to),
+            count: succeeded
+          }
+        );
+        try {
+          await InvoiceMappingStore.saveIssueCoordination(issueCoordination);
+        } catch (error) {
+          console.error("Không lưu được chốt phát hành", error);
+        }
+      }
     }
     const missingItems = targets.filter(row => {
       const entry = InvoiceIssuedBook.findByInvoiceId(issuedInvoiceBook, row.id);
       return entry && !entry.items.length;
     }).length;
-    // Ghi chốt cho tab của cơ sở kia: đã phát hành ngày nào, tới số nào. Ghi cả
-    // khi lô lỗi giữa chừng — phần đã chạy vẫn chiếm số thật trên máy chủ.
-    let continuity = null;
-    if (batchDateKey) {
-      const issuedNumbers = orderedTargets
-        .map(row => String(row.soHoaDon || "").trim())
-        .filter(Boolean);
-      continuity = InvoiceIssueCoordination.checkContinuity(issuedNumbers);
-      issueCoordination = InvoiceIssueCoordination.markCursor(
-        issueCoordination, pageTenantSlug, batchDateKey,
-        {
-          status: "done",
-          lastSoHoaDon: continuity.to == null ? "" : String(continuity.to),
-          count: succeeded
-        }
-      );
-      await InvoiceMappingStore.saveIssueCoordination(issueCoordination)
-        .catch(error => console.error("Không lưu được chốt phát hành", error));
-    }
+    // Chốt đã được ghi trong khối finally ở trên — kể cả khi lô hỏng giữa chừng.
+    // Ở đây chỉ tính lại tính liên tục để đưa vào phần tổng kết.
+    const continuity = batchDateKey
+      ? InvoiceIssueCoordination.checkContinuity(
+        orderedTargets.map(row => String(row.soHoaDon || "").trim()).filter(Boolean)
+      )
+      : null;
     const progressMessages = [];
     if (failures.length) progressMessages.push(`Thất bại ${failures.length} hóa đơn:\n${failures.join("\n")}`);
     if (warnings.length) progressMessages.push(`Cảnh báo ${warnings.length} hóa đơn:\n${warnings.join("\n")}`);
