@@ -5,23 +5,25 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  // Điều phối phát hành giữa hai cơ sở.
+  // Điều phối phát hành giữa các cơ sở.
   //
-  // Số hóa đơn điện tử là dải dùng chung của cả Kim Giang lẫn Linh Đàm, nhưng
-  // extension chạy trong tab của MỘT cơ sở và mọi dữ liệu nghiệp vụ đều tách
-  // theo tenantKey(). Module này giữ đúng ba thứ phải dùng chung để hai tab
-  // không giẫm chân nhau:
+  // Số hóa đơn điện tử là dải dùng chung của mọi cơ sở, nhưng extension chạy
+  // trong tab của MỘT cơ sở và mọi dữ liệu nghiệp vụ đều tách theo tenantKey().
+  // Module này giữ đúng ba thứ phải dùng chung để các cơ sở không giẫm chân nhau:
   //
-  //   1. cờ thứ tự  — cơ sở nào phát hành trước trong cùng một ngày;
-  //   2. sao kê đối chiếu — biết TRƯỚC cơ sở kia ngày đó có bao nhiêu giao dịch;
+  //   1. dãy thứ tự — cơ sở nào phát hành trước trong cùng một ngày;
+  //   2. sao kê đối chiếu — biết TRƯỚC cơ sở khác ngày đó có bao nhiêu giao dịch;
   //   3. chốt tiến độ — biết SAU khi họ đã phát hành tới đâu.
   //
   // Cả ba đều là dữ liệu rất mỏng: không mang phương án, phiếu hay tồn kho.
 
   const KIND = "invoice-target-issue-coordination";
   const SCHEMA_VERSION = 1;
-  const TENANTS = Object.freeze(["parislinhdam", "pariskimgiang"]);
-  const DEFAULT_FIRST_TENANT = "parislinhdam";
+  const TENANTS = Object.freeze(["parislinhdam", "pariskimgiang", "parisnhon"]);
+  // Thu tu phat hanh mac dinh. Voi hai co so thi mot co "ai di truoc" la du,
+  // nhung tu ba co so tro len phai la MOT DAY THU TU day du: chi biet ai dau
+  // tien khong noi len co so thu hai va thu ba xep the nao.
+  const DEFAULT_TENANT_ORDER = Object.freeze(["parislinhdam", "pariskimgiang", "parisnhon"]);
 
   const text = value => String(value == null ? "" : value).trim();
   const money = value => Math.max(0, Math.round(Number(value) || 0));
@@ -35,10 +37,10 @@
     return {
       kind: KIND,
       schemaVersion: SCHEMA_VERSION,
-      // Cờ này phải dùng chung. Để trong uiSession thì mỗi tab đọc một giá trị
-      // khác nhau (uiSession lưu theo tenantKey) và cả hai bên đều có thể tưởng
-      // mình đi trước — hỏng đúng thứ cần thống nhất.
-      firstTenant: DEFAULT_FIRST_TENANT,
+      // Thứ tự này phải dùng chung. Để trong uiSession thì mỗi cơ sở đọc một giá
+      // trị khác nhau (uiSession lưu theo tenantKey) và ai cũng có thể tưởng mình
+      // đi trước — hỏng đúng thứ cần thống nhất.
+      tenantOrder: [...DEFAULT_TENANT_ORDER],
       // { [tenant]: { importedAt, days: { [dateKey]: { count, transactions } } } }
       //
       // Phải tách importedAt ra mức cơ sở, không nhét vào từng ngày: một sao kê
@@ -53,7 +55,7 @@
   function normalize(value) {
     const source = value && typeof value === "object" ? value : {};
     const result = empty();
-    result.firstTenant = normalizeTenant(source.firstTenant) || DEFAULT_FIRST_TENANT;
+    result.tenantOrder = normalizeOrder(source.tenantOrder, source.firstTenant);
     for (const tenant of TENANTS) {
       const entry = source.statements?.[tenant];
       if (!entry || typeof entry !== "object") continue;
@@ -91,15 +93,52 @@
     return result;
   }
 
-  function otherTenant(tenant) {
-    const slug = normalizeTenant(tenant);
-    return TENANTS.find(item => item !== slug) || "";
+  // Chuan hoa day thu tu: bo ma la, bo trung, va bo sung co so con thieu theo
+  // thu tu mac dinh de day luon phu het TENANTS.
+  //
+  // legacyFirstTenant lo cac ban ghi ghi truoc khi co day thu tu (chi co
+  // firstTenant): dua co so do len dau, phan con lai giu thu tu mac dinh.
+  function normalizeOrder(value, legacyFirstTenant) {
+    const seen = new Set();
+    const order = [];
+    for (const item of Array.isArray(value) ? value : []) {
+      const slug = normalizeTenant(item);
+      if (!slug || seen.has(slug)) continue;
+      seen.add(slug);
+      order.push(slug);
+    }
+    if (!order.length) {
+      const legacy = normalizeTenant(legacyFirstTenant);
+      if (legacy) {
+        order.push(legacy);
+        seen.add(legacy);
+      }
+    }
+    for (const slug of DEFAULT_TENANT_ORDER) {
+      if (!seen.has(slug)) order.push(slug);
+    }
+    return order;
   }
 
-  function setFirstTenant(state, tenant) {
+  // Cac co so phai phat hanh TRUOC co so nay trong cung mot ngay.
+  function tenantsBefore(state, tenant) {
     const next = normalize(state);
     const slug = normalizeTenant(tenant);
-    if (slug) next.firstTenant = slug;
+    const index = next.tenantOrder.indexOf(slug);
+    return index <= 0 ? [] : next.tenantOrder.slice(0, index);
+  }
+
+  // Cac co so phat hanh SAU co so nay.
+  function tenantsAfter(state, tenant) {
+    const next = normalize(state);
+    const slug = normalizeTenant(tenant);
+    const index = next.tenantOrder.indexOf(slug);
+    return index < 0 ? [] : next.tenantOrder.slice(index + 1);
+  }
+
+  function setTenantOrder(state, order) {
+    const next = normalize(state);
+    next.tenantOrder = normalizeOrder(order);
     return next;
   }
 
@@ -181,47 +220,63 @@
     const next = normalize(state);
     const slug = normalizeTenant(tenant);
     const day = text(dateKey);
-    const other = otherTenant(slug);
     const warnings = [];
-    if (!slug || !day) return { warnings, goesFirst: true, expectedOtherCount: null };
-
-    const goesFirst = next.firstTenant === slug;
-    const otherImported = hasStatement(next, other);
-    const otherSummary = next.statements[other]?.days?.[day] || null;
-    const otherCursor = next.cursors[day]?.[other] || null;
-    const otherDone = otherCursor?.status === "done";
-
-    if (!goesFirst) {
-      if (!otherImported) {
-        warnings.push({
-          code: "missing_other_statement",
-          text: `Chưa import sao kê của cơ sở kia nên không xác minh được họ đã phát hành ngày ${day} chưa. ` +
-            "Theo cấu hình, cơ sở kia phát hành trước."
-        });
-      } else if (!otherDone && otherSummary && otherSummary.count > 0) {
-        warnings.push({
-          code: "other_should_go_first",
-          text: `Theo cấu hình, cơ sở kia phát hành trước. Ngày ${day} họ có ${otherSummary.count} giao dịch ` +
-            "nhưng chưa thấy chốt phát hành."
-        });
-      }
+    if (!slug || !day) {
+      return { warnings, goesFirst: true, pendingBefore: [], nextTenants: [], orderIndex: -1 };
     }
 
-    // Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: đăng nhập
-    // cơ sở này đá cơ sở kia ra màn hình login. Vì vậy KHÔNG thể có hai lô chạy
+    const before = tenantsBefore(next, slug);
+    const after = tenantsAfter(next, slug);
+    const orderIndex = next.tenantOrder.indexOf(slug);
+    const goesFirst = orderIndex === 0;
+
+    // Mọi cơ sở đứng trước trong dãy đều phải xong ngày này trước. Với ba cơ sở
+    // trở lên, chỉ kiểm "cơ sở kia" là không đủ: Nhơn đứng thứ ba phải chờ CẢ
+    // Linh Đàm lẫn Kim Giang, bỏ sót một bên là số hóa đơn chèn vào giữa dải.
+    const pendingBefore = [];
+    const unknownBefore = [];
+    for (const earlier of before) {
+      const cursor = next.cursors[day]?.[earlier] || null;
+      if (cursor?.status === "done") continue;
+      if (!hasStatement(next, earlier)) {
+        unknownBefore.push(earlier);
+        continue;
+      }
+      const summary = next.statements[earlier]?.days?.[day] || null;
+      // Cơ sở đứng trước không có giao dịch nào ngày đó thì không phải chờ.
+      if (summary && summary.count > 0) pendingBefore.push({ tenant: earlier, count: summary.count });
+    }
+    if (unknownBefore.length) {
+      warnings.push({
+        code: "missing_other_statement",
+        text: `Chưa import sao kê của ${unknownBefore.join(", ")} nên không xác minh được ` +
+          `họ đã phát hành ngày ${day} chưa. Theo thứ tự cấu hình, các cơ sở này phát hành trước.`
+      });
+    }
+    if (pendingBefore.length) {
+      warnings.push({
+        code: "other_should_go_first",
+        text: "Theo thứ tự cấu hình, các cơ sở sau phát hành trước và ngày " + day + " vẫn còn việc: " +
+          pendingBefore.map(item => `${item.tenant} (${item.count} giao dịch)`).join(", ") + "."
+      });
+    }
+
+    // Các cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: đăng nhập cơ
+    // sở này đá cơ sở kia ra màn hình login. Vì vậy KHÔNG thể có hai lô chạy
     // đồng thời, và chốt còn kẹt ở "running" nghĩa là lô trước bị đứt giữa
     // chừng — đóng tab, mất mạng, hoặc hết phiên. Đó mới là điều đáng cảnh báo:
     // một phần hóa đơn có thể đã được cấp số mà chưa vào sổ.
-    if (otherCursor?.status === "running") {
+    const interrupted = TENANTS.filter(item =>
+      item !== slug && next.cursors[day]?.[item]?.status === "running");
+    if (interrupted.length) {
       warnings.push({
         code: "other_interrupted",
-        text: `Lô phát hành của cơ sở kia ngày ${day} chưa chạy xong (dừng giữa chừng). ` +
+        text: `Lô phát hành của ${interrupted.join(", ")} ngày ${day} chưa chạy xong (dừng giữa chừng). ` +
           "Kiểm tra bên đó đã phát hành tới số nào trước khi chạy tiếp, tránh bỏ sót hoặc trùng."
       });
     }
     // Chính cơ sở này cũng có thể có lô đứt dở — cùng lý do, và còn sát sườn hơn.
-    const ownCursor = next.cursors[day]?.[slug] || null;
-    if (ownCursor?.status === "running") {
+    if (next.cursors[day]?.[slug]?.status === "running") {
       warnings.push({
         code: "self_interrupted",
         text: `Lô phát hành của chính cơ sở này ngày ${day} lần trước chưa chạy xong. ` +
@@ -229,11 +284,18 @@
       });
     }
 
-    const otherLatest = latestIssuedDate(next, other);
-    if (otherLatest && otherLatest > day) {
+    // Cơ sở nào đã vượt sang ngày sau thì số cấp bây giờ sẽ chèn ngược vào dải
+    // đã dùng. Xét mọi cơ sở khác, không riêng cơ sở đứng trước.
+    const ahead = [];
+    for (const item of TENANTS) {
+      if (item === slug) continue;
+      const latest = latestIssuedDate(next, item);
+      if (latest && latest > day) ahead.push(`${item} (tới ${latest})`);
+    }
+    if (ahead.length) {
       warnings.push({
         code: "other_ahead",
-        text: `Cơ sở kia đã phát hành tới ngày ${otherLatest}, sau ngày ${day} của lô này. ` +
+        text: `${ahead.join(", ")} đã phát hành sang ngày sau ngày ${day} của lô này. ` +
           "Số cấp bây giờ sẽ chèn ngược vào dải đã dùng."
       });
     }
@@ -241,10 +303,11 @@
     return {
       warnings,
       goesFirst,
-      // null = chưa import sao kê (không biết); 0 = đã import, ngày đó họ không
-      // có giao dịch nào. Hai thứ này phải phân biệt được ở phía gọi.
-      expectedOtherCount: otherImported ? (otherSummary?.count || 0) : null,
-      otherDone
+      orderIndex,
+      // Cơ sở đứng trước còn việc chưa phát hành ngày này.
+      pendingBefore,
+      // Cơ sở đứng sau, dùng để nhắc chuyển tiếp sau khi chạy xong.
+      nextTenants: after
     };
   }
 
@@ -270,11 +333,13 @@
     KIND,
     SCHEMA_VERSION,
     TENANTS,
-    DEFAULT_FIRST_TENANT,
+    DEFAULT_TENANT_ORDER,
     empty,
     normalize,
-    otherTenant,
-    setFirstTenant,
+    normalizeOrder,
+    tenantsBefore,
+    tenantsAfter,
+    setTenantOrder,
     recordStatement,
     hasStatement,
     statementSummary,

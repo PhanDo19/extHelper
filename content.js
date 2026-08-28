@@ -10,18 +10,50 @@
   // Moi chi nhanh co bo ma web rieng nen du lieu mac dinh phai chon theo chi
   // nhanh dang mo, khong duoc dung chung bo cua pariskimgiang.
   const pageTenantSlug = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
-  const TENANT_LABELS = {
-    pariskimgiang: "Paris Kim Giang",
-    parislinhdam: "Paris Linh Đàm"
+  // Bảng đăng ký cơ sở. Trước đây mỗi thứ (nhãn, tên file, danh mục, ánh xạ)
+  // được chọn bằng một nhánh if/else nhị phân riêng, nên thêm cơ sở thứ ba là
+  // nó ÂM THẦM rơi vào nhánh else và mượn danh mục của Kim Giang — mã web hai
+  // bên không trùng nhau nên phương án lập ra sẽ sai mã hàng, mà chỉ phát hiện
+  // sau khi phiếu đã lưu. Gom về một chỗ để thêm cơ sở là thêm đúng một mục.
+  //
+  // catalogGlobal/mappingGlobal trỏ tới biến toàn cục do các file dữ liệu nạp
+  // trước content.js đặt ra; thiếu file thì để rỗng và bắt người dùng nhập, chứ
+  // tuyệt đối không mượn của cơ sở khác.
+  const TENANT_REGISTRY = {
+    pariskimgiang: {
+      label: "Paris Kim Giang",
+      fileLabel: "ParisKimGiang",
+      catalogGlobal: "InvoiceWebCatalog",
+      catalogSource: "data.xlsx",
+      mappingGlobal: "InvoiceInventoryData"
+    },
+    parislinhdam: {
+      label: "Paris Linh Đàm",
+      fileLabel: "ParisLinhDam",
+      catalogGlobal: "InvoiceWebCatalogParisLinhDam",
+      catalogSource: "jsondataLD.json",
+      mappingGlobal: "InvoiceMappingParisLinhDam"
+    },
+    parisnhon: {
+      label: "Paris Nhơn",
+      fileLabel: "ParisNhon",
+      catalogGlobal: "InvoiceWebCatalogParisNhon",
+      catalogSource: "mat_hang_web_NHOn.xlsx",
+      mappingGlobal: "InvoiceMappingParisNhon"
+    }
   };
-  const pageTenantLabel = TENANT_LABELS[pageTenantSlug] || pageTenantSlug;
-  const pageTenantFileLabel = pageTenantSlug === "parislinhdam" ? "ParisLinhDam" : "ParisKimGiang";
-  const embeddedDataset = pageTenantSlug === "parislinhdam"
-    ? (globalThis.InvoiceMappingParisLinhDam || { mappings: [] })
-    : (globalThis.InvoiceInventoryData || { mappings: [] });
-  const embeddedCatalog = pageTenantSlug === "parislinhdam"
-    ? (globalThis.InvoiceWebCatalogParisLinhDam || { source: "jsondataLD.json", items: [] })
-    : (globalThis.InvoiceWebCatalog || { source: "data.xlsx", items: [] });
+  const TENANT_LABELS = Object.fromEntries(
+    Object.entries(TENANT_REGISTRY).map(([slug, config]) => [slug, config.label])
+  );
+  const tenantConfig = TENANT_REGISTRY[pageTenantSlug] || null;
+  const pageTenantLabel = tenantConfig?.label || pageTenantSlug;
+  const pageTenantFileLabel = tenantConfig?.fileLabel || "";
+  const embeddedDataset = tenantConfig
+    ? (globalThis[tenantConfig.mappingGlobal] || { mappings: [] })
+    : { mappings: [] };
+  const embeddedCatalog = tenantConfig
+    ? (globalThis[tenantConfig.catalogGlobal] || { source: tenantConfig.catalogSource, items: [] })
+    : { source: "", items: [] };
   const extensionVersion = typeof chrome !== "undefined" && chrome.runtime?.getManifest
     ? chrome.runtime.getManifest().version
     : "";
@@ -2866,10 +2898,10 @@
       <label class="it-locked-date" title="Lô phát hành khóa theo đúng một ngày nên Đến ngày luôn bằng Ngày phát hành.">Đến ngày<input id="it-einvoice-to-date" type="date" value="${escapeHtml(toDate)}" readonly tabindex="-1"></label>
       <button id="it-einvoice-prev-day" type="button" title="Lùi một ngày">‹ Ngày trước</button>
       <button id="it-einvoice-next-day" type="button" title="Sang ngày kế">Ngày sau ›</button>
-      <label title="Số hóa đơn là dải dùng chung hai cơ sở. Cơ sở đi trước phát hành hết một ngày rồi cơ sở kia mới tiếp, để số trong ngày liền mạch.">Cơ sở phát hành trước<select id="it-einvoice-first-tenant">${
-        InvoiceIssueCoordination.TENANTS.map(slug =>
-          `<option value="${escapeHtml(slug)}"${issueCoordination.firstTenant === slug ? " selected" : ""}>${
-            escapeHtml(TENANT_LABELS[slug] || slug)}</option>`).join("")
+      <label title="Số hóa đơn là dải dùng chung mọi cơ sở. Mỗi cơ sở phát hành hết một ngày rồi cơ sở kế tiếp mới chạy, để số trong ngày liền mạch. Thứ tự này dùng chung cho tất cả các cơ sở.">Thứ tự phát hành<select id="it-einvoice-tenant-order">${
+        issueCoordination.tenantOrder.map((slug, index) =>
+          `<option value="${escapeHtml(slug)}"${slug === pageTenantSlug ? " selected" : ""}>${
+            index + 1}. ${escapeHtml(TENANT_LABELS[slug] || slug)}</option>`).join("")
       }</select></label>
       <button id="it-load-einvoice" type="button" class="primary">Tải danh sách</button>
     </div>
@@ -2900,23 +2932,28 @@
     };
     node.querySelector("#it-einvoice-prev-day")?.addEventListener("click", () => shiftIssueDay(-1));
     node.querySelector("#it-einvoice-next-day")?.addEventListener("click", () => shiftIssueDay(1));
-    node.querySelector("#it-einvoice-first-tenant")?.addEventListener("change", async event => {
+    // Ô này hiển thị dãy thứ tự đang áp dụng. Chọn một cơ sở nghĩa là đưa cơ sở
+    // đó lên đầu dãy — thao tác duy nhất có nghĩa khi đứng ở một tab, vì sắp xếp
+    // lại toàn dãy cần giao diện kéo thả mà nghiệp vụ chưa cần tới.
+    node.querySelector("#it-einvoice-tenant-order")?.addEventListener("change", async event => {
       const chosen = String(event.target.value || "");
       try {
-        // Đọc lại trước khi ghi: tab kia có thể vừa đổi cờ hoặc vừa ghi chốt,
-        // ghi đè cả bản ghi sẽ xóa mất phần đó.
-        issueCoordination = InvoiceIssueCoordination.setFirstTenant(
-          InvoiceIssueCoordination.normalize(
-            await InvoiceMappingStore.loadIssueCoordination(issueCoordination)
-          ),
-          chosen
+        // Đọc lại trước khi ghi: cơ sở khác có thể vừa đổi thứ tự hoặc vừa ghi
+        // chốt vào cùng bản ghi; ghi đè cả bản ghi sẽ xóa mất phần đó.
+        const current = InvoiceIssueCoordination.normalize(
+          await InvoiceMappingStore.loadIssueCoordination(issueCoordination)
         );
+        const reordered = [chosen, ...current.tenantOrder.filter(slug => slug !== chosen)];
+        issueCoordination = InvoiceIssueCoordination.setTenantOrder(current, reordered);
         await InvoiceMappingStore.saveIssueCoordination(issueCoordination);
         setStatus(
-          `Cơ sở phát hành trước: ${TENANT_LABELS[issueCoordination.firstTenant] || issueCoordination.firstTenant}. ` +
-          "Cả hai tab dùng chung thiết lập này.",
+          "Thứ tự phát hành: " +
+          issueCoordination.tenantOrder
+            .map((slug, index) => `${index + 1}. ${TENANT_LABELS[slug] || slug}`).join(" → ") +
+          ". Mọi cơ sở dùng chung thiết lập này.",
           "ok"
         );
+        renderEInvoiceAdmin();
       } catch (error) {
         setStatus(`Không lưu được thứ tự cơ sở: ${error.message}`, "error");
       }
@@ -3588,20 +3625,24 @@
     // đơn phát hành được và mọi hóa đơn đều đọc đủ mặt hàng — thiếu mặt hàng mà
     // xuất luôn thì file hạch toán bị hụt dòng, phải kiểm tra trước.
     const canExportIssued = succeeded > 0 && !missingItems && !failures.length;
-    // Nhắc chuyển cơ sở: chỉ khi cơ sở này đi trước và cơ sở kia còn việc cùng
-    // ngày. Có sao kê đối chiếu nên nêu được số giao dịch cụ thể, thay vì nhắc chung chung.
-    const otherPending = batchDateKey && coordination.goesFirst
-      ? InvoiceIssueCoordination.statementSummary(
-        issueCoordination, InvoiceIssueCoordination.otherTenant(pageTenantSlug), batchDateKey
-      )
-      : null;
-    const handoffNote = otherPending?.count && succeeded > 0
-      // Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: không thể
-      // mở song song hai tab đã đăng nhập. Phải chuyển hẳn sang cơ sở kia.
-      ? ` Tiếp theo: chuyển sang ${TENANT_LABELS[InvoiceIssueCoordination.otherTenant(pageTenantSlug)] || "cơ sở còn lại"} ` +
-        `(đăng nhập lại) và phát hành cùng ngày ${batchDateKey} ` +
-        `— ${otherPending.count} giao dịch — trước khi sang ngày kế.`
-      : "";
+    // Nhắc chuyển cơ sở kế tiếp trong dãy. Với ba cơ sở trở lên, phải tìm cơ sở
+    // ĐỨNG SAU GẦN NHẤT mà ngày này còn giao dịch — bỏ qua cơ sở không có việc,
+    // vì bắt chờ một cơ sở rỗng sẽ làm kẹt cả chuỗi.
+    let handoffNote = "";
+    if (batchDateKey && succeeded > 0) {
+      for (const nextTenant of coordination.nextTenants || []) {
+        const pending = InvoiceIssueCoordination.statementSummary(
+          issueCoordination, nextTenant, batchDateKey
+        );
+        if (!pending?.count) continue;
+        // Các cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: không thể
+        // mở song song nhiều tab đã đăng nhập. Phải chuyển hẳn sang cơ sở kế tiếp.
+        handoffNote =
+          ` Tiếp theo: chuyển sang ${TENANT_LABELS[nextTenant] || nextTenant} (đăng nhập lại) ` +
+          `và phát hành cùng ngày ${batchDateKey} — ${pending.count} giao dịch — trước khi sang ngày kế.`;
+        break;
+      }
+    }
     setStatus(
       `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` + handoffNote +
       (failures.length ? ` ${failures.length} hóa đơn lỗi, xem chi tiết bên dưới.` : "") +
@@ -7005,6 +7046,16 @@
   }
 
   async function init() {
+    // Cơ sở lạ phải dừng hẳn, không được chạy với dữ liệu mặc định: mã web mỗi
+    // cơ sở một khác, nên lập phương án bằng danh mục của cơ sở khác sẽ sinh
+    // phiếu sai mã hàng mà chỉ phát hiện sau khi đã lưu.
+    if (!tenantConfig) {
+      console.error(
+        `Invoice Target MVP: cơ sở "${pageTenantSlug}" chưa được khai báo trong TENANT_REGISTRY. ` +
+        "Extension không chạy để tránh dùng nhầm danh mục của cơ sở khác."
+      );
+      return;
+    }
     catalogDataset = await InvoiceMappingStore.loadCatalog(embeddedCatalog);
     webCatalog = catalogDataset.items || [];
     const storedMapping = await InvoiceMappingStore.load(embeddedDataset);

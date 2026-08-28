@@ -176,7 +176,11 @@
     // website invoice list). Linh Dam's Vietnamese export instead uses
     // "Ngay hieu luc" as the accounting/document date. Keep these tenant
     // semantics separate so importing one branch cannot shift another.
-    const isKimGiang = tenantSlug === "pariskimgiang";
+    // Nhon dung sao ke Techcombank co header tieng Anh giong Kim Giang: ngay
+    // nghiep vu lay tu "Transaction date", gio that tu "Requesting date".
+    // Linh Dam thi nguoc lai. Danh sach nay la theo NGU NGHIA COT, khong phai
+    // theo co so, nen them co so moi chi can xep vao dung nhom.
+    const isKimGiang = tenantSlug === "pariskimgiang" || tenantSlug === "parisnhon";
     const effectiveDateColumn = isKimGiang
       ? columns.transaction
       : (columns.requested >= 0 ? columns.requested : columns.transaction);

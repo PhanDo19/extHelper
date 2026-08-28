@@ -123,6 +123,33 @@
 
     const name = normalizeSearchText(stock?.webName || stock?.name);
     const unit = normalizeSearchText(stock?.webUnit || stock?.unit);
+
+    // Bảng tiền tố bên dưới chỉ đúng với hai cơ sở dùng mã 10xxxxx/11xxxxx/...
+    // Cơ sở Nhơn đánh mã 0000001 nên mọi mặt hàng đều rơi vào nhánh mặc định:
+    // bia bị giới hạn 4 thay vì 12, còn cigar 3.500.000đ cũng được phép 4 điếu
+    // một hóa đơn. Khi mã không khớp bảng tiền tố, phân loại theo NHÓM HÀNG —
+    // thứ mọi cơ sở đều có và mang đúng ngữ nghĩa cần cho trần số lượng.
+    const knownCodeScheme = /^1[0-6]/.test(code);
+    if (!knownCodeScheme) {
+      const group = normalizeSearchText(stock?.webGroup || stock?.group);
+      // Rượu mạnh/vang đắt tiền: 1 chai. Nhưng nhóm ở cơ sở Nhơn là "BIA - RƯỢU"
+      // gộp cả bia lẫn rượu, và còn lẫn cả nước ngọt, nên không thể chỉ dựa vào
+      // tên nhóm. Tách bằng giá: chỉ hàng thực sự đắt mới bị giới hạn 1 đơn vị,
+      // còn bia/nước giá thấp vẫn được bán nhiều như bình thường.
+      const price = Math.round(Number(stock?.webPrice ?? stock?.price) || 0);
+      if (group.includes("RUOU") || group.includes("VANG")) {
+        if (name.startsWith("BIA")) return 12;
+        if (price >= 500000) return 1;
+        return 6;
+      }
+      if (group.includes("THUOC") || group.includes("SHISA") || group.includes("XIGA")) return 2;
+      if (group.includes("HOAQUA") || group.includes("HOA QUA")) return 1;
+      if (name.startsWith("BIA")) return 12;
+      if (unit.includes("HOP")) return 2;
+      if (unit.includes("GOI")) return 3;
+      return 4;
+    }
+
     if (code.startsWith("15")) return 1;
     if (code.startsWith("13")) return 1;
     if (code.startsWith("14")) return 2;

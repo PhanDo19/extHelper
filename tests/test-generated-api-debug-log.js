@@ -22,7 +22,9 @@ if (/\n\s*tenantLabel,/.test(content) || /\$\{tenantLabel\}/.test(content)) {
   throw new Error("Undefined tenantLabel reference remains in content script.");
 }
 
-if (!background.includes("invoice-api-debug-(pariskimgiang|parislinhdam)")) {
+const debugAllowlist = /invoice-api-debug-\(([a-z|]+)\)/.exec(background);
+const debugTenants = debugAllowlist ? debugAllowlist[1].split("|") : [];
+if (!["pariskimgiang", "parislinhdam", "parisnhon"].every(t => debugTenants.includes(t))) {
   throw new Error("Background download allowlist does not permit generated API debug logs.");
 }
 
