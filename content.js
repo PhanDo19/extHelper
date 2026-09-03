@@ -964,6 +964,15 @@
       .join("");
   }
 
+  // Giao dịch lớn phải được người rà bằng mắt trước khi vào luồng lập phiếu.
+  // Sao kê trộn lẫn doanh thu với các khoản KHÔNG phải doanh thu — nạp tiền vào
+  // tài khoản, lãi ngân hàng, chuyển nội bộ — và những khoản đó thường là số
+  // lớn, tròn. Lập hóa đơn cho chúng là sai bản chất và không hoàn tác được.
+  //
+  // Ngưỡng 20 triệu chọn theo thực tế: giao dịch dịch vụ thường dưới mức này,
+  // còn các khoản nạp tiền quan sát được đều vượt xa (60tr, 150tr).
+  const MANUAL_REVIEW_CREDIT_THRESHOLD = 20000000;
+
   const OPEN_STATEMENT_STATUSES = new Set([
     "pending",
     "review",
@@ -1328,6 +1337,16 @@
     // thái vừa báo phát hành xong, không bắt kế toán sang tab Kho tìm nút.
     else if (action === "issued-export") exportIssuedInvoices().catch(error => setStatus(error.message, "error"));
     else if (action === "export") exportAccountingReport().catch(error => setStatus(error.message, "error"));
+    // Rà giao dịch lớn: mở màn sao kê và lọc sẵn về đúng nhóm cần kiểm, thay vì
+    // thả người dùng vào danh sách đầy đủ rồi bắt tự tìm.
+    else if (action === "review-large") {
+      setStatementMode(true);
+      const filter = document.getElementById("it-statement-filter");
+      if (filter) {
+        filter.value = "review";
+        renderStatementRows();
+      }
+    }
   }
 
   function refreshAccountingDashboard() {
@@ -2291,9 +2310,29 @@
           batchApprovedPlan: old.batchApprovedPlan || null,
           batchApprovedAt: old.batchApprovedAt || "",
           verifiedAt: old.verifiedAt || "",
-          ledgerId: old.ledgerId || ""
+          ledgerId: old.ledgerId || "",
+          // Giữ dấu đã rà giao dịch lớn: nhập lại sao kê không được bắt người
+          // dùng duyệt lại từ đầu những dòng họ đã xác nhận.
+          largeCreditReviewedAt: old.largeCreditReviewedAt || ""
         } : item;
       });
+      // Chặn ngay tại cửa: giao dịch lớn không được tự vào luồng lập phiếu.
+      // Sao kê có cả khoản không phải doanh thu (nạp tiền, lãi) và chúng thường
+      // là số lớn; lập hóa đơn cho chúng là sai bản chất, mà phát hành rồi thì
+      // không hoàn tác được.
+      //
+      // Chỉ đụng tới giao dịch CHƯA xử lý: dòng đã planned/done là việc đã rà
+      // và đã chạy, đẩy ngược về review sẽ xoá công sức và gây hoang mang.
+      let manualReviewCount = 0;
+      for (const item of transactions) {
+        if (item.status !== "pending") continue;
+        if (item.largeCreditReviewedAt) continue;
+        if (Math.round(Number(item.credit) || 0) < MANUAL_REVIEW_CREDIT_THRESHOLD) continue;
+        item.status = "review";
+        item.reviewNote = `Giao dịch từ ${formatMoney(MANUAL_REVIEW_CREDIT_THRESHOLD)}đ trở lên: ` +
+          "phải tự kiểm đây là doanh thu hay khoản nạp tiền/chuyển nội bộ trước khi lập phiếu.";
+        manualReviewCount += 1;
+      }
       statementDataset = { source: file.name, importedAt: new Date().toISOString(), transactions };
       await InvoiceMappingStore.saveStatement(statementDataset);
       // Trích bảng tóm tắt cho cơ sở kia đọc: ngày, giờ, số tiền — vừa đủ để
@@ -2307,7 +2346,19 @@
       setStatementMode(true);
       const pending = transactions.filter(item => item.status === "pending").length;
       const review = transactions.filter(item => item.status === "review").length;
-      setStatus(`Đã nhập ${transactions.length} giao dịch Credit: ${pending} chờ xử lý, ${review} cần kiểm tra.`, "ok");
+      // Việc rà giao dịch lớn phải nổi lên trước mọi việc khác, kèm lối đi thẳng
+      // tới đúng danh sách cần rà — nói suông thì người dùng bỏ qua.
+      if (manualReviewCount) {
+        setStatus(
+          `Đã nhập ${transactions.length} giao dịch Credit: ${pending} chờ xử lý, ${review} cần kiểm tra. ` +
+          `⚠ ${manualReviewCount} giao dịch từ ${formatMoney(MANUAL_REVIEW_CREDIT_THRESHOLD)}đ trở lên đang chờ bạn xác nhận ` +
+          "có phải doanh thu không. Chúng KHÔNG được lập phiếu cho tới khi bạn duyệt.",
+          "warn",
+          { label: `Rà ${manualReviewCount} giao dịch lớn`, action: "review-large" }
+        );
+      } else {
+        setStatus(`Đã nhập ${transactions.length} giao dịch Credit: ${pending} chờ xử lý, ${review} cần kiểm tra.`, "ok");
+      }
     } catch (error) {
       setStatus(`Không đọc được sao kê: ${error.message}`, "error");
     } finally {
@@ -3803,8 +3854,11 @@
       <td class="it-statement-description" title="${escapeHtml(item.description)}"><span>${escapeHtml(item.description)}</span>${item.reference ? `<small>${escapeHtml(item.reference)}</small>` : ""}</td>
       <td class="it-statement-invoice">${invoiceCell}</td>
       <td class="it-money">${formatMoney(item.credit)}</td><td><span class="it-bank-status ${escapeHtml(item.status)}">${escapeHtml(statusLabels[item.status] || item.status)}</span>${item.blockedNote ? `<br><small class="it-blocked-note" title="${escapeHtml(item.blockedNote)}">⚠ ${escapeHtml(item.blockedNote)}</small>` : ""}</td>
-      <td><button class="it-use-transaction" type="button">Chọn</button><button class="it-skip-transaction" type="button">Bỏ qua</button>${["planned", "batch_ready"].includes(item.status) && (invoiceNo || item.pendingPlan || item.batchApprovedPlan) ? '<button class="it-reset-statement-transaction" type="button" title="Gỡ phiếu đã mất hoặc phương án cũ và đưa giao dịch về Chờ xử lý">Làm lại</button>' : ""}</td></tr>`;
+      <td>${item.status === "review"
+        ? '<button class="it-confirm-revenue" type="button" title="Xác nhận đây là doanh thu và đưa vào luồng lập phiếu">Là doanh thu</button>'
+        : ""}<button class="it-use-transaction" type="button">Chọn</button><button class="it-skip-transaction" type="button">Bỏ qua</button>${["planned", "batch_ready"].includes(item.status) && (invoiceNo || item.pendingPlan || item.batchApprovedPlan) ? '<button class="it-reset-statement-transaction" type="button" title="Gỡ phiếu đã mất hoặc phương án cũ và đưa giao dịch về Chờ xử lý">Làm lại</button>' : ""}</td></tr>`;
     }).join("") || '<tr><td colspan="6">Không có giao dịch phù hợp.</td></tr>';
+    body.querySelectorAll(".it-confirm-revenue").forEach(button => button.addEventListener("click", confirmRevenueTransaction));
     body.querySelectorAll(".it-use-transaction").forEach(button => button.addEventListener("click", useBankTransaction));
     body.querySelectorAll(".it-skip-transaction").forEach(button => button.addEventListener("click", skipBankTransaction));
     body.querySelectorAll(".it-open-invoice").forEach(button => button.addEventListener("click", openStatementInvoice));
@@ -4197,6 +4251,31 @@
     } finally {
       if (button?.isConnected) button.disabled = false;
     }
+  }
+
+  // Duyệt một giao dịch đang chờ rà: xác nhận đây là doanh thu và đưa về pending
+  // để Batch Review lập phiếu như bình thường.
+  //
+  // Tách riêng khỏi nút "Chọn" vì hai việc khác nhau: "Chọn" mở luồng thủ công
+  // cho đúng một giao dịch, còn nút này chỉ đổi trạng thái rồi trả người dùng
+  // về danh sách để rà tiếp các dòng còn lại.
+  async function confirmRevenueTransaction(event) {
+    const id = event.target.closest("tr").dataset.transactionId;
+    const item = statementDataset.transactions.find(transaction => String(transaction.id) === id);
+    if (!item) return;
+    item.status = "pending";
+    // Ghi lại dấu vết đã rà: nếu nhập lại sao kê, dòng này không bị đẩy về
+    // review lần nữa và người dùng khỏi phải duyệt lại từ đầu.
+    item.largeCreditReviewedAt = new Date().toISOString();
+    delete item.reviewNote;
+    await InvoiceMappingStore.saveStatement(statementDataset);
+    renderWorkflowDashboard();
+    renderStatementRows();
+    setStatus(
+      `Đã xác nhận giao dịch ${formatMoney(item.credit)}đ ngày ${item.transactionDate} là doanh thu. ` +
+      "Giao dịch đã vào hàng chờ lập phiếu.",
+      "ok"
+    );
   }
 
   async function skipBankTransaction(event) {
@@ -5446,7 +5525,15 @@
     const fromDate = String(options?.fromDate || "");
     const toDate = String(options?.toDate || "");
     const limit = Math.max(1, Math.min(50, Number(options?.limit) || 10));
-    const allowedStatuses = new Set(["pending", "review", "planned", "batch_ready", "done"]);
+    // "review" CỐ TÌNH không có trong danh sách này. Đó là trạng thái của giao
+    // dịch đang chờ người rà bằng mắt: dòng Credit không rõ là chuyển khoản, và
+    // giao dịch từ 20 triệu trở lên vốn có thể là nạp tiền/chuyển nội bộ chứ
+    // không phải doanh thu. Cho Batch Review tự lập phương án cho chúng thì việc
+    // chặn lúc import trở nên vô nghĩa, mà phát hành rồi thì không hoàn tác được.
+    //
+    // Người dùng duyệt bằng nút "Là doanh thu" — nút đó đưa giao dịch về
+    // "pending" và từ đó mới vào đây.
+    const allowedStatuses = new Set(["pending", "planned", "batch_ready", "done"]);
     return (transactions || []).filter(item => {
       if (!allowedStatuses.has(item.status)) return false;
       const transactionDate = String(item.transactionDate || "");
