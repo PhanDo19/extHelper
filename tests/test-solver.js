@@ -291,3 +291,62 @@ const noConstraint = solver.solveQuantities([
 ], 200000, { maxQty: 20, tolerance: 0 });
 assert.strictEqual(noConstraint.items.reduce((sum, item) => sum + item.newQty, 0), 4,
   "không có ràng buộc nhóm thì kết quả không đổi");
+
+// --- Ràng buộc nhóm phải sống sót qua việc gộp trạng thái của DP ------------
+//
+// DP gộp trạng thái theo SỐ TIỀN: mỗi mức tiền chỉ giữ đúng một tổ hợp, chọn
+// bằng scoreQuantities. Hàm đó không biết gì về nhóm bắt buộc và lại chuộng tổ
+// hợp ít dòng hơn, nên tổ hợp CÓ khăn ướt từng bị tổ hợp KHÔNG có khăn cùng mức
+// tiền loại bỏ ngay lúc gộp — tới vòng chấm điểm thì phương án hợp lệ đã biến
+// mất khỏi tập trạng thái.
+//
+// Lỗi chỉ lộ ra khi danh mục đủ lớn: dưới ~24 mã vẫn đúng, từ 25 mã trở lên ra
+// 1 khăn thay vì 2. Vì vậy test phải chạy ở nhiều quy mô, không chỉ vài mã.
+function mandatoryCatalog(extraCount) {
+  const items = [
+    { code: "W", name: "Khăn ướt", price: 5000, qty: 0, maxQty: 4, constraintGroup: "wet_towel", constraintGroupMin: 2 },
+    { code: "B1", name: "Bia A", price: 50000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMin: 3 },
+    { code: "B2", name: "Bia B", price: 60000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMin: 3 },
+    { code: "B3", name: "Bia C", price: 65000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMin: 3 }
+  ];
+  for (let i = 0; i < extraCount; i += 1) {
+    items.push({ code: `X${i}`, name: `Hàng ${i}`, price: 30000 + i * 5000, qty: 0, maxQty: 4 });
+  }
+  return items;
+}
+
+for (const extra of [0, 10, 21, 30, 40]) {
+  const result = solver.solveQuantities(mandatoryCatalog(extra), 2055000, {
+    maxQty: 20, tolerance: 0, minGoodsAmount: 2055000,
+    maxActiveLines: 12, preferredLineCount: 5
+  });
+  assert(result.items, `Danh mục ${extra + 4} mã phải giải được`);
+  const total = group => result.items
+    .filter(item => item.constraintGroup === group)
+    .reduce((sum, item) => sum + item.newQty, 0);
+  assert(total("wet_towel") >= 2,
+    `Danh mục ${extra + 4} mã: khăn ướt = ${total("wet_towel")}, phải >= 2`);
+  assert(total("beer") >= 3,
+    `Danh mục ${extra + 4} mã: bia = ${total("beer")}, phải >= 3`);
+}
+
+// Trần từng mã vẫn phải được tôn trọng — ràng buộc nhóm không được phép vượt
+// tồn, đó là đường dẫn thẳng tới kho âm.
+const capped = solver.solveQuantities(mandatoryCatalog(30), 2055000, {
+  maxQty: 20, tolerance: 0, minGoodsAmount: 2055000, maxActiveLines: 12, preferredLineCount: 5
+});
+for (const item of capped.items) {
+  assert(item.newQty <= item.maxQty,
+    `${item.code} vượt trần: ${item.newQty} > ${item.maxQty}`);
+}
+
+// Không khai constraintGroupMin thì hành vi cũ giữ nguyên, kể cả ở danh mục lớn.
+const plain = mandatoryCatalog(30).map(item => {
+  const copy = { ...item };
+  delete copy.constraintGroup;
+  delete copy.constraintGroupMin;
+  return copy;
+});
+assert(solver.solveQuantities(plain, 2055000, {
+  maxQty: 20, tolerance: 0, minGoodsAmount: 2055000, maxActiveLines: 12, preferredLineCount: 5
+}).items, "Danh mục không có ràng buộc nhóm vẫn phải giải được");

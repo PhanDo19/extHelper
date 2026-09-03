@@ -228,11 +228,50 @@
       requiredAmount + Math.max(...scaledPrices)
     );
 
-    let states = new Map([[0, []]]);
+    // Số lượng tối thiểu theo NHÓM, đối xứng với constraintGroupMax ở trên.
+    // "Ít nhất 3 bia" là ràng buộc trên tổng của mọi mã bia, không phải trên
+    // một mã cụ thể, nên 2 Tiger + 1 Hà Nội vẫn hợp lệ.
+    const groupMinimums = new Map();
+    for (const item of usable) {
+      const group = String(item.constraintGroup || "");
+      const minimum = Math.max(0, Math.floor(Number(item.constraintGroupMin) || 0));
+      if (!group || !minimum) continue;
+      groupMinimums.set(group, Math.max(groupMinimums.get(group) || 0, minimum));
+    }
+
+    // Số lượng tối thiểu theo NHÓM phải được mang theo trong KHÓA trạng thái của
+    // DP, không thể chỉ kiểm ở vòng chấm điểm cuối.
+    //
+    // Lý do: DP gộp trạng thái theo số tiền — mỗi mức tiền chỉ giữ đúng MỘT tổ
+    // hợp, chọn bằng scoreQuantities. Hàm đó không biết gì về nhóm bắt buộc và
+    // lại chuộng tổ hợp ít dòng hơn, nên tổ hợp CÓ khăn ướt bị tổ hợp KHÔNG có
+    // khăn cùng mức tiền loại bỏ ngay khi gộp. Tới vòng chấm điểm thì phương án
+    // hợp lệ đã biến mất khỏi tập trạng thái, không còn gì để chọn.
+    //
+    // Triệu chứng thực tế: danh mục dưới ~24 mã vẫn đúng, từ 25 mã trở lên hóa
+    // đơn ra 1 khăn thay vì 2 — càng nhiều mã thì càng nhiều tổ hợp trùng mức
+    // tiền, và tổ hợp đúng luật càng dễ bị loại.
+    //
+    // Khóa chỉ mang tiến độ ĐÃ KẸP TRẦN (min với mức tối thiểu): khi một nhóm đã
+    // đủ số lượng thì thừa bao nhiêu cũng không đổi khóa, nên số trạng thái chỉ
+    // nhân thêm tích các (min + 1) — với 3 bia + 2 khăn là 12 lần, không bùng nổ.
+    const groupOrder = [...groupMinimums.keys()].sort();
+    const groupIndexByItem = usable.map(item => {
+      const group = String(item.constraintGroup || "");
+      return groupMinimums.has(group) ? groupOrder.indexOf(group) : -1;
+    });
+    const stateKey = (amount, progress) =>
+      groupOrder.length ? `${amount}|${progress.join(",")}` : String(amount);
+    const emptyProgress = () => groupOrder.map(() => 0);
+
+    let states = new Map([[stateKey(0, emptyProgress()), { amount: 0, progress: emptyProgress(), quantities: [] }]]);
     for (let index = 0; index < usable.length; index += 1) {
       const next = new Map();
       const price = scaledPrices[index];
-      for (const [amount, quantities] of states) {
+      const groupIndex = groupIndexByItem[index];
+      const groupCap = groupIndex >= 0 ? groupMinimums.get(groupOrder[groupIndex]) : 0;
+      for (const state of states.values()) {
+        const { amount, progress, quantities } = state;
         const itemLimit = Number.isFinite(Number(usable[index].maxQty)) ? Math.max(0, Math.floor(Number(usable[index].maxQty))) : opts.maxQty;
         const activeLinesUsed = quantities.reduce((sum, value) => sum + (Number(value) > 0 ? 1 : 0), 0);
         let groupRemaining = Number.POSITIVE_INFINITY;
@@ -251,20 +290,39 @@
           if (qty > 0 && activeLinesUsed >= Number(opts.maxActiveLines)) continue;
           const newAmount = amount + qty * price;
           const candidate = quantities.concat(qty);
-          const existing = next.get(newAmount);
+          // Tiến độ nhóm kẹp ở mức tối thiểu: đủ rồi thì thừa bao nhiêu cũng
+          // không sinh thêm trạng thái mới.
+          const newProgress = groupIndex >= 0 && qty > 0
+            ? progress.map((value, i) => i === groupIndex ? Math.min(groupCap, value + qty) : value)
+            : progress;
+          const key = stateKey(newAmount, newProgress);
+          const existing = next.get(key);
           if (!existing || scoreQuantities(candidate, current.slice(0, candidate.length), usable.slice(0, candidate.length), opts) <
-            scoreQuantities(existing, current.slice(0, existing.length), usable.slice(0, existing.length), opts)) {
-            next.set(newAmount, candidate);
+            scoreQuantities(existing.quantities, current.slice(0, existing.quantities.length), usable.slice(0, existing.quantities.length), opts)) {
+            next.set(key, { amount: newAmount, progress: newProgress, quantities: candidate });
           }
         }
       }
       if (next.size > opts.maxStates) {
+        // Khi phải cắt bớt, trạng thái đã đủ món hàng bắt buộc được giữ TRƯỚC:
+        // cắt theo độ gần tiền đơn thuần sẽ loại đúng những nhánh hợp lệ mà cả
+        // bài toán đang cần, rồi tới cuối không còn phương án nào đúng luật.
+        const shortfallOf = state => {
+          let missing = 0;
+          for (let i = 0; i < groupOrder.length; i += 1) {
+            missing += Math.max(0, groupMinimums.get(groupOrder[i]) - state.progress[i]);
+          }
+          return missing;
+        };
         const ranked = [...next.entries()].sort((a, b) => {
-          const da = Math.abs(a[0] - scaledPlanningTarget);
-          const db = Math.abs(b[0] - scaledPlanningTarget);
+          const sa = shortfallOf(a[1]);
+          const sb = shortfallOf(b[1]);
+          if (sa !== sb) return sa - sb;
+          const da = Math.abs(a[1].amount - scaledPlanningTarget);
+          const db = Math.abs(b[1].amount - scaledPlanningTarget);
           return da - db ||
-            scoreQuantities(a[1], current.slice(0, a[1].length), usable.slice(0, a[1].length), opts) -
-            scoreQuantities(b[1], current.slice(0, b[1].length), usable.slice(0, b[1].length), opts);
+            scoreQuantities(a[1].quantities, current.slice(0, a[1].quantities.length), usable.slice(0, a[1].quantities.length), opts) -
+            scoreQuantities(b[1].quantities, current.slice(0, b[1].quantities.length), usable.slice(0, b[1].quantities.length), opts);
         });
         states = new Map(ranked.slice(0, opts.maxStates));
       } else {
@@ -297,20 +355,6 @@
       return Math.round(excess + missingGroups * goodsAmount * 0.25);
     }
 
-    // Số lượng tối thiểu theo NHÓM, đối xứng với constraintGroupMax ở trên.
-    // "Ít nhất 3 bia" là ràng buộc trên tổng của mọi mã bia, không phải trên
-    // một mã cụ thể, nên 2 Tiger + 1 Hà Nội vẫn hợp lệ.
-    //
-    // Phải kiểm tra ở vòng chấm điểm này chứ không phải trong vòng mở rộng DP:
-    // tổng của một nhóm chỉ biết được khi đã duyệt hết mọi item của nhóm đó,
-    // mà DP mở rộng theo từng item một.
-    const groupMinimums = new Map();
-    for (const item of usable) {
-      const group = String(item.constraintGroup || "");
-      const minimum = Math.max(0, Math.floor(Number(item.constraintGroupMin) || 0));
-      if (!group || !minimum) continue;
-      groupMinimums.set(group, Math.max(groupMinimums.get(group) || 0, minimum));
-    }
     function groupShortfall(quantities) {
       if (!groupMinimums.size) return 0;
       const totals = new Map();
@@ -327,7 +371,7 @@
     }
 
     let best = null;
-    for (const [amount, quantities] of states) {
+    for (const { amount, quantities } of states.values()) {
       const actual = amount * scale;
       const difference = actual - targetAmount;
       const hourStep = Math.max(0, Math.round(Number(opts.hourStep) || 0));
