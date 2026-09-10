@@ -72,8 +72,37 @@
     return parseSheet(files.get(sheetName), shared);
   }
 
-  async function parseStockWorkbook(file) {
-    const rows = await readFirstSheet(file);
+  function parseStockRows(rows) {
+    const headerIndex = rows.findIndex(row => {
+      const headers = Array.from(row || [], normalizedHeader);
+      return headers.includes("ma hang") && headers.includes("ten hang") &&
+        headers.some(value => value === "dvt" || value.includes("don vi tinh")) &&
+        headers.includes("cuoi ky") && headers.includes("gia ban");
+    });
+
+    if (headerIndex >= 0) {
+      const headers = Array.from(rows[headerIndex] || [], normalizedHeader);
+      const codeIndex = headers.indexOf("ma hang");
+      const nameIndex = headers.indexOf("ten hang");
+      const unitIndex = headers.findIndex(value => value === "dvt" || value.includes("don vi tinh"));
+      const closingQtyIndex = headers.indexOf("cuoi ky");
+      const salePriceIndex = headers.indexOf("gia ban");
+      return rows.slice(headerIndex + 2).filter(row => String(row[codeIndex] || "").trim()).map(row => {
+        const closingQty = Number(row[closingQtyIndex]) || 0;
+        return {
+          stockCode: String(row[codeIndex] || "").trim(),
+          stockName: String(row[nameIndex] || "").trim(),
+          stockUnit: String(row[unitIndex] || "").trim(),
+          stockQty: Math.max(0, closingQty),
+          conversion: 1,
+          availableQty: Math.max(0, Math.floor(closingQty)),
+          salePrice: Math.max(0, Math.round(Number(row[salePriceIndex]) || 0))
+        };
+      });
+    }
+
+    // Dinh dang kho cu: A=ma, B=ten, C=don vi, D=so luong ghi nhan,
+    // E=quy doi, F=co the phan bo, I=gia ban.
     return rows.slice(2).filter(row => row[0]).map(row => ({
       stockCode: String(row[0] || "").trim(),
       stockName: String(row[1] || "").trim(),
@@ -83,6 +112,10 @@
       availableQty: Math.max(0, Math.floor(Number(row[5]) || 0)),
       salePrice: Math.max(0, Math.round(Number(row[8]) || 0))
     }));
+  }
+
+  async function parseStockWorkbook(file) {
+    return parseStockRows(await readFirstSheet(file));
   }
 
   async function parseWebCatalogWorkbook(file) {
@@ -219,5 +252,5 @@
     return parseBankRows(await readFirstSheet(file), options);
   }
 
-  root.InvoiceXlsxReader = { parseStockWorkbook, parseWebCatalogWorkbook, parseBankStatementWorkbook, parseBankRows, dateKey };
+  root.InvoiceXlsxReader = { parseStockRows, parseStockWorkbook, parseWebCatalogWorkbook, parseBankStatementWorkbook, parseBankRows, dateKey };
 })(typeof globalThis !== "undefined" ? globalThis : this);

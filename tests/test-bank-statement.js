@@ -30,4 +30,16 @@ const kimGiang = reader.parseBankRows(kimGiangRows, { tenantSlug: "pariskimgiang
 assert.equal(kimGiang.length, 1);
 assert.equal(kimGiang[0].transactionDate, "2026-06-01");
 assert.equal(kimGiang[0].requestedAt, "2026-05-31 22:29:49");
+
+// Paris Nhon dung cung format Techcombank trong sheet Txn enquiry:
+// ngay lap phieu lay Transaction date, con gio thuc lay Requesting date.
+const parisNhonRows = [
+  ["NGÀY KH THỰC HIỆN/REQUESTING DATE", "NGÀY", "NGÀY GIAO DỊCH/TRANSACTION DATE", "SỐ BÚT TOÁN/REFERENCE NUMBER", "DIỄN GIẢI/DESCRIPTION", "NỢ/DEBIT", "CÓ/CREDIT", "SỐ DƯ/RUNNING BALANCE"],
+  ["2026-07-31 21:47:27", 31, "2026-07-31", "FT26212940042786", "NGO VAN HAI chuyen tien", null, 5220000, 101566606]
+];
+const parisNhon = reader.parseBankRows(parisNhonRows, { tenantSlug: "parisnhon" });
+assert.equal(parisNhon.length, 1);
+assert.equal(parisNhon[0].transactionDate, "2026-07-31");
+assert.equal(parisNhon[0].requestedAt, "2026-07-31 21:47:27");
+assert.equal(parisNhon[0].id, "FT26212940042786");
 console.log("bank statement parser: OK");

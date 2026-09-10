@@ -34,6 +34,13 @@
   const API_TEMPLATE_KEY = "invoiceTargetApiTemplate";
   const ISSUED_INVOICE_BASE_KEY = "invoiceTargetIssuedInvoices";
   const SHARED_WAREHOUSE_KEY = "invoiceTargetSharedWarehouseV1";
+  // Kim Giang va Linh Dam dung chung kho vat ly. Paris Nhon co kho rieng,
+  // khong duoc doc/ghi vao ban ghi chung cua hai co so nay.
+  function warehouseKey() {
+    return currentTenant() === "parisnhon"
+      ? `${SHARED_WAREHOUSE_KEY}__parisnhon`
+      : SHARED_WAREHOUSE_KEY;
+  }
   // So hoa don dien tu la dai dung chung cua ca hai co so, nen co thu tu, bang
   // sao ke doi chieu va chot tien do phat hanh KHONG duoc tach theo tenantKey.
   const ISSUE_COORDINATION_KEY = "invoiceTargetIssueCoordinationV1";
@@ -215,13 +222,14 @@
 
   async function loadSharedWarehouse(fallback) {
     if (!globalThis.chrome?.storage?.local) return structuredClone(fallback);
-    const stored = await chrome.storage.local.get(SHARED_WAREHOUSE_KEY);
-    return stored[SHARED_WAREHOUSE_KEY] || structuredClone(fallback);
+    const key = warehouseKey();
+    const stored = await chrome.storage.local.get(key);
+    return stored[key] || structuredClone(fallback);
   }
 
   async function saveSharedWarehouse(warehouse) {
     if (globalThis.chrome?.storage?.local) {
-      await chrome.storage.local.set({ [SHARED_WAREHOUSE_KEY]: warehouse });
+      await chrome.storage.local.set({ [warehouseKey()]: warehouse });
     }
     return warehouse;
   }

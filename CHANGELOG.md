@@ -597,3 +597,8 @@
 - Mở phiếu chỉ để lấy đúng ID/LASTSAVEID; danh mục sản phẩm được đọc trực tiếp qua API và toàn bộ `detail` được dựng trong bộ nhớ trước khi gọi `DoSave`.
 - Nếu dựng payload hoặc gọi API thất bại, form được đóng và trạng thái quay lại **Đã Accept**; không trừ kho, không đánh dấu sao kê đã xử lý.
 - Chỉ chuyển sang **Chờ lưu/đối soát** sau khi website xác nhận lưu API thành công.
+## 1.24.2
+
+- Tách kho vật lý riêng cho Paris Nhơn khỏi kho dùng chung Kim Giang/Linh Đàm.
+- Xác nhận parser sao kê Techcombank `Txn enquiry` của Paris Nhơn dùng `Transaction date` làm ngày nghiệp vụ và `Requesting date` làm thời gian thực.
+- Thêm cảnh báo kho riêng Paris Nhơn trên màn hình quản trị tồn.

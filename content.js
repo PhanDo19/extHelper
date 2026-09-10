@@ -913,10 +913,17 @@
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   })[char]);
 
+  function activeMappingRows() {
+    const rows = mappingDataset.mappings || [];
+    if (!sharedWarehouse.initialized || !sharedWarehouse.items?.length) return rows;
+    const activeCodes = new Set(sharedWarehouse.items.map(item => String(item.stockCode)));
+    return rows.filter(row => activeCodes.has(String(row.stockCode)));
+  }
+
   function refreshMappingState() {
     mappingDataset = InvoiceSharedWarehouse.overlayMappings(mappingDataset, sharedWarehouse);
     inventory = InvoiceMappingEngine.buildInventory(mappingDataset);
-    mappingSummary = InvoiceMappingEngine.summarize(mappingDataset);
+    mappingSummary = InvoiceMappingEngine.summarize({ ...mappingDataset, mappings: activeMappingRows() });
     const node = document.getElementById("it-stock-source");
     if (node) node.innerHTML = stockSummaryHtml();
     renderWorkflowDashboard();
@@ -1553,9 +1560,10 @@
         </div>
         <section id="it-stock-admin" hidden>
           <div class="it-shared-stock-note">
-            <div><span class="it-eyebrow">KHO VẬT LÝ DÙNG CHUNG</span><b>Kim Giang và Linh Đàm cùng trừ một số tồn</b>
-              <small>Mã web và ánh xạ vẫn được quản lý riêng cho từng cơ sở.</small></div>
-            <button id="it-open-stock-import" type="button" class="primary">Cập nhật kho chung</button>
+            ${pageTenantSlug === "parisnhon" ? '<div class="it-tenant-stock-warning"><b>Paris Nhon dung kho rieng</b></div>' : ""}
+            <div><span class="it-eyebrow">${pageTenantSlug === "parisnhon" ? "KHO VẬT LÝ RIÊNG" : "KHO VẬT LÝ DÙNG CHUNG"}</span><b>${pageTenantSlug === "parisnhon" ? "Paris Nhơn dùng kho riêng" : "Kim Giang và Linh Đàm cùng trừ một số tồn"}</b>
+              <small>Mã web, ánh xạ và số tồn được kiểm soát theo đúng cơ sở đang mở.</small></div>
+            <button id="it-open-stock-import" type="button" class="primary">${pageTenantSlug === "parisnhon" ? "Cập nhật kho Nhơn" : "Cập nhật kho chung"}</button>
           </div>
           <section id="it-warehouse-import" class="it-warehouse-import" hidden>
             <div class="it-import-title"><div><b>Cập nhật file kho</b><small>Chọn đúng mục đích của file trước khi nhập.</small></div><button id="it-cancel-warehouse-import" type="button">Đóng</button></div>
@@ -2228,7 +2236,7 @@
         InvoiceMappingStore.save(mappingDataset)
       ]);
       const newCount = pendingWarehouseImport.preview.counts.added;
-      const pendingCount = (mappingDataset.mappings || []).filter(row => row.status === "review" || row.status === "unmatched").length;
+      const pendingCount = activeMappingRows().filter(row => row.status === "review" || row.status === "unmatched").length;
       refreshMappingState();
       renderStockAdmin();
       closeWarehouseImport();
@@ -4482,7 +4490,7 @@
   function renderMappingAdmin() {
     const node = document.getElementById("it-mapping-admin");
     if (!node) return;
-    const rows = mappingDataset.mappings || [];
+    const rows = activeMappingRows();
     const pending = rows.filter(row => !["confirmed", "disabled"].includes(row.status)).length;
     const confirmed = rows.filter(row => row.status === "confirmed").length;
     const disabled = rows.filter(row => row.status === "disabled").length;
@@ -4548,7 +4556,7 @@
     const body = document.getElementById("it-mapping-body");
     const filter = document.getElementById("it-mapping-filter")?.value || "pending";
     const keyword = InvoiceMappingEngine.normalizeText(document.getElementById("it-mapping-search")?.value || "");
-    const rows = (mappingDataset.mappings || []).filter(row =>
+    const rows = activeMappingRows().filter(row =>
       filter === "all" || row.status === filter || (filter === "pending" && !["confirmed", "disabled"].includes(row.status))
     ).filter(row => !keyword || InvoiceMappingEngine.normalizeText(`${row.stockCode} ${row.stockName}`).includes(keyword));
     ensureProductDrafts(rows);

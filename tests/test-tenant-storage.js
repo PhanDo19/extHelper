@@ -35,6 +35,7 @@ function makeStore(pathname, store = {}) {
 
 const kimGiang = makeStore("/pariskimgiang/Form");
 const linhDam = makeStore("/parislinhdam/Form");
+const parisNhon = makeStore("/parisnhon/Form");
 
 assert.equal(kimGiang.api.currentTenant(), "pariskimgiang");
 assert.equal(linhDam.api.currentTenant(), "parislinhdam");
@@ -129,6 +130,12 @@ assert.equal(linhDam.api.currentTenant(), "parislinhdam");
   await ldStock.api.saveSharedWarehouse({ initialized: true, items: [{ stockCode: "BANHSNACK", availableQty: 60 }] });
   assert.equal((await kgStock.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 60,
     "Kim Giang phai thay so ton da tru tu Linh Dam");
+
+  await parisNhon.api.saveSharedWarehouse({ initialized: true, items: [{ stockCode: "NHON-001", availableQty: 999 }] });
+  assert.equal((await parisNhon.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 999,
+    "Paris Nhon phai doc kho rieng");
+  assert.equal((await kgStock.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 60,
+    "Kho rieng Paris Nhon khong duoc ghi de kho chung Kim Giang/Linh Dam");
 
   await kgStock.api.commitVerifiedInvoice(
     { mappings: [{ stockCode: "BANHSNACK", webCode: "1000047", availableQty: 55 }] },

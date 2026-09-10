@@ -7,7 +7,7 @@ const content = fs.readFileSync(path.join(root, "content.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "content.css"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 
-assert.equal(manifest.version, "1.22.0");
+assert.equal(manifest.version, "1.24.2");
 for (const fn of ["accountingCloseSnapshot", "renderAccountingCloseStatus", "accountingReportSheets", "exportAccountingReport"]) {
   assert(content.includes(`function ${fn}(`) || content.includes(`async function ${fn}(`), `Missing ${fn}`);
 }
