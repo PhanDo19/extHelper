@@ -36,6 +36,7 @@ assert(workbookXml.indexOf("<sheets>") < workbookXml.indexOf("<calcPr "),
 const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 for (const invariant of [
   'async function exportMapping()', 'name: "Ánh xạ"', 'name: "Mặt hàng web"',
+  'header: "Giá bán kho"', 'header: "Giá bán web"',
   'VLOOKUP(E${excelRow}', 'InvoiceXlsxReader.parseMappingWorkbook(file)',
   'accept=".xlsx,.json,application/json"'
 ]) assert(content.includes(invariant), `Missing mapping workbook invariant: ${invariant}`);

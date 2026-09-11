@@ -4660,6 +4660,7 @@
         row.webCode || "",
         formula(`IFERROR(VLOOKUP(E${excelRow},'Mặt hàng web'!$A:$D,2,FALSE),"")`, web?.webName || ""),
         formula(`IFERROR(VLOOKUP(E${excelRow},'Mặt hàng web'!$A:$D,3,FALSE),"")`, web?.webUnit || ""),
+        Number(row.salePrice) || 0,
         formula(`IFERROR(VLOOKUP(E${excelRow},'Mặt hàng web'!$A:$D,4,FALSE),0)`, Number(web?.webPrice) || 0),
         row.status || "review", row.reviewNote || ""
       ];
@@ -4671,7 +4672,8 @@
         columns: [
           { header: "Mã kho", width: 20 }, { header: "Tên hàng kho", width: 34 }, { header: "ĐVT kho", width: 14 },
           { header: "Tồn hiện nhận", width: 16 }, { header: "Mã web (chỉnh)", width: 18 }, { header: "Tên hàng web", width: 34 },
-          { header: "ĐVT web", width: 14 }, { header: "Giá web", width: 14 }, { header: "Trạng thái", width: 16 }, { header: "Ghi chú", width: 42 }
+          { header: "ĐVT web", width: 14 }, { header: "Giá bán kho", width: 16 }, { header: "Giá bán web", width: 16 },
+          { header: "Trạng thái", width: 16 }, { header: "Ghi chú", width: 42 }
         ], rows: mappingRows
       },
       {

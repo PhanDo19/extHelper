@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.26.0 (2026-09-11)
+
+- Đặt `Giá bán kho` và `Giá bán web` cạnh nhau trong sheet `Ánh xạ` để đối chiếu nhanh.
+
 ## 1.25.2 (2026-09-11)
 
 - Sửa thứ tự `calcPr` trong `workbook.xml` theo schema Excel để file ánh xạ mở trực tiếp mà không yêu cầu phục hồi nội dung.
