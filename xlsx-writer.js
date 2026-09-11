@@ -63,6 +63,11 @@
 
   function cellXml(value, rowNumber, columnIndex) {
     const reference = `${columnName(columnIndex)}${rowNumber}`;
+    if (value && typeof value === "object" && typeof value.formula === "string") {
+      const cached = value.value == null ? "" : value.value;
+      if (isNumeric(cached)) return `<c r="${reference}"><f>${escapeXml(value.formula)}</f><v>${cached}</v></c>`;
+      return `<c r="${reference}" t="str"><f>${escapeXml(value.formula)}</f><v>${escapeXml(sanitizeText(cached))}</v></c>`;
+    }
     if (isNumeric(value)) {
       return `<c r="${reference}"><v>${value}</v></c>`;
     }
@@ -180,7 +185,7 @@
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
 
     const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><calcPr calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/><sheets>${
       list.map((sheet, index) =>
         `<sheet name="${escapeXml(sheet.name).slice(0, 31)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`
       ).join("")

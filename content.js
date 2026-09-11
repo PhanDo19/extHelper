@@ -1554,7 +1554,7 @@
         <div class="it-file-inputs">
           <input id="it-web-file" type="file" accept=".xlsx" hidden>
           <input id="it-stock-file" type="file" accept=".xlsx" hidden>
-          <input id="it-mapping-file" type="file" accept=".json,application/json" hidden>
+          <input id="it-mapping-file" type="file" accept=".xlsx,.json,application/json" hidden>
           <input id="it-statement-file" type="file" accept=".xlsx" hidden>
           <input id="it-state-file" type="file" accept=".json,application/json" hidden>
         </div>
@@ -4643,42 +4643,65 @@
     setStatus(`Đã mở lại ánh xạ ${row.stockCode} để chỉnh sửa.`, "ok");
   }
 
-  function exportMapping() {
-    const payload = {
-      kind: "invoice-target-mapping-profile",
-      schemaVersion: 1,
-      tenant: pageTenantSlug,
-      tenantLabel: pageTenantLabel,
-      exportedAt: new Date().toISOString(),
-      catalog: { source: String(catalogDataset?.source || ""), itemCount: webCatalog.length },
-      mapping: {
-        source: String(mappingDataset?.source || ""),
-        generatedAt: String(mappingDataset?.generatedAt || ""),
-        mappings: structuredClone(mappingDataset?.mappings || [])
+  async function exportMapping() {
+    const rows = activeMappingRows();
+    const formula = (expression, value) => ({ formula: expression, value });
+    const mappingRows = rows.map((row, index) => {
+      const excelRow = index + 2;
+      const web = webCatalog.find(item => String(item.webCode) === String(row.webCode));
+      return [
+        row.stockCode, row.stockName, row.stockUnit, Number(row.availableQty) || 0,
+        row.webCode || "",
+        formula(`IFERROR(VLOOKUP(E${excelRow},'Mặt hàng web'!$A:$D,2,FALSE),"")`, web?.webName || ""),
+        formula(`IFERROR(VLOOKUP(E${excelRow},'Mặt hàng web'!$A:$D,3,FALSE),"")`, web?.webUnit || ""),
+        formula(`IFERROR(VLOOKUP(E${excelRow},'Mặt hàng web'!$A:$D,4,FALSE),0)`, Number(web?.webPrice) || 0),
+        row.status || "review", row.reviewNote || ""
+      ];
+    });
+    const webRows = webCatalog.map(item => [item.webCode, item.webName, item.webUnit, Number(item.webPrice) || 0]);
+    const sheets = [
+      {
+        name: "Ánh xạ",
+        columns: [
+          { header: "Mã kho", width: 20 }, { header: "Tên hàng kho", width: 34 }, { header: "ĐVT kho", width: 14 },
+          { header: "Tồn hiện nhận", width: 16 }, { header: "Mã web (chỉnh)", width: 18 }, { header: "Tên hàng web", width: 34 },
+          { header: "ĐVT web", width: 14 }, { header: "Giá web", width: 14 }, { header: "Trạng thái", width: 16 }, { header: "Ghi chú", width: 42 }
+        ], rows: mappingRows
+      },
+      {
+        name: "Mặt hàng web",
+        columns: [{ header: "Mã web", width: 18 }, { header: "Tên hàng", width: 34 }, { header: "ĐVT", width: 14 }, { header: "Giá bán", width: 14 }],
+        rows: webRows
       }
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `invoice-mapping-${pageTenantSlug}-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-    setStatus(`Đã xuất hồ sơ ánh xạ của ${pageTenantLabel}. File không thay thế số tồn kho khi nhập lại.`, "ok");
+    ];
+    const bytes = InvoiceXlsxWriter.build(sheets);
+    const exportedAt = new Date().toISOString();
+    await downloadBase64(
+      InvoiceXlsxWriter.toBase64(bytes),
+      `invoice-mapping-${pageTenantFileLabel || pageTenantSlug}-${localTimestamp(exportedAt)}.xlsx`,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    setStatus(`Đã xuất ${rows.length} dòng ánh xạ và ${webRows.length} mặt hàng web. Cột Mã web (chỉnh) là cột kế toán có thể sửa; các cột web còn lại tự tra cứu bằng công thức.`, "ok");
   }
 
   async function importMappingFile(event) {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const payload = JSON.parse(await file.text());
-      const fileTenant = String(payload?.tenant || payload?.mapping?.tenant || "").trim().toLowerCase();
+      const isXlsx = /\.xlsx$/i.test(file.name);
+      const payload = isXlsx ? null : JSON.parse(await file.text());
+      const incomingRows = isXlsx
+        ? await InvoiceXlsxReader.parseMappingWorkbook(file)
+        : (payload?.mapping?.mappings || payload?.mappings);
+      const fileTenant = String(payload?.tenant || payload?.mapping?.tenant ||
+        (String(file.name).match(/^invoice-mapping-(pariskimgiang|parislinhdam|parisnhon)-/i)?.[1] || ""))
+        .trim().toLowerCase();
       if (fileTenant && fileTenant !== pageTenantSlug) {
         throw new Error(`File ánh xạ thuộc cơ sở ${fileTenant}, không phải ${pageTenantSlug}.`);
       }
       if (!fileTenant && pageTenantSlug !== "pariskimgiang") {
         throw new Error(`File ánh xạ thiếu mã cơ sở ${pageTenantSlug}; không thể nhập an toàn.`);
       }
-      const incomingRows = payload?.mapping?.mappings || payload?.mappings;
       if (!Array.isArray(incomingRows)) throw new Error("File không có danh sách ánh xạ hợp lệ.");
       const byStockCode = new Map(incomingRows.map(row => [String(row.stockCode || "").trim(), row]));
       let imported = 0;

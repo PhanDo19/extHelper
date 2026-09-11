@@ -118,6 +118,31 @@
     return parseStockRows(await readFirstSheet(file));
   }
 
+  async function parseMappingWorkbook(file) {
+    const files = await unzip(await file.arrayBuffer());
+    const sharedXml = files.get("xl/sharedStrings.xml");
+    const shared = sharedXml ? [...new DOMParser().parseFromString(sharedXml, "application/xml").querySelectorAll("si")]
+      .map(node => [...node.querySelectorAll("t")].map(text => text.textContent || "").join("")) : [];
+    const sheetNames = [...files.keys()]
+      .filter(name => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))
+      .sort((a, b) => Number(a.match(/sheet(\d+)/)?.[1] || 0) - Number(b.match(/sheet(\d+)/)?.[1] || 0));
+    const rows = sheetNames.length ? parseSheet(files.get(sheetNames[0]), shared) : [];
+    const headerIndex = rows.findIndex(row => {
+      const headers = Array.from(row || [], normalizedHeader);
+      return headers.includes("ma kho") && headers.includes("ma web");
+    });
+    if (headerIndex < 0) throw new Error("KhÃ´ng tÃ¬m tháº¥y sheet Ã¡nh xáº¡ há»£p lá»‡.");
+    const headers = Array.from(rows[headerIndex] || [], normalizedHeader);
+    const stockIndex = headers.indexOf("ma kho");
+    const webIndex = headers.indexOf("ma web");
+    const statusIndex = headers.indexOf("trang thai");
+    return rows.slice(headerIndex + 1).map(row => ({
+      stockCode: String(row?.[stockIndex] || "").trim(),
+      webCode: String(row?.[webIndex] || "").trim(),
+      status: String(statusIndex >= 0 ? row?.[statusIndex] || "" : "").trim()
+    })).filter(row => row.stockCode);
+  }
+
   async function parseWebCatalogWorkbook(file) {
     const rows = await readFirstSheet(file);
     const items = rows.slice(1).filter(row => row[1]).map(row => ({
@@ -252,5 +277,5 @@
     return parseBankRows(await readFirstSheet(file), options);
   }
 
-  root.InvoiceXlsxReader = { parseStockRows, parseStockWorkbook, parseWebCatalogWorkbook, parseBankStatementWorkbook, parseBankRows, dateKey };
+  root.InvoiceXlsxReader = { parseStockRows, parseStockWorkbook, parseMappingWorkbook, parseWebCatalogWorkbook, parseBankStatementWorkbook, parseBankRows, dateKey };
 })(typeof globalThis !== "undefined" ? globalThis : this);

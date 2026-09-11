@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.25.0 (2026-09-11)
+
+### Xuất/nhập ánh xạ bằng Excel cho kế toán
+
+- Xuất hồ sơ ánh xạ hiện tại thành workbook hai sheet: `Ánh xạ` và `Mặt hàng web`.
+- Cột `Mã web (chỉnh)` có thể sửa; tên, đơn vị và giá web được tra bằng công thức VLOOKUP.
+- Nhập lại workbook Excel (đồng thời vẫn hỗ trợ JSON cũ), chỉ cập nhật ánh xạ theo mã kho và giữ nguyên số tồn.
+
 ## 1.22.0 (2026-08-24)
 
 ### Phát hành hóa đơn tuần tự, số hóa đơn liên tục hai cơ sở

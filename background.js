@@ -33,7 +33,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const filename = String(message.filename || "");
     const base64 = String(message.base64 || "");
     const mimeType = String(message.mimeType || "application/octet-stream");
-    if (!/^XuatKho_(ParisKimGiang|ParisLinhDam|ParisNhon)_PhatHanh_[0-9_-]+\.xlsx$/.test(filename)) {
+    if (!/^XuatKho_(ParisKimGiang|ParisLinhDam|ParisNhon)_PhatHanh_[0-9_-]+\.xlsx$/.test(filename) &&
+        !/^invoice-mapping-(ParisKimGiang|ParisLinhDam|ParisNhon)-[0-9TZ_-]+\.xlsx$/.test(filename)) {
       sendResponse({ ok: false, error: `Tên file tải xuống không hợp lệ: ${filename}` });
       return false;
     }
