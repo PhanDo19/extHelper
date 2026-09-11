@@ -4302,7 +4302,7 @@
   }
 
   function webSearchValue(item) {
-    return `${item.webCode} | ${item.webName} | ${formatMoney(item.webPrice)}đ`;
+    return `${item.webCode} | ${item.webName} | ĐVT: ${item.webUnit || "—"} | ${formatMoney(item.webPrice)}đ`;
   }
 
   const PRODUCT_GROUPS = [
