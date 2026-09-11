@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.25.1 (2026-09-11)
+
+- Hiển thị lỗi xuất ánh xạ ngay trên giao diện và khôi phục nút sau khi tải thất bại.
+
 ## 1.25.0 (2026-09-11)
 
 ### Xuất/nhập ánh xạ bằng Excel cho kế toán

@@ -4644,9 +4644,15 @@
   }
 
   async function exportMapping() {
-    const rows = activeMappingRows();
-    const formula = (expression, value) => ({ formula: expression, value });
-    const mappingRows = rows.map((row, index) => {
+    const button = document.getElementById("it-export-mapping");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Đang xuất Excel…";
+    }
+    try {
+      const rows = activeMappingRows();
+      const formula = (expression, value) => ({ formula: expression, value });
+      const mappingRows = rows.map((row, index) => {
       const excelRow = index + 2;
       const web = webCatalog.find(item => String(item.webCode) === String(row.webCode));
       return [
@@ -4658,8 +4664,8 @@
         row.status || "review", row.reviewNote || ""
       ];
     });
-    const webRows = webCatalog.map(item => [item.webCode, item.webName, item.webUnit, Number(item.webPrice) || 0]);
-    const sheets = [
+      const webRows = webCatalog.map(item => [item.webCode, item.webName, item.webUnit, Number(item.webPrice) || 0]);
+      const sheets = [
       {
         name: "Ánh xạ",
         columns: [
@@ -4673,15 +4679,23 @@
         columns: [{ header: "Mã web", width: 18 }, { header: "Tên hàng", width: 34 }, { header: "ĐVT", width: 14 }, { header: "Giá bán", width: 14 }],
         rows: webRows
       }
-    ];
-    const bytes = InvoiceXlsxWriter.build(sheets);
-    const exportedAt = new Date().toISOString();
-    await downloadBase64(
-      InvoiceXlsxWriter.toBase64(bytes),
-      `invoice-mapping-${pageTenantFileLabel || pageTenantSlug}-${localTimestamp(exportedAt)}.xlsx`,
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
-    setStatus(`Đã xuất ${rows.length} dòng ánh xạ và ${webRows.length} mặt hàng web. Cột Mã web (chỉnh) là cột kế toán có thể sửa; các cột web còn lại tự tra cứu bằng công thức.`, "ok");
+      ];
+      const bytes = InvoiceXlsxWriter.build(sheets);
+      const exportedAt = new Date().toISOString();
+      await downloadBase64(
+        InvoiceXlsxWriter.toBase64(bytes),
+        `invoice-mapping-${pageTenantFileLabel || pageTenantSlug}-${localTimestamp(exportedAt)}.xlsx`,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      setStatus(`Đã xuất ${rows.length} dòng ánh xạ và ${webRows.length} mặt hàng web. Cột Mã web (chỉnh) là cột kế toán có thể sửa; các cột web còn lại tự tra cứu bằng công thức.`, "ok");
+    } catch (error) {
+      setStatus(`Không xuất được file ánh xạ: ${error.message}`, "error");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Xuất hồ sơ";
+      }
+    }
   }
 
   async function importMappingFile(event) {
