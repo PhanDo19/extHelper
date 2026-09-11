@@ -28,7 +28,10 @@ const formulaBook = Writer.build([{
 }]);
 const sheet = readEntry(formulaBook, "xl/worksheets/sheet1.xml");
 assert.match(sheet, /<c r="B2" t="str"><f>IFERROR\(VLOOKUP\(A2,&apos;Mặt hàng web&apos;!\$A:\$D,2,FALSE\),&quot;&quot;\)<\/f><v>Bánh quy<\/v><\/c>/);
-assert.match(readEntry(formulaBook, "xl/workbook.xml"), /fullCalcOnLoad="1"/);
+const workbookXml = readEntry(formulaBook, "xl/workbook.xml");
+assert.match(workbookXml, /fullCalcOnLoad="1"/);
+assert(workbookXml.indexOf("<sheets>") < workbookXml.indexOf("<calcPr "),
+  "calcPr must follow sheets according to the Excel workbook XML schema");
 
 const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 for (const invariant of [

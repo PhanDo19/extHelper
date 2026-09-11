@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.25.2 (2026-09-11)
+
+- Sửa thứ tự `calcPr` trong `workbook.xml` theo schema Excel để file ánh xạ mở trực tiếp mà không yêu cầu phục hồi nội dung.
+
 ## 1.25.1 (2026-09-11)
 
 - Hiển thị lỗi xuất ánh xạ ngay trên giao diện và khôi phục nút sau khi tải thất bại.
