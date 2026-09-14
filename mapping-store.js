@@ -24,6 +24,7 @@
   }
 
   const MAPPING_BASE_KEY = "invoiceTargetMappingDataset";
+  const MAPPING_BACKUP_KEY = "invoiceTargetMappingBackup";
   const CATALOG_BASE_KEY = "invoiceTargetWebCatalog";
   const STATEMENT_BASE_KEY = "invoiceTargetBankStatement";
   const PRIORITY_RULES_BASE_KEY = "invoiceTargetPriorityRules";
@@ -73,6 +74,25 @@
     if (!globalThis.chrome?.storage?.local) return dataset;
     await chrome.storage.local.set({ [tenantKey(MAPPING_BASE_KEY)]: dataset });
     return dataset;
+  }
+
+  async function saveMappingBackup(dataset, meta = {}) {
+    if (globalThis.chrome?.storage?.local) {
+      await chrome.storage.local.set({
+        [tenantKey(MAPPING_BACKUP_KEY)]: {
+          dataset: structuredClone(dataset),
+          meta: { ...meta, savedAt: new Date().toISOString() }
+        }
+      });
+    }
+    return dataset;
+  }
+
+  async function loadMappingBackup() {
+    if (!globalThis.chrome?.storage?.local) return null;
+    const key = tenantKey(MAPPING_BACKUP_KEY);
+    const stored = await chrome.storage.local.get(key);
+    return stored[key] || null;
   }
 
   async function reset() {
@@ -266,6 +286,7 @@
     load, save, reset, loadCatalog, saveCatalog, loadStatement, saveStatement,
     loadPriorityRules, savePriorityRules, loadLedger, loadUiSession, saveUiSession,
     clearUiSession, commitVerifiedInvoice, loadStockStateMeta, saveStockStateMeta,
+    saveMappingBackup, loadMappingBackup,
     importStockState, loadStockStateBackup, loadApiTemplate, saveApiTemplate, clearApiTemplate,
     loadIssuedInvoices, saveIssuedInvoices, loadSharedWarehouse, saveSharedWarehouse, currentTenant,
     loadIssueCoordination, saveIssueCoordination

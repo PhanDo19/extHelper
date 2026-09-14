@@ -1571,6 +1571,7 @@
               <label class="selected"><input type="radio" name="it-warehouse-mode" value="snapshot" checked><span><b>Kiểm kê thay thế</b><small>Dùng khi file là số tồn thực tế mới nhất. Số lượng trong file sẽ thay số cũ.</small></span></label>
               <label><input type="radio" name="it-warehouse-mode" value="add"><span><b>Nhập bổ sung</b><small>Dùng khi file chỉ là lô hàng mới nhập. Số lượng sẽ được cộng vào kho hiện có.</small></span></label>
             </div>
+            <label class="it-import-reset"><input id="it-reset-mapping" type="checkbox"><span><b>Tạo ánh xạ mới từ file này</b><small>Bỏ qua ánh xạ cũ của cơ sở hiện tại; hệ thống sẽ sao lưu bản cũ trước khi tạo lại theo các mã trong file.</small></span></label>
             <div class="it-import-file-row"><button id="it-choose-stock-file" type="button" class="primary">Chọn file Excel</button><span id="it-stock-file-name">Chưa chọn file</span></div>
             <div id="it-warehouse-preview" hidden></div>
           </section>
@@ -2158,27 +2159,38 @@
     pendingWarehouseImport = null;
     const preview = document.getElementById("it-warehouse-preview");
     if (preview) preview.hidden = true;
+    const reset = document.getElementById("it-reset-mapping");
+    if (reset) reset.checked = false;
   }
 
-  function warehouseRowsForMapping() {
-    return (sharedWarehouse.items || []).map(item => ({
-      stockCode: item.stockCode,
-      stockName: item.stockName,
-      stockUnit: item.stockUnit,
-      stockQty: item.stockQty,
-      conversion: item.conversion,
-      availableQty: item.availableQty,
-      salePrice: item.salePrice,
-      stockMissing: item.missingFromLastSnapshot
-    }));
+  function warehouseRowsForMapping(stockCodes = null) {
+    const allowedCodes = stockCodes instanceof Set ? stockCodes : null;
+    return (sharedWarehouse.items || [])
+      .filter(item => !allowedCodes || allowedCodes.has(String(item.stockCode)))
+      .map(item => ({
+        stockCode: item.stockCode,
+        stockName: item.stockName,
+        stockUnit: item.stockUnit,
+        stockQty: item.stockQty,
+        conversion: item.conversion,
+        availableQty: item.availableQty,
+        salePrice: item.salePrice,
+        stockMissing: item.missingFromLastSnapshot
+      }));
   }
 
-  function mergeWarehouseIntoCurrentMapping() {
+  function mergeWarehouseIntoCurrentMapping(options = {}) {
     if (!sharedWarehouse.initialized) return;
-    const previousRows = mappingDataset.mappings || [];
-    const merged = InvoiceMappingEngine.mergeStockSnapshot(warehouseRowsForMapping(), webCatalog, previousRows);
+    const resetMapping = Boolean(options.resetMapping);
+    const previousRows = resetMapping ? [] : (mappingDataset.mappings || []);
+    const activeStockCodes = resetMapping && options.activeStockCodes instanceof Set
+      ? options.activeStockCodes
+      : null;
+    const merged = InvoiceMappingEngine.mergeStockSnapshot(
+      warehouseRowsForMapping(activeStockCodes), webCatalog, previousRows
+    );
     const sharedCodes = new Set((sharedWarehouse.items || []).map(item => String(item.stockCode)));
-    const retained = previousRows.filter(row => !sharedCodes.has(String(row.stockCode))).map(row => ({
+    const retained = resetMapping ? [] : previousRows.filter(row => !sharedCodes.has(String(row.stockCode))).map(row => ({
       ...row,
       availableQty: row.availabilityMode === "per_invoice" ? row.availableQty : 0,
       stockMissing: row.availabilityMode !== "per_invoice"
@@ -2199,6 +2211,11 @@
     if (!node || !pending) return;
     const { preview } = pending;
     const rows = preview.changes.filter(item => item.delta !== 0 || item.isNew).slice(0, 12);
+    const resetMappingInput = document.getElementById("it-reset-mapping");
+    if (resetMappingInput) {
+      resetMappingInput.checked = Boolean(pending.resetMapping);
+      resetMappingInput.onchange = event => { pending.resetMapping = Boolean(event.target.checked); renderWarehouseImportPreview(); };
+    }
     node.hidden = false;
     node.innerHTML = `<div class="it-import-preview-head"><div><b>Xem trước trước khi áp dụng</b><small>${preview.mode === "add" ? "Nhập bổ sung — cộng vào kho hiện tại" : "Kiểm kê thay thế — cập nhật theo số thực tế trong file"}</small></div></div>
       <div class="it-import-preview-kpis">
@@ -2212,6 +2229,7 @@
       ${preview.counts.missing ? `<div class="it-import-warning"><b>${preview.counts.missing} mã cũ không có trong file.</b> Extension giữ nguyên số lượng và đánh dấu để kiểm tra, không tự đưa về 0.</div>` : ""}
       ${rows.length ? `<div class="it-table-wrap"><table><thead><tr><th>Mã kho</th><th>Tên hàng</th><th>Trước</th><th>Sau</th><th>Chênh lệch</th></tr></thead><tbody>${rows.map(row => `<tr><td><b>${escapeHtml(row.stockCode)}</b></td><td>${escapeHtml(row.stockName)}</td><td>${formatMoney(row.before)}</td><td>${formatMoney(row.after)}</td><td>${row.delta > 0 ? "+" : ""}${formatMoney(row.delta)}</td></tr>`).join("")}</tbody></table></div>` : "<p>Không có thay đổi số lượng.</p>"}
       <label class="it-confirm"><input id="it-confirm-warehouse-import" type="checkbox"> Tôi đã kiểm tra đúng loại file và số lượng trước/sau.</label>
+      ${pending.resetMapping ? '<div class="it-import-warning"><b>Đang tạo ánh xạ mới.</b> Các ánh xạ cũ sẽ không được dùng cho bộ mã trong file này; bản cũ đã được sao lưu.</div>' : ""}
       <div class="it-actions"><button id="it-apply-warehouse-import" type="button" class="primary" disabled>Áp dụng vào kho dùng chung</button></div>`;
     const confirm = node.querySelector("#it-confirm-warehouse-import");
     const apply = node.querySelector("#it-apply-warehouse-import");
@@ -2222,6 +2240,11 @@
   async function applyWarehouseImport() {
     if (!pendingWarehouseImport) return;
     const importFileName = pendingWarehouseImport.fileName;
+    const resetMapping = Boolean(pendingWarehouseImport.resetMapping || document.getElementById("it-reset-mapping")?.checked);
+    if (resetMapping && pendingWarehouseImport.preview.mode !== "snapshot") {
+      setStatus("Muốn tạo ánh xạ mới, hãy chọn Kiểm kê thay thế; không thể bỏ qua ánh xạ cũ khi Nhập bổ sung.", "error");
+      return;
+    }
     const button = document.getElementById("it-apply-warehouse-import");
     if (button) button.disabled = true;
     try {
@@ -2230,7 +2253,27 @@
         pendingWarehouseImport.preview,
         pageTenantSlug
       );
-      mergeWarehouseIntoCurrentMapping();
+      if (resetMapping) {
+        const activeStockCodes = new Set(
+          (pendingWarehouseImport.preview.changes || []).map(item => String(item.stockCode))
+        );
+        await InvoiceMappingStore.saveMappingBackup(mappingDataset, {
+          tenant: pageTenantSlug,
+          sourceFile: importFileName,
+          reason: "warehouse-import-new-mapping",
+          warehouse: structuredClone(sharedWarehouse)
+        });
+        // A clean first mapping is also a new warehouse baseline. Keeping
+        // missing snapshot rows here would make init() add them back after F5.
+        sharedWarehouse = InvoiceSharedWarehouse.normalize({
+          ...sharedWarehouse,
+          items: sharedWarehouse.items.filter(item => activeStockCodes.has(String(item.stockCode)))
+        });
+      }
+      const activeStockCodes = resetMapping
+        ? new Set((pendingWarehouseImport.preview.changes || []).map(item => String(item.stockCode)))
+        : null;
+      mergeWarehouseIntoCurrentMapping({ resetMapping, activeStockCodes });
       await Promise.all([
         InvoiceMappingStore.saveSharedWarehouse(sharedWarehouse),
         InvoiceMappingStore.save(mappingDataset)
@@ -2241,8 +2284,9 @@
       renderStockAdmin();
       closeWarehouseImport();
       setStatus(
-        `Đã cập nhật kho dùng chung từ ${importFileName || sharedWarehouse.source}. ` +
-        `${newCount} mã mới; ${pendingCount} mã của ${pageTenantLabel} cần kiểm tra ánh xạ.`,
+        `Đã cập nhật kho ${pageTenantLabel} từ ${importFileName || sharedWarehouse.source}. ` +
+        `${newCount} mã mới; ${pendingCount} mã cần kiểm tra ánh xạ` +
+        (resetMapping ? ". Đã bỏ qua ánh xạ cũ và lưu bản sao an toàn." : "."),
         pendingCount ? "warn" : "ok"
       );
     } catch (error) {
@@ -2262,6 +2306,7 @@
       const mode = document.querySelector('input[name="it-warehouse-mode"]:checked')?.value || "snapshot";
       pendingWarehouseImport = {
         fileName: file.name,
+        resetMapping: Boolean(document.getElementById("it-reset-mapping")?.checked),
         preview: InvoiceSharedWarehouse.previewImport(sharedWarehouse, stockRows, mode, {
           source: file.name,
           at: new Date().toISOString()

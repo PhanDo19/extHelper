@@ -464,6 +464,10 @@
 #it-panel .it-import-modes input { width: auto; margin-top: 2px; }
 .it-import-modes span { display: grid; gap: 4px; }
 .it-import-modes small { color: #607086; line-height: 1.35; }
+.it-import-reset { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0; padding: 10px 12px; border: 1px solid #f0d39b; border-radius: 8px; background: #fffaf0; cursor: pointer; }
+.it-import-reset input { width: auto; margin-top: 2px; }
+.it-import-reset span { display: grid; gap: 3px; }
+.it-import-reset small { color: #755b2b; line-height: 1.35; }
 .it-import-file-row { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px dashed #aec2dd; border-radius: 8px; background: #f8fbff; }
 #it-stock-file-name { color: #52657d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #it-warehouse-preview { margin-top: 12px; }
