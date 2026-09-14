@@ -7,7 +7,10 @@ const content = fs.readFileSync(path.join(root, "content.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "content.css"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 
-assert.equal(manifest.version, "1.26.1");
+// Không khóa cứng số version: mỗi lần bump sẽ phải sửa lại mọi test có nhắc tới
+// nó, và sót một chỗ là suite đỏ — đã xảy ra khi 1.26.0 lên 1.26.1. Điều đáng
+// giữ là manifest luôn có version đúng định dạng ba số.
+assert.match(manifest.version, /^\d+\.\d+\.\d+$/, "manifest.json phải có version dạng x.y.z");
 assert(content.includes("E_INVOICE_AMOUNT_TOLERANCE = 1"), "Phát hành phải chấp nhận sai số làm tròn tối đa 1 đồng");
 assert(content.includes("function statementInvoiceMatch"), "Danh sách phát hành phải đối chiếu mã phiếu, ngày và tổng tiền với sao kê");
 assert(content.includes("Giao dịch liên kết"), "Danh sách phát hành phải hiển thị giao dịch sao kê liên kết");
