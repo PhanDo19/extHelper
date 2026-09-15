@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.27.1 (2026-09-15)
+
+- Sửa solver coi `constraintGroupMax = null` (giá trị kho thật ghi cho mọi mã không có trần nhóm) là trần nhóm = 0, khiến bia và khăn ướt không bao giờ được đưa vào phương án dù là món hàng bắt buộc. Hóa đơn thường lặng lẽ thiếu bia/khăn; ở Paris Nhơn, hóa đơn lớn (ví dụ 7.457.000đ) mất luôn sức chứa của 3 mã bia và báo "Không tìm được tổ hợp hàng đạt tối thiểu … Kho có sức chứa lý thuyết khoảng … nhưng không ghép được tổ hợp hợp lệ" dù kho đủ hàng.
+- Thêm test hồi quy: `constraintGroupMax = null` phải ra ≥3 bia + ≥2 khăn, trần nhóm dương vẫn có hiệu lực, và ca thật Nhơn 7.457.000đ ghép được trong 16 dòng.
+- Đối soát sau khi tạo phiếu mới qua API: dò danh sách Bán hàng lần lượt theo ngày sao kê rồi ngày máy chủ (Linh Đàm giữ thứ tự ngược lại) thay vì khóa cứng một ngày. Paris Nhơn chạy cùng phần mềm với Linh Đàm nên phiếu API mới có thể nằm ở ngày máy chủ; lần tạo đầu tiên (01000000260, sao kê 01/07/2026) API trả `code = 1` nhưng bước đọc lại báo không thấy phiếu và giao diện trông như chưa tạo. Khớp ngày cho phiếu API mới chấp nhận ngày danh sách hoặc ngày nghiệp vụ đã lưu trong chi tiết phiếu.
+- Thông báo không tìm thấy phiếu sau khi tạo qua API nay nêu rõ website đã cấp số và ID, các ngày đã dò, và cảnh báo không chạy lại API để tránh tạo phiếu trùng.
+- Thêm ô **Tự tải file log sau mỗi lần tạo phiếu** trên thanh Batch API để tắt việc tải file JSON (và hộp thoại hỏi nơi lưu của Chrome); log vẫn được lưu vào storage và xuất lại được bằng nút Xuất log API gần nhất.
+- Lỗi tải file log (hủy hộp thoại lưu, Chrome chặn) không còn làm hỏng luồng tạo phiếu: trước đây API đã tạo phiếu xong nhưng lỗi tải log làm giao dịch không được ghi số phiếu, trông như chưa tạo.
+- Content script mồ côi sau khi Reload extension (lỗi `Cannot read properties of undefined (reading 'local')`) nay được nhận diện và hiển thị hướng dẫn F5; luồng tạo phiếu bị chặn trước khi gửi API để không sinh phiếu mà extension không ghi nhận được.
+
 ## 1.27.0 (2026-09-15)
 
 - Riêng Paris Nhơn: nhập danh sách số tiền CK/TM từ `inputInvoice.xlsx` theo kỳ tháng/năm.
@@ -10,6 +20,7 @@
 - Phiếu nhỏ dưới 500.000đ ưu tiên mã bia có giá thấp nhất để còn được Tiền giờ (không bị chọn nhầm bia đắt làm Tiền giờ = 0).
 - Batch Review không gán lại phiếu khi website timeout/lỗi đọc; phiếu ứng viên đã thử được chặn trong batch để tránh nhiều giao dịch cùng báo một số phiếu.
 - Paris Nhơn: phiếu mới từ 5.000.000đ áp sàn Tiền giờ 1.500.000đ để giảm số dòng hàng giá thấp; các cơ sở và phiếu đã có giữ nguyên sàn cũ.
+- Rule hàng luân phiên không còn làm hỏng cả phương án khi vướng giới hạn tồn kho/số lượng mỗi hóa đơn; solver sẽ thử lại không có rule luân phiên nhưng vẫn giữ rule bắt buộc.
 
 ## 1.26.0 (2026-09-11)
 

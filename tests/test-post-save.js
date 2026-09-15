@@ -38,7 +38,7 @@ ${extractFunction("parseUiDateTime")}
 ${extractFunction("uiDateKey")}
 ${extractFunction("invoiceBusinessDateKeys")}
 ${extractFunction("invoiceMatchesTransactionDate")}
-${extractFunction("isLinhDamFreshApiInvoice")}
+${extractFunction("isFreshApiInvoice")}
 ${extractFunction("matchesExpectedInvoiceDate")}
 ${extractFunction("pendingPlanFromApproved")}
 ${extractFunction("verifySnapshotAgainstPlan")}
@@ -259,3 +259,82 @@ checkInvoiceListNavigation().then(() => {
   console.error(error);
   process.exit(1);
 });
+
+// --- Phiếu API mới ở Paris Nhơn và Kim Giang ---------------------------------
+//
+// Nhơn chạy cùng phần mềm với Linh Đàm: lần tạo phiếu mới đầu tiên (01000000260,
+// sao kê 01/07/2026) API trả code = 1 nhưng bước đối soát chỉ dò danh sách đúng
+// ngày sao kê nên báo không thấy phiếu, giao diện trông như chưa tạo. Với mọi cơ
+// sở, phiếu API mới phải được dò cả ngày sao kê lẫn ngày máy chủ, và ngày nghiệp
+// vụ trong chi tiết phiếu đủ để khớp ngày.
+function tenantContext(slug, serverDate) {
+  const box = { structuredClone, pageTenantSlug: slug };
+  vm.createContext(box);
+  vm.runInContext(`const pageTenantSlug = this.pageTenantSlug;
+${extractConst("formatMoney")}
+${extractFunction("parseUiDateTime")}
+${extractFunction("uiDateKey")}
+${extractFunction("todayDateKey")}
+${extractFunction("invoiceBusinessDateKeys")}
+${extractFunction("invoiceMatchesTransactionDate")}
+${extractFunction("isFreshApiInvoice")}
+${extractFunction("freshInvoiceLookupDateKeys")}
+${extractFunction("matchesExpectedInvoiceDate")}
+${extractFunction("verifySnapshotAgainstPlan")}
+this.verifySnapshotAgainstPlan = verifySnapshotAgainstPlan;
+this.freshInvoiceLookupDateKeys = freshInvoiceLookupDateKeys;`, box);
+  // Khóa ngày máy chủ để test không phụ thuộc ngày chạy.
+  box.todayDateKey = () => serverDate;
+  return box;
+}
+const SERVER_DATE = "2026-09-15";
+const nhonBox = tenantContext("parisnhon", SERVER_DATE);
+const nhonFreshPlan = {
+  ...plan,
+  invoiceNo: "01000000260",
+  invoiceDateKey: "2026-07-01",
+  checkIn: "01/07/2026 17:45",
+  checkOut: "01/07/2026 18:11",
+  requiresNewInvoice: true,
+  apiSavedRecordId: "77ea7ead-458a-49f9-8fc6-eb1751096db5"
+};
+const nhonFreshScan = {
+  ...scan,
+  invoiceNo: "01000000260",
+  listDateKey: SERVER_DATE,
+  invoiceDateKey: "2026-07-01",
+  checkIn: "01/07/2026 17:45",
+  checkOut: "01/07/2026 18:11"
+};
+if (nhonBox.verifySnapshotAgainstPlan(nhonFreshScan, nhonFreshPlan).length) {
+  throw new Error("Phiếu API mới của Nhơn nằm ở ngày máy chủ phải được chấp nhận theo ngày nghiệp vụ.");
+}
+if (nhonBox.verifySnapshotAgainstPlan({ ...nhonFreshScan, listDateKey: "2026-07-01" }, nhonFreshPlan).length) {
+  throw new Error("Phiếu API mới của Nhơn nằm đúng ngày sao kê cũng phải được chấp nhận.");
+}
+if (!nhonBox.verifySnapshotAgainstPlan(nhonFreshScan, { ...nhonFreshPlan, apiSavedRecordId: "" })
+    .includes("Sai ngày phiếu.")) {
+  throw new Error("Ngoại lệ ngày máy chủ không được lọt sang phiếu không phải API mới.");
+}
+const nhonLookup = nhonBox.freshInvoiceLookupDateKeys(nhonFreshPlan, "2026-07-01");
+if (nhonLookup.join(",") !== `2026-07-01,${SERVER_DATE}`) {
+  throw new Error(`Nhơn phải dò ngày sao kê rồi tới ngày máy chủ: ${nhonLookup.join(",")}`);
+}
+if (nhonBox.freshInvoiceLookupDateKeys({ ...nhonFreshPlan, apiSavedRecordId: "" }, "2026-07-01").join(",") !== "2026-07-01") {
+  throw new Error("Phiếu không phải API mới chỉ dò đúng ngày sao kê.");
+}
+if (nhonBox.freshInvoiceLookupDateKeys(nhonFreshPlan, SERVER_DATE).join(",") !== SERVER_DATE) {
+  throw new Error("Sao kê cùng ngày máy chủ thì chỉ dò một lần.");
+}
+const linhDamBox = tenantContext("parislinhdam", SERVER_DATE);
+if (linhDamBox.freshInvoiceLookupDateKeys(nhonFreshPlan, "2026-07-01").join(",") !== `${SERVER_DATE},2026-07-01`) {
+  throw new Error("Linh Đàm giữ thứ tự dò ngày máy chủ trước rồi mới tới ngày sao kê.");
+}
+const kimGiangBox = tenantContext("pariskimgiang", SERVER_DATE);
+if (kimGiangBox.freshInvoiceLookupDateKeys(nhonFreshPlan, "2026-07-01").join(",") !== `2026-07-01,${SERVER_DATE}`) {
+  throw new Error("Kim Giang dò ngày sao kê trước rồi mới tới ngày máy chủ.");
+}
+if (kimGiangBox.verifySnapshotAgainstPlan(nhonFreshScan, nhonFreshPlan).length) {
+  throw new Error("Phiếu API mới ở Kim Giang cũng khớp ngày theo chi tiết phiếu đã lưu.");
+}
+console.log("fresh API invoice lookup tests: OK");

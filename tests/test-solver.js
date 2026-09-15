@@ -350,3 +350,79 @@ const plain = mandatoryCatalog(30).map(item => {
 assert(solver.solveQuantities(plain, 2055000, {
   maxQty: 20, tolerance: 0, minGoodsAmount: 2055000, maxActiveLines: 12, preferredLineCount: 5
 }).items, "Danh mục không có ràng buộc nhóm vẫn phải giải được");
+
+// --- constraintGroupMax = null KHÔNG phải trần nhóm = 0 ---------------------
+//
+// Kho thật đi qua buildInventory ghi `constraintGroupMax: null` cho mọi mã không
+// có trần nhóm, rồi candidateFromStock gắn constraintGroup "beer"/"wet_towel"
+// cho nhóm bắt buộc. Number(null) là 0 và 0 là số hữu hạn, nên solver từng kẹp
+// trần nhóm = 0 cho đúng các mã bắt buộc: bia và khăn không bao giờ được đưa vào
+// phương án, hóa đơn lặng lẽ thiếu bia/khăn, còn hóa đơn lớn ở Nhơn (bia là mã
+// có trần số lượng/HĐ cao nhất) mất luôn ~2,1 triệu sức chứa và báo "không tìm
+// được tổ hợp hàng" dù sức chứa lý thuyết đủ. Fixture cũ không có thuộc tính
+// này (undefined → NaN) nên không lộ lỗi.
+const nullGroupMaxCatalog = mandatoryCatalog(21).map(item => ({ ...item, constraintGroupMax: null }));
+const nullGroupMax = solver.solveQuantities(nullGroupMaxCatalog, 2055000, {
+  maxQty: 20, tolerance: 0, minGoodsAmount: 2055000, maxActiveLines: 12, preferredLineCount: 5
+});
+assert(nullGroupMax.items, "constraintGroupMax = null vẫn phải giải được");
+{
+  const total = group => nullGroupMax.items
+    .filter(item => item.constraintGroup === group)
+    .reduce((sum, item) => sum + item.newQty, 0);
+  assert(total("beer") >= 3, `constraintGroupMax = null: bia = ${total("beer")}, phải >= 3`);
+  assert(total("wet_towel") >= 2, `constraintGroupMax = null: khăn ướt = ${total("wet_towel")}, phải >= 2`);
+}
+
+// Trần nhóm dương thật sự vẫn có hiệu lực (đối chứng với ca null ở trên).
+const explicitGroupMax = solver.solveQuantities([
+  { code: "B1", name: "Bia A", price: 50000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMax: 4 },
+  { code: "B2", name: "Bia B", price: 60000, qty: 0, maxQty: 12, constraintGroup: "beer", constraintGroupMax: 4 },
+  { code: "X", name: "Hàng", price: 30000, qty: 0, maxQty: 20 }
+], 800000, { maxQty: 20, tolerance: 0 });
+assert(explicitGroupMax.items, "trần nhóm dương phải giải được");
+assert(
+  explicitGroupMax.items.filter(item => item.constraintGroup === "beer").reduce((sum, item) => sum + item.newQty, 0) <= 4,
+  "trần nhóm dương phải được tôn trọng"
+);
+
+// Ca thật Paris Nhơn: sao kê 7.457.000đ (trước VAT 6.779.091đ), trần Tiền giờ
+// 35% = 2.372.681đ nên tiền hàng phải ≥ 4.406.410đ với tối đa 16 dòng. Chỉ
+// đạt được khi 3 mã bia (12 chai/HĐ) được phép vào phương án.
+const nhonCatalog = [
+  ["0000003", "Bia Corona Extra 250ml", 65000, 12, "beer", 3],
+  ["0000004", "Bia Ken Lon", 60000, 12, "beer", 3],
+  ["0000045", "Bia Tiger lon", 50000, 12, "beer", 3],
+  ["0000014", "Khăn ướt", 5000, 4, "wet_towel", 2],
+  ["0000001", "Bánh que", 60000, 3], ["0000007", "Bò khô miếng", 90000, 3],
+  ["0000015", "Khoai tây hộp", 70000, 2], ["0000025", "Thổ phục linh", 90000, 4],
+  ["0000027", "Nước Yến (lọ)", 90000, 4], ["0000031", "Quẩy rong biển", 50000, 3],
+  ["0000037", "Da heo", 45000, 3], ["0000041", "Xúc xích", 50000, 3],
+  ["0000061", "Thuốc lá Thăng Long", 35000, 2], ["0000062", "Kẹo Bạc Hà", 75000, 4],
+  ["0000073", "Đông trùng", 90000, 3], ["0000078", "Nước hắc sâm", 90000, 3],
+  ["0000082", "Tóp mỡ", 75000, 3], ["0000084", "Khô gà", 45000, 3],
+  ["0000085", "Hạt Macca", 75000, 3], ["0000086", "Collagen", 90000, 4],
+  ["0000094", "Wewell Maxfit", 80000, 4], ["0000095", "Snack Pillows", 45000, 3],
+  ["0000096", "Snack Oishi", 40000, 3], ["0000097", "Nước ion kiềm", 25000, 6],
+  ["0000098", "Bánh que Mix", 40000, 3]
+].map(([code, name, price, maxQty, constraintGroup, constraintGroupMin]) => ({
+  code, name, price, qty: 0, maxQty, minQty: 0,
+  constraintGroup: constraintGroup || "",
+  constraintGroupMax: null,
+  constraintGroupMin: constraintGroupMin || 0
+}));
+const nhonLarge = solver.solveQuantities(nhonCatalog, 5279091, {
+  maxQty: 20, tolerance: 0, preTaxTarget: 6779091, currentHour: 1500000, hourStep: 6000,
+  minHourAmount: 1500000, maxHourAmount: 2372681, enforceHourRange: true,
+  minGoodsAmount: 4406410, maxGoodsAmount: 5279091,
+  concentrationWeight: 0, unitWeight: 5000, selectionWeight: 20000,
+  maxGroupShare: 0.6, minGroupCount: 3, preferredLineCount: 6, maxActiveLines: 16
+});
+assert(nhonLarge.items, "Paris Nhơn 7.457.000đ phải ghép được tổ hợp hàng khi bia được phép vào phương án");
+assert(nhonLarge.actual >= 4406410 && nhonLarge.actual <= 5279091,
+  `tiền hàng ${nhonLarge.actual} phải nằm trong [4.406.410, 5.279.091]`);
+assert(nhonLarge.items.filter(item => item.newQty > 0).length <= 16, "không vượt 16 dòng");
+assert(nhonLarge.items.filter(item => item.constraintGroup === "beer").reduce((sum, item) => sum + item.newQty, 0) >= 3,
+  "phương án Nhơn phải có ≥3 bia");
+
+console.log("solver group-max null tests: OK");

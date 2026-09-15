@@ -276,8 +276,16 @@
         const activeLinesUsed = quantities.reduce((sum, value) => sum + (Number(value) > 0 ? 1 : 0), 0);
         let groupRemaining = Number.POSITIVE_INFINITY;
         const group = usable[index].constraintGroup;
-        const groupMax = Number(usable[index].constraintGroupMax);
-        if (group && Number.isFinite(groupMax)) {
+        // Kho thật đặt constraintGroupMax = null cho mọi mã không có trần nhóm
+        // (buildInventory ghi `positiveNumber(...) || null`). Number(null) là 0
+        // và 0 là số hữu hạn, nên trước đây mọi mã thuộc nhóm bắt buộc (bia,
+        // khăn ướt) bị kẹp trần nhóm = 0 và không bao giờ được đưa vào phương
+        // án — hóa đơn lặng lẽ thiếu bia/khăn, còn sức chứa tiền hàng mất luôn
+        // phần của các mã bia (mã có trần số lượng/HĐ cao nhất). Chỉ coi là trần
+        // nhóm khi giá trị là số dương thật sự.
+        const rawGroupMax = usable[index].constraintGroupMax;
+        const groupMax = rawGroupMax == null || rawGroupMax === "" ? Number.NaN : Number(rawGroupMax);
+        if (group && Number.isFinite(groupMax) && groupMax > 0) {
           let groupUsed = 0;
           for (let previousIndex = 0; previousIndex < index; previousIndex += 1) {
             if (usable[previousIndex].constraintGroup === group) groupUsed += Number(quantities[previousIndex] || 0);

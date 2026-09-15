@@ -91,15 +91,32 @@
   const RUNTIME_REFRESH_MESSAGE =
     "Extension vừa được cập nhật. Hãy nhấn F5 tải lại trang website, sau đó mở lại nút Σ.";
 
+  // Sau khi extension được Reload/cập nhật, content script cũ trong các tab đang
+  // mở bị mồ côi: chrome.runtime.id và chrome.storage biến mất. Lời gọi
+  // chrome.storage.local.* khi đó ném "Cannot read properties of undefined
+  // (reading 'local')" chứ không phải "context invalidated", nên trước đây lỗi
+  // này lọt ra console mà không có hướng dẫn F5.
+  function runtimeContextAlive() {
+    return Boolean(globalThis.chrome?.runtime?.id) && Boolean(globalThis.chrome?.storage?.local);
+  }
+
+  function isInvalidRuntimeContext(error) {
+    const message = String(error?.message || error || "");
+    if (/extension context invalidated|context invalidated/i.test(message)) return true;
+    return !runtimeContextAlive() && (error instanceof TypeError || /reading '/.test(message));
+  }
+
   function normalizeRuntimeError(error) {
     const message = String(error?.message || error || "");
-    return /extension context invalidated|context invalidated/i.test(message)
+    return isInvalidRuntimeContext(error)
       ? new Error(RUNTIME_REFRESH_MESSAGE)
       : new Error(message || "Chrome runtime không sẵn sàng.");
   }
 
-  function isInvalidRuntimeContext(error) {
-    return /extension context invalidated|context invalidated/i.test(String(error?.message || error || ""));
+  // Ném lỗi hướng dẫn F5 ngay tại chỗ, trước khi đụng tới chrome.storage hay
+  // gửi request có tác dụng phụ trên server.
+  function assertRuntimeContext() {
+    if (!runtimeContextAlive()) throw new Error(RUNTIME_REFRESH_MESSAGE);
   }
 
   function sendRuntimeMessage(message) {
@@ -498,17 +515,18 @@
       paymentMethod: transaction.paymentMethod || "",
       tenantSlug: pageTenantSlug
     };
+    // Content script mồ côi (extension vừa Reload) vẫn gọi được bridge trong
+    // trang, tức API tạo phiếu vẫn chạy và server vẫn cấp số, nhưng mọi bước
+    // ghi chrome.storage sau đó đều hỏng: phiếu có trên website mà extension
+    // không ghi nhận, người dùng lại bấm tạo và sinh phiếu trùng. Phải chặn
+    // TRƯỚC khi gửi API.
+    assertRuntimeContext();
     // Always trace extension-generated DoSave calls. This is independent from
     // the manual "Bắt API" button and captures both success and failure.
     await request("armApiTrace");
     let apiSaved;
     try {
       apiSaved = await request("createAndPayFreshInvoiceViaApi", apiExpected);
-      await persistGeneratedInvoiceApiDebugLog({
-        expected: apiExpected,
-        outcome: "success",
-        result: apiSaved
-      });
     } catch (error) {
       try {
         await persistGeneratedInvoiceApiDebugLog({
@@ -520,6 +538,18 @@
         console.error("[InvoiceTarget] Không thể xuất API debug log", logError);
       }
       throw error;
+    }
+    // API đã thành công: từ đây lỗi ghi/tải log KHÔNG được làm mất kết quả lưu.
+    // Trước đây hai việc nằm chung một try, nên hủy hộp thoại lưu file là phiếu
+    // đã có trên website mà giao dịch vẫn ở trạng thái chưa tạo.
+    try {
+      await persistGeneratedInvoiceApiDebugLog({
+        expected: apiExpected,
+        outcome: "success",
+        result: apiSaved
+      });
+    } catch (logError) {
+      console.error("[InvoiceTarget] Không thể xuất API debug log sau khi lưu thành công", logError);
     }
     if (!apiSaved?.saved || !apiSaved?.savedRecordId || !apiSaved?.invoiceNo) {
       throw new Error("Website chua xac nhan du hai buoc tao phien va thanh toan.");
@@ -1932,7 +1962,7 @@
       panel.style.removeProperty("width");
       panel.style.removeProperty("height");
       panel.style.removeProperty("max-height");
-      await chrome.storage.local.remove(key);
+      try { await chrome.storage.local.remove(key); } catch (_) { /* Context mồ côi sau khi reload extension. */ }
     });
 
     handle.addEventListener("pointerdown", event => {
@@ -1965,7 +1995,9 @@
         panel.classList.remove("is-resizing");
         document.documentElement.style.removeProperty("user-select");
         const finalRect = panel.getBoundingClientRect();
-        await chrome.storage.local.set({ [key]: { width: Math.round(finalRect.width), height: Math.round(finalRect.height) } });
+        try {
+          await chrome.storage.local.set({ [key]: { width: Math.round(finalRect.width), height: Math.round(finalRect.height) } });
+        } catch (_) { /* Context mồ côi sau khi reload extension. */ }
       };
 
       handle.addEventListener("pointermove", onMove);
@@ -2906,6 +2938,31 @@
     return `invoiceTarget.apiDebug.latest.${pageTenantSlug}`;
   }
 
+  // Tùy chọn dùng chung cho mọi cơ sở: có tự tải file log xuống Downloads sau
+  // mỗi lần tạo phiếu hay không. Log luôn được lưu vào chrome.storage.local và
+  // xuất lại được bằng nút "Xuất log API gần nhất", nên tắt tải tự động không
+  // làm mất dấu vết. Mặc định bật để giữ hành vi cũ. Chrome đang bật "Hỏi vị
+  // trí lưu mỗi tệp" thì mỗi lần tải là một hộp thoại; đây là lý do cần tắt.
+  const API_DEBUG_AUTO_DOWNLOAD_KEY = "invoiceTarget.apiDebug.autoDownload";
+  let apiDebugAutoDownload = true;
+
+  async function loadApiDebugAutoDownload() {
+    if (!globalThis.chrome?.storage?.local) return apiDebugAutoDownload;
+    try {
+      const saved = await chrome.storage.local.get(API_DEBUG_AUTO_DOWNLOAD_KEY);
+      const value = saved?.[API_DEBUG_AUTO_DOWNLOAD_KEY];
+      apiDebugAutoDownload = value == null ? true : Boolean(value);
+    } catch (_) { /* Giữ mặc định khi chưa đọc được. */ }
+    return apiDebugAutoDownload;
+  }
+
+  async function saveApiDebugAutoDownload(enabled) {
+    assertRuntimeContext();
+    apiDebugAutoDownload = Boolean(enabled);
+    await chrome.storage.local.set({ [API_DEBUG_AUTO_DOWNLOAD_KEY]: apiDebugAutoDownload });
+    return apiDebugAutoDownload;
+  }
+
   async function persistGeneratedInvoiceApiDebugLog(context = {}) {
     let trace;
     try {
@@ -2928,14 +2985,26 @@
       security: "Authorization, Cookie và Proxy-Authorization đã bị loại bỏ.",
       records: Array.isArray(trace?.records) ? trace.records : []
     };
+    // Lưu storage TRƯỚC khi tải file: người dùng có thể hủy hộp thoại "Lưu
+    // thành" của Chrome, và việc đó không được làm mất log.
+    assertRuntimeContext();
     await chrome.storage.local.set({ [apiDebugStorageKey()]: payload });
+    if (!apiDebugAutoDownload) return payload;
     const stamp = exportedAt.replace(/[:.]/g, "-");
     const transactionDate = String(context.expected?.invoiceDateKey || "unknown").replace(/[^0-9-]/g, "");
-    await downloadJson(payload, `invoice-api-debug-${pageTenantSlug}-${transactionDate}-${stamp}.json`);
+    try {
+      await downloadJson(payload, `invoice-api-debug-${pageTenantSlug}-${transactionDate}-${stamp}.json`);
+    } catch (error) {
+      // Không tải được file (hủy hộp thoại lưu, Chrome chặn) không phải lỗi
+      // nghiệp vụ: phiếu đã/chưa tạo không phụ thuộc vào file này.
+      console.warn("[InvoiceTarget] Không tải được file log API; log vẫn nằm trong storage.", error);
+      payload.downloadError = String(error?.message || error || "");
+    }
     return payload;
   }
 
   async function exportLatestGeneratedInvoiceApiDebugLog() {
+    assertRuntimeContext();
     const saved = await chrome.storage.local.get(apiDebugStorageKey());
     const payload = saved?.[apiDebugStorageKey()];
     if (!payload) throw new Error("Chưa có log API tự động nào của cơ sở hiện tại.");
@@ -2972,6 +3041,7 @@
       <button id="it-arm-api-trace" type="button">Bắt API tạo phiếu</button>
       <button id="it-export-api-trace" type="button">Xuất trace JSON</button>
       <button id="it-export-latest-api-debug" type="button">Xuất log API gần nhất</button>
+      <label class="it-api-debug-auto" title="Tắt nếu Chrome hỏi nơi lưu mỗi lần tạo phiếu. Log vẫn được lưu và xuất lại được."><input id="it-api-debug-auto-download" type="checkbox"${apiDebugAutoDownload ? " checked" : ""}> Tự tải file log sau mỗi lần tạo phiếu</label>
     </div>
     ${pendingNewInvoiceContextHtml()}
     <div id="it-batch-summary"></div>
@@ -2985,6 +3055,13 @@
     });
     node.querySelector("#it-export-latest-api-debug")?.addEventListener("click", () => {
       exportLatestGeneratedInvoiceApiDebugLog().catch(error => setStatus(error.message, "error"));
+    });
+    node.querySelector("#it-api-debug-auto-download")?.addEventListener("change", event => {
+      saveApiDebugAutoDownload(event.target.checked)
+        .then(enabled => setStatus(enabled
+          ? "Sẽ tự tải file log API xuống Downloads sau mỗi lần tạo phiếu."
+          : "Đã tắt tự tải file log API. Log vẫn được lưu và xuất lại được bằng nút Xuất log API gần nhất.", "ok"))
+        .catch(error => setStatus(error.message, "error"));
     });
     if (batchPlans.length) renderBatchPlans();
   }
@@ -4255,21 +4332,40 @@
     selected.querySelector("#it-verify-saved-invoice")?.addEventListener("click", verifySavedInvoice);
   }
 
-  function isLinhDamFreshApiInvoice(plan) {
-    return pageTenantSlug === "parislinhdam" &&
-      Boolean(plan?.requiresNewInvoice) &&
+  // Phiếu mới do extension tạo qua API hai bước và đã được website cấp số.
+  function isFreshApiInvoice(plan) {
+    return Boolean(plan?.requiresNewInvoice) &&
       Boolean(plan?.apiSavedRecordId || plan?.savedRecordId);
   }
 
+  // Linh Đàm xếp phiếu API mới vào ngày tạo của máy chủ trên danh sách Bán
+  // hàng, dù NGAY và giờ vào/ra đã lưu về ngày sao kê; cơ sở này dò ngày máy
+  // chủ trước cho nhanh. Các cơ sở khác dò ngày sao kê trước nhưng KHÔNG được
+  // dừng ở đó: Paris Nhơn chạy cùng phần mềm với Linh Đàm, và lần tạo phiếu
+  // mới đầu tiên (01000000260, sao kê 01/07/2026) API đã trả code = 1 nhưng
+  // bước đối soát chỉ dò đúng ngày sao kê nên báo không thấy phiếu. Trả về
+  // danh sách ngày để dò lần lượt tới khi thấy đúng số phiếu.
+  function freshInvoiceLookupDateKeys(plan, transactionDateKey) {
+    const statementDate = uiDateKey(transactionDateKey);
+    if (!isFreshApiInvoice(plan)) return statementDate ? [statementDate] : [];
+    const serverDate = todayDateKey();
+    const ordered = pageTenantSlug === "parislinhdam"
+      ? [serverDate, statementDate]
+      : [statementDate, serverDate];
+    return [...new Set(ordered.filter(Boolean))];
+  }
+
   function matchesExpectedInvoiceDate(snapshot, plan) {
-    if (!isLinhDamFreshApiInvoice(plan)) {
+    if (!isFreshApiInvoice(plan)) {
       return invoiceMatchesTransactionDate(snapshot, plan?.invoiceDateKey);
     }
-    // Linh Đàm hiện xếp phiếu mới theo ngày tạo của máy chủ, dù NGAY và
-    // giờ vào/ra đã được lưu về quá khứ. Chỉ ở nhánh tạo mới bằng API của
-    // cơ sở này, đối soát ngày nghiệp vụ từ chi tiết phiếu đã lưu.
+    // Phiếu API mới có thể nằm trên danh sách ở ngày máy chủ (Linh Đàm, Nhơn),
+    // nên ngày danh sách không còn là căn cứ duy nhất: chấp nhận khi ngày danh
+    // sách HOẶC ngày nghiệp vụ đã lưu trong chi tiết phiếu (ngày phiếu, giờ
+    // vào, giờ ra) trùng ngày sao kê. Chỉ áp cho phiếu API đã được cấp số.
     const expected = uiDateKey(plan?.invoiceDateKey);
     const persistedBusinessDates = new Set([
+      uiDateKey(snapshot?.listDateKey),
       uiDateKey(snapshot?.invoiceDateKey),
       uiDateKey(snapshot?.checkIn),
       uiDateKey(snapshot?.checkOut)
@@ -6379,26 +6475,35 @@
         throw new Error("Chưa mở được màn hình danh sách Bán hàng để đọc lại phiếu; hãy mở danh sách rồi thử lại.");
       }
       const usedInvoiceNos = otherRowsInvoiceNos(transaction, plan);
-      // Linh Đàm xếp phiếu mới vào ngày tạo của máy chủ. Kim Giang vẫn tìm
-      // theo ngày sao kê như trước, không đi qua nhánh ngoại lệ này.
-      const lookupDateKey = isLinhDamFreshApiInvoice(plan)
-        ? todayDateKey()
-        : transaction.transactionDate;
-      const found = await request("findInvoiceCandidates", {
-        dateKey: lookupDateKey,
-        usedInvoiceNos
-      });
-      const candidate = (found.candidates || []).find(item =>
-        String(item.invoiceNo) === String(plan.invoiceNo) && item.available
-      );
+      // Phiếu API mới có thể nằm ở ngày sao kê hoặc ngày máy chủ tùy cơ sở;
+      // dò lần lượt các ngày thay vì khóa cứng một ngày rồi báo không thấy.
+      const lookupDateKeys = freshInvoiceLookupDateKeys(plan, transaction.transactionDate);
+      let candidate = null;
+      let candidateDateKey = "";
+      for (const lookupDateKey of lookupDateKeys) {
+        const found = await request("findInvoiceCandidates", {
+          dateKey: lookupDateKey,
+          usedInvoiceNos
+        });
+        candidate = (found.candidates || []).find(item =>
+          String(item.invoiceNo) === String(plan.invoiceNo) && item.available
+        ) || null;
+        if (candidate) {
+          candidateDateKey = candidate.dateKey || lookupDateKey;
+          break;
+        }
+      }
       if (!candidate) {
-        const lookupNote = isLinhDamFreshApiInvoice(plan)
-          ? ` trong danh sách ngày server ${lookupDateKey}`
+        const savedHint = isFreshApiInvoice(plan)
+          ? ` Website đã cấp số ${plan.invoiceNo} (ID ${plan.apiSavedRecordId || plan.savedRecordId}); KHÔNG chạy lại API tạo phiếu. ` +
+            "Hãy mở danh sách Bán hàng, chọn Chưa xuất hóa đơn, kiểm tra các ngày trên rồi bấm Đối soát sau lưu."
           : "";
-        throw new Error(`Không tìm thấy phiếu chưa xuất ${plan.invoiceNo}${lookupNote} để đọc lại từ website.`);
+        throw new Error(
+          `Không tìm thấy phiếu chưa xuất ${plan.invoiceNo} trong danh sách ngày ${lookupDateKeys.join(", ")} để đọc lại từ website.${savedHint}`
+        );
       }
       await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo: plan.invoiceNo });
-      const reopened = await waitForOpenedInvoice(plan.invoiceNo, candidate.dateKey || transaction.transactionDate);
+      const reopened = await waitForOpenedInvoice(plan.invoiceNo, candidateDateKey || transaction.transactionDate);
       if (String(reopened.invoiceNo || "") !== String(plan.invoiceNo)) {
         throw new Error(`Website mở nhầm phiếu ${reopened.invoiceNo || "không xác định"}; chưa đối soát.`);
       }
@@ -6777,6 +6882,9 @@
   }
 
   async function saveBatchEntryViaApi(index, button) {
+    // Cùng lý do với phiếu mới: context mồ côi vẫn gửi được request lưu qua
+    // bridge nhưng không ghi nhận được kết quả; chặn trước khi làm gì trên server.
+    assertRuntimeContext();
     let entry = batchPlans[index];
     if (!entry || entry.status !== "batch_ready" || entry.plan?.requiresNewInvoice) {
       throw new Error("Dòng này chưa ở trạng thái Đã Accept hoặc cần tạo phiếu mới.");
@@ -7473,6 +7581,7 @@
       );
       return;
     }
+    await loadApiDebugAutoDownload();
     catalogDataset = await InvoiceMappingStore.loadCatalog(embeddedCatalog);
     webCatalog = catalogDataset.items || [];
     const storedMapping = await InvoiceMappingStore.load(embeddedDataset);

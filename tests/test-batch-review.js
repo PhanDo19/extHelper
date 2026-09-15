@@ -1405,3 +1405,83 @@ const limited = sandbox.selectBatchReviewTransactions([
 if (limited.map(item => item.id).join(",") !== "early,mid") {
   throw new Error(`Limit phải cắt sau khi sắp: ${limited.map(item => item.id).join(",")}`);
 }
+
+// --- Kho thật (buildInventory) ghi constraintGroupMax = null -----------------
+//
+// Mọi fixture phía trên dựng tay nên không có thuộc tính constraintGroupMax
+// (undefined). Kho thật đi qua buildInventory lại ghi `null` cho mọi mã không
+// có trần nhóm; Number(null) là 0 nên solver từng coi đó là trần nhóm = 0 và
+// không bao giờ cho bia/khăn ướt vào phương án — hóa đơn lặng lẽ thiếu món bắt
+// buộc, còn hóa đơn lớn ở Nhơn mất luôn sức chứa của 3 mã bia và báo "không
+// tìm được tổ hợp hàng". Ca này phải đi đúng đường dữ liệu thật: buildInventory
+// → candidateFromStock → solver, không mock buildBatchCandidates.
+const mappingEngineForStock = require(path.join(__dirname, "..", "mapping-engine.js"));
+require(path.join(__dirname, "..", "mapping-parisnhon.js"));
+const realStockBox = {
+  InvoiceTargetSolver: solver,
+  priorityRules: [],
+  pageTenantSlug: "parisnhon",
+  inferHourPricing: () => ({ hourlyRate: 600000, hourStep: 6000 }),
+  formatMoney: value => new Intl.NumberFormat("vi-VN").format(Math.round(Number(value) || 0)),
+  recommendCheckOut: () => "05/08/2026 22:00"
+};
+vm.createContext(realStockBox);
+vm.runInContext(
+  `${batchPlanDeps}; ${extractConst("PARIS_NHON_LARGE_INVOICE_THRESHOLD")}; ` +
+  `${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
+  `${extractFunction("candidateFromStock")}; ${extractFunction("buildBatchCandidates")};`,
+  realStockBox
+);
+const countByRule = (plan, matcher) => (plan.items || [])
+  .filter(item => matcher({ webName: item.name }))
+  .reduce((sum, item) => sum + Number(item.qty || 0), 0);
+
+// Ca thật Paris Nhơn: sao kê 7.457.000đ, trần Tiền giờ 35% = 2.372.681đ nên
+// tiền hàng phải ≥ 4.406.410đ trong tối đa 16 dòng — chỉ đạt khi 3 mã bia
+// (12 chai/HĐ) được phép vào phương án.
+const nhonDataset = JSON.parse(JSON.stringify(global.InvoiceMappingParisNhon));
+for (const row of nhonDataset.mappings) if (row.webCode) row.status = "confirmed";
+const nhonInventory = mappingEngineForStock.buildInventory(nhonDataset);
+if (!nhonInventory.length || !nhonInventory.every(stock => stock.constraintGroupMax === null)) {
+  throw new Error("Fixture phải giữ đúng hình dạng kho thật: constraintGroupMax = null");
+}
+const nhonLargePlan = realStockBox.calculateBatchPlan({
+  ready: true, newInvoicePlanning: true, invoiceNo: "", invoiceDateKey: "2026-08-05",
+  currentGoods: 0, currentHour: 0, currentTax: 0, taxRate: 10, currentGrand: 0,
+  checkIn: "05/08/2026 20:00", checkOut: "05/08/2026 20:00", durationMinutes: 1, items: []
+}, { id: "nhon-7457000", transactionDate: "2026-08-05", credit: 7457000 }, nhonInventory, new Map());
+if (nhonLargePlan.status !== "ready") {
+  throw new Error(`Paris Nhơn 7.457.000đ phải lập được phương án: ${nhonLargePlan.reason || nhonLargePlan.status}`);
+}
+if (nhonLargePlan.items.length > 16) {
+  throw new Error(`Phương án Nhơn 7.457.000đ vượt 16 dòng: ${nhonLargePlan.items.length}`);
+}
+if (nhonLargePlan.goods < 4406410) {
+  throw new Error(`Tiền hàng ${nhonLargePlan.goods} phải ≥ 4.406.410đ để Tiền giờ không vượt trần 35%`);
+}
+if (countByRule(nhonLargePlan, realStockBox.isBeerStock) < 3) {
+  throw new Error("Phương án Nhơn 7.457.000đ phải có ≥3 bia");
+}
+if (countByRule(nhonLargePlan, realStockBox.isWetTowelStock) < 2) {
+  throw new Error("Phương án Nhơn 7.457.000đ phải có ≥2 khăn ướt");
+}
+
+// Hóa đơn thường ở cơ sở khác, cùng hình dạng kho thật: phương án không được
+// lặng lẽ thiếu bia/khăn khi tồn vẫn đủ.
+const plainRealStock = [
+  { webCode: "1100019", webName: "Bia Tiger Crystal", webUnit: "chai", webPrice: 45000, availableQty: 200, constraintGroup: "", constraintGroupMax: null },
+  { webCode: "1000030", webName: "Khăn ướt V1020", webUnit: "Cái", webPrice: 5000, availableQty: 500, constraintGroup: "", constraintGroupMax: null },
+  { webCode: "1000043", webName: "Bò miếng to 60g", webUnit: "gói", webPrice: 90000, availableQty: 50, constraintGroup: "", constraintGroupMax: null },
+  { webCode: "1100021", webName: "Yến chưng", webUnit: "Hũ", webPrice: 90000, availableQty: 50, constraintGroup: "", constraintGroupMax: null },
+  { webCode: "1000033", webName: "Loacker Bánh Xốp Kem 45g", webUnit: "gói", webPrice: 60000, availableQty: 50, constraintGroup: "", constraintGroupMax: null }
+];
+const plainRealPlan = realStockBox.calculateBatchPlan({
+  ready: true, invoiceNo: "HD-REAL-STOCK", invoiceDateKey: "2026-06-30",
+  currentHour: 600000, currentGrand: 0, taxRate: 10, durationMinutes: 60
+}, { id: "real-stock", transactionDate: "2026-06-30", credit: 2000000 }, plainRealStock, new Map());
+if (plainRealPlan.status !== "ready") {
+  throw new Error(`Kho thật constraintGroupMax = null phải lập được phương án: ${plainRealPlan.reason || plainRealPlan.status}`);
+}
+if (countByRule(plainRealPlan, realStockBox.isBeerStock) < 3 || countByRule(plainRealPlan, realStockBox.isWetTowelStock) < 2) {
+  throw new Error(`Kho thật constraintGroupMax = null vẫn phải ra ≥3 bia + ≥2 khăn: ${plainRealPlan.items.map(item => `${item.name} x${item.qty}`).join(", ")}`);
+}
