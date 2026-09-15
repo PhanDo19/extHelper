@@ -5,7 +5,8 @@ toán. Tài liệu này chốt cách đọc file, cách lập phiếu, và các 
 
 ## Nguồn dữ liệu
 
-File `inputInvoice.xlsx` — 436 phiếu trong 31 ngày, trung bình 14 phiếu/ngày,
+File `inputInvoice.xlsx` — 435 dòng có số tiền trong 31 ngày, cộng 1 dòng 0đ,
+trung bình 14 phiếu/ngày,
 nhiều nhất 17 phiếu một ngày.
 
 | Cột | Nghĩa | Tổng |
@@ -13,7 +14,7 @@ nhiều nhất 17 phiếu một ngày.
 | A | Số TT | |
 | B | Ngày (chỉ ngày trong tháng, không có tháng/năm) | |
 | C | Hình thức TT — **CK** | 153.224.400 |
-| D | Hình thức TT — **TM** | 214.365.750 |
+| D | Hình thức TT — **TM** | 214.365.750,5 |
 | E | Chia lại DT — CK | 139.294.909 |
 | F | Chia lại DT — TM | 194.877.955 |
 
@@ -21,7 +22,7 @@ nhiều nhất 17 phiếu một ngày.
 
 Hai nhóm cột không phải hai phương án khác nhau mà là **cùng một số tiền ở hai
 thời điểm**: `Hình thức TT = Chia lại DT × 1,1`. Quan hệ này đúng ở **436/436
-dòng**, không một ngoại lệ.
+dòng**, trong đó có một dòng 0đ không tạo phiếu.
 
 Chọn C/D vì ba lý do:
 
@@ -29,8 +30,9 @@ Chọn C/D vì ba lý do:
    là tổng đã gồm VAT (giống `credit` của sao kê) rồi `deriveInvoiceTargets` tự
    chia ngược ra trước thuế. Đưa E/F vào sẽ phải nhân 1,1 rồi hệ thống lại chia
    1,1 — thừa một vòng và thêm chỗ sai số.
-2. **Tránh sai số làm tròn.** E/F là số thập phân vô hạn tuần hoàn
-   (`6779090.9090909082`); C/D là số nguyên sạch.
+2. **Giảm sai số làm tròn.** E/F là số thập phân vô hạn tuần hoàn
+   (`6779090.9090909082`); C/D là số tiền mục tiêu. Có một dòng C/D là
+   `241.950,5đ`, parser phải đánh dấu để kế toán xác nhận làm tròn.
 3. **Mang thêm phương thức thanh toán.** Cột nào có số thì phiếu đó là CK hay TM.
 
 **CK và TM loại trừ nhau**: 40 phiếu CK, 395 phiếu TM, không dòng nào có cả hai.
@@ -42,9 +44,9 @@ Phương thức thanh toán là thuộc tính đơn của phiếu, không phải
 |---|---|
 | 1 | Chỉ áp luật **2 chai bia**. KHÔNG áp luật ≥3 bia + ≥2 khăn ướt |
 | 2 | Phiếu quá nhỏ → **chỉ hát** (không dòng hàng, toàn bộ là tiền giờ) |
-| 3 | Tổng không biểu diễn được theo VAT 10% → **tự lấy số gần nhất**, ghi rõ trong ghi chú |
+| 3 | Tổng không biểu diễn được theo VAT 10% → **không tự tạo**, đưa vào danh sách cần xác nhận |
 | 4 | Phiếu TM **có** áp luật tiền giờ, nhưng **linh động dưới 200.000đ** |
-| 5 | Chống trùng theo **ngày + số tiền + hình thức** |
+| 5 | Chống nhập lại theo **file + dòng nguồn**; hai dòng giống tiền vẫn là hai phiếu |
 | 6 | Phiếu từ nguồn này **KHÔNG** vào điều phối phát hành ba cơ sở |
 | 7 | Phiếu **0đ** bỏ qua hẳn (file có 1 dòng) |
 
@@ -78,22 +80,24 @@ là phần còn lại sau tiền hàng, phần lẻ bù bằng `hourAdjustment` 
 
 Từ 200.000đ trở lên: giữ luật tiền giờ bình thường.
 
-### Sáu phiếu không biểu diễn được theo VAT 10%
+### Mười một dòng không biểu diễn được theo VAT 10%
 
-`2.987.000` · `2.008.000` · `5.825.000` · `1.975.000` · `3.350.000` · `5.220.000`
+`2.987.000` · `2.700.000` (2 dòng) · `2.810.000` · `2.008.000` ·
+`1.666.000` · `18.353.000` · `5.825.000` · `1.975.000` · `3.350.000` · `5.220.000`
 
 Đã kiểm: đổi sang cột "Chia lại DT" **không** giải quyết được. Làm tròn số thập
 phân vô hạn tuần hoàn rồi cộng VAT lại thì lệch đúng **1đ** ở cả 6 phiếu — vì
 bản thân con số gốc không biểu diễn được, không phải do chọn sai cột.
 
-Extension tự lấy số gần nhất và ghi rõ độ lệch vào ghi chú phiếu.
+Extension không tự lấy số gần nhất. Các dòng này được đưa sang trạng thái cần xác
+nhận; sau khi kế toán chọn số làm tròn mới được phép Accept và gửi API.
 
 ## Khác biệt so với luồng sao kê ngân hàng
 
 | | Sao kê ngân hàng | File số tiền có sẵn |
 |---|---|---|
 | Nguồn ngày | `Transaction date` đầy đủ | Chỉ ngày trong tháng (cột B) |
-| Chống trùng | `Số bút toán` | ngày + số tiền + hình thức |
+| Chống trùng | `Số bút toán` | file + dòng nguồn (giữ được hai dòng trùng tiền) |
 | Phương thức TT | Luôn `TM/CK` | Theo cột có số: CK hoặc TM |
 | Món hàng bắt buộc | ≥3 bia + ≥2 khăn | Chỉ 2 bia |
 | Rà tay >20 triệu | Có | Không áp dụng |
@@ -109,23 +113,24 @@ sinh toàn bộ phiếu sai ngày.
    tháng/năm từ tham số, ghép với cột B thành `dateKey`. Bỏ dòng tổng (dòng 1),
    dòng tiêu đề (2-3), dòng 0đ. Trả về `{dateKey, grandTotal, paymentMethod, rowNumber}`.
 
-2. **Chống trùng** — khóa `dateKey|grandTotal|paymentMethod`. Import lại cùng
-   file không được nhân đôi; import file khác cùng tháng phải cộng thêm.
+2. **Chống nhập lại** — khóa gồm `dateKey|grandTotal|paymentMethod|row` của
+   file nguồn. Import lại cùng file không nhân đôi, nhưng hai dòng khác nhau
+   có cùng số tiền vẫn được giữ thành hai phiếu.
 
 3. **Lập phiếu** — dùng lại `calculateNewInvoiceBatchPlan` đã có. Truyền cờ
    `cashInvoiceMode` để `calculateBatchPlan` biết: chỉ áp 2 bia, bỏ luật nhóm
    bắt buộc, linh động tiền giờ dưới 200k.
 
-4. **Phương thức thanh toán** — `PHUONGTHUCTT` đặt theo cột có số (`CK` hoặc
-   `TM`), thay vì ép `TM/CK` như luồng sao kê. Đây là ngoại lệ có chủ đích so
-   với `PROJECT_SPEC.md`, phải ghi rõ trong spec.
+4. **Phương thức thanh toán** — riêng Paris Nhơn, lúc tạo/lưu phiếu
+   `PHUONGTHUCTT` đặt theo cột có số (`CK` hoặc `TM`). Khi phát hành hóa đơn
+   điện tử dùng `TM/CK`. Luồng sao kê cũ của các cơ sở khác giữ `TM/CK` khi tạo.
 
 5. **Slot giờ/phòng** — một ngày có tới 17 phiếu. `newInvoiceCheckInMinutes` và
    `roomBookingsOnDate` hiện cấp slot theo thứ tự lập; phải kiểm sức chứa (12
    phòng) trước khi chạy lô lớn.
 
-6. **Kiểm chứng** — chạy thử toàn bộ 436 phiếu, đối chiếu tổng tiền với dòng tổng
-   của file (`367.590.150`).
+6. **Kiểm chứng** — chạy thử 435 phiếu hợp lệ, đối chiếu tổng nguồn
+   (`367.590.150,5đ`) và xử lý riêng dòng 0đ cùng các dòng cần xác nhận.
 
 ## Điểm rủi ro cần chú ý khi làm
 

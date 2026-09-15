@@ -4,9 +4,11 @@ const fs = require("fs");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 
-// Phiếu do extension lập đều bắt nguồn từ giao dịch chuyển khoản trong sao kê,
-// nên PHUONGTHUCTT phải là "TM/CK" chứ không phải "TM" mặc định của website.
+// Luồng sao kê cũ mặc định là TM/CK; luồng danh sách tiền của Paris Nhơn sẽ
+// truyền CK hoặc TM khi tạo phiếu và bước phát hành vẫn dùng TM/CK.
 assert.match(source, /const INVOICE_PAYMENT_METHOD = "TM\/CK";/);
+assert.match(source, /const CREATION_PAYMENT_METHODS = new Set\(\["CK", "TM", INVOICE_PAYMENT_METHOD\]\);/);
+assert.match(source, /function invoiceCreationPaymentMethod\(expected\)/);
 assert.match(source, /const DEFAULT_INVOICE_ADDRESS = "Kh\\u00e1ch kh\\u00f4ng cung c\\u1ea5p th\\u00f4ng tin";/,
   "Pháº£i khai bÃ¡o Ä‘á»‹a chá»‰ máº·c Ä‘á»‹nh cho hÃ³a Ä‘Æ¡n");
 assert.strictEqual(
@@ -17,8 +19,8 @@ assert.strictEqual(
 
 // Hằng số phải được khai báo TRƯỚC mọi chỗ dùng (const không được hoisted).
 const declaration = source.indexOf("const INVOICE_PAYMENT_METHOD");
-const uses = [...source.matchAll(/PHUONGTHUCTT: INVOICE_PAYMENT_METHOD/g)].map(match => match.index);
-assert.strictEqual(uses.length, 2, "Phải đặt PHUONGTHUCTT ở cả 2 luồng lưu");
+const uses = [...source.matchAll(/PHUONGTHUCTT: paymentMethod/g)].map(match => match.index);
+assert.strictEqual(uses.length, 3, "Phải đặt PHUONGTHUCTT ở luồng sửa và hai luồng tạo");
 for (const use of uses) {
   assert(use > declaration, "INVOICE_PAYMENT_METHOD phải khai báo trước khi dùng");
 }
@@ -31,8 +33,10 @@ assert(!/PHUONGTHUCTT: "TM"/.test(source), 'Vẫn còn PHUONGTHUCTT: "TM" bị h
 const buildPayload = source.slice(
   source.indexOf("function buildCurrentSavePayload"),
   source.indexOf("function verifySaveResponse"));
-assert.match(buildPayload, /PHUONGTHUCTT: INVOICE_PAYMENT_METHOD/,
-  "Luồng sửa phiếu phải ghi đè PHUONGTHUCTT");
+assert.match(buildPayload, /PHUONGTHUCTT: paymentMethod/,
+  "Luồng sửa phiếu phải ghi đè PHUONGTHUCTT theo phương thức nguồn");
+assert.match(buildPayload, /const paymentMethod = invoiceCreationPaymentMethod\(expected\)/,
+  "Luồng sửa phiếu phải chuẩn hóa phương thức thanh toán");
 assert.match(buildPayload, /expectsPaymentMethod: true/,
   "Payload do extension dựng phải bật kiểm tra phương thức thanh toán");
 assert.match(buildPayload, /TIENGIOPHONGCUOI: hour/,
@@ -51,8 +55,9 @@ assert.match(validator, /expected\?\.expectsPaymentMethod &&/,
 
 // Chạy thử chính đoạn kiểm tra đó.
 const check = new Function("fields", "expected", "INVOICE_PAYMENT_METHOD", `
+  const method = String(expected?.paymentMethod || INVOICE_PAYMENT_METHOD);
   if (expected?.expectsPaymentMethod &&
-      String(fields.PHUONGTHUCTT || "") !== INVOICE_PAYMENT_METHOD) {
+      String(fields.PHUONGTHUCTT || "") !== method) {
     throw new Error("sai phuong thuc");
   }
   return "ok";
@@ -60,6 +65,8 @@ const check = new Function("fields", "expected", "INVOICE_PAYMENT_METHOD", `
 assert.strictEqual(check({ PHUONGTHUCTT: "TM/CK" }, { expectsPaymentMethod: true }, "TM/CK"), "ok");
 assert.throws(() => check({ PHUONGTHUCTT: "TM" }, { expectsPaymentMethod: true }, "TM/CK"), /sai phuong thuc/);
 assert.throws(() => check({}, { expectsPaymentMethod: true }, "TM/CK"), /sai phuong thuc/);
+assert.strictEqual(check({ PHUONGTHUCTT: "CK" }, { expectsPaymentMethod: true, paymentMethod: "CK" }, "TM/CK"), "ok");
+assert.throws(() => check({ PHUONGTHUCTT: "TM/CK" }, { expectsPaymentMethod: true, paymentMethod: "CK" }, "TM/CK"), /sai phuong thuc/);
 // Payload của website không bị chặn.
 assert.strictEqual(check({ PHUONGTHUCTT: "TM" }, {}, "TM/CK"), "ok");
 

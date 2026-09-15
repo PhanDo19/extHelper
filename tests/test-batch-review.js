@@ -207,6 +207,47 @@ if (sandbox.newInvoicePlanValidationError(smallValidatedPlan, { credit: 300062 }
   throw new Error("Phương án 2 bia dưới 500.000đ không được bị chặn bởi sàn giờ 30 phút.");
 }
 
+// Chỉ phiếu MỚI của Paris Nhơn từ 5 triệu mới dùng sàn Tiền giờ 1,5 triệu;
+// phiếu cũ và các mức thấp hơn vẫn giữ mốc 30/50 phút thông thường.
+const nhonHourSandbox = { pageTenantSlug: "parisnhon" };
+vm.createContext(nhonHourSandbox);
+vm.runInContext(
+  `${extractConst("MAX_HOUR_BASE_ADJUSTMENT_RATIO")}; ` +
+  `${extractConst("MAX_HOUR_PRETAX_RATIO")}; ` +
+  `${extractConst("PARIS_NHON_LARGE_INVOICE_THRESHOLD")}; ` +
+  `${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
+  `${extractFunction("hourPlanningBounds")}; ` +
+  "this.hourPlanningBounds = hourPlanningBounds;",
+  nhonHourSandbox
+);
+const nhonLargeBounds = nhonHourSandbox.hourPlanningBounds(
+  { newInvoicePlanning: true },
+  { hourlyRate: 600000, hourStep: 6000 },
+  7457000,
+  6779091
+);
+if (nhonLargeBounds.baseHour !== 1500000 || nhonLargeBounds.minHourAmount !== 1500000) {
+  throw new Error("Phiếu mới Paris Nhơn từ 5 triệu phải áp sàn Tiền giờ 1.500.000đ.");
+}
+const nhonBelowThreshold = nhonHourSandbox.hourPlanningBounds(
+  { newInvoicePlanning: true },
+  { hourlyRate: 600000, hourStep: 6000 },
+  4999999,
+  4545454
+);
+if (nhonBelowThreshold.baseHour !== 500000) {
+  throw new Error("Phiếu mới Paris Nhơn dưới 5 triệu phải giữ sàn Tiền giờ 500.000đ.");
+}
+const nhonExistingBounds = nhonHourSandbox.hourPlanningBounds(
+  { newInvoicePlanning: false, currentHour: 0 },
+  { hourlyRate: 600000, hourStep: 6000 },
+  7457000,
+  6779091
+);
+if (nhonExistingBounds.baseHour !== 500000) {
+  throw new Error("Phiếu đã có của Paris Nhơn không được áp sàn phiếu mới 1.500.000đ.");
+}
+
 const hourSlotSandbox = {};
 vm.createContext(hourSlotSandbox);
 vm.runInContext(
@@ -391,6 +432,46 @@ const mandatoryFixture = [
   { webCode: "1100019", webName: "Bia Tiger Crystal", webUnit: "chai", webPrice: 45000, availableQty: 20 },
   { webCode: "1000031", webName: "Khăn ướt", webUnit: "Chiếc", webPrice: 5000, availableQty: 100 }
 ];
+
+// A rotating priority is optional. If its requested quantity exceeds the
+// product's per-invoice limit and empties the DP, retry once with required
+// rules only instead of failing an otherwise valid invoice.
+const rotateRetryCalls = [];
+const rotatingFallbackBox = {
+  InvoiceTargetSolver: solver,
+  priorityRules: [],
+  pageTenantSlug: "pariskimgiang",
+  inferHourPricing: () => ({ hourlyRate: 600000, hourStep: 6000 }),
+  buildBatchCandidates: (_inventory, _target, _transaction, _usage, options) => {
+    rotateRetryCalls.push(options || {});
+    const exactCandidate = { code: "GOOD", name: "Hàng hợp lệ", price: 550000, qty: 0, maxQty: 1 };
+    return options?.includeRotatingRule === false
+      ? [exactCandidate]
+      : [{ code: "ROTATE", name: "Ưu tiên luân phiên", price: 90000, qty: 0, minQty: 4, maxQty: 3 }, exactCandidate];
+  },
+  formatMoney: value => String(Number(value) || 0),
+  recommendCheckOut: () => "01/07/2026 18:00"
+};
+vm.createContext(rotatingFallbackBox);
+vm.runInContext(batchPlanDeps, rotatingFallbackBox);
+const rotatingFallbackPlan = rotatingFallbackBox.calculateBatchPlan({
+  ready: true,
+  newInvoicePlanning: true,
+  invoiceDateKey: "2026-07-01",
+  currentHour: 0,
+  currentGrand: 0,
+  taxRate: 10
+}, {
+  id: "rotate-fallback",
+  transactionDate: "2026-07-01",
+  credit: 1004000
+}, mandatoryFixture);
+if (rotatingFallbackPlan.status !== "ready" || !rotatingFallbackPlan.rotatingPriorityRelaxed) {
+  throw new Error(`Rule luân phiên không ghép được phải tự nới và tính lại: ${rotatingFallbackPlan.reason || ""}`);
+}
+if (rotateRetryCalls.length !== 2 || rotateRetryCalls[1].includeRotatingRule !== false) {
+  throw new Error("Solver phải thử đúng một lần nữa với các rule bắt buộc duy nhất.");
+}
 
 const residualPlan = planBox.calculateBatchPlan({
   ready: true,
@@ -920,6 +1001,18 @@ if (fruitCandidate?.minQty !== 1 || fruitCandidate?.maxQty !== 1) {
 }
 if (beerCandidate?.minQty !== 1 || beerCandidate?.maxQty !== 4) {
   throw new Error("Rule bia bắt buộc phải giới hạn từ một đến bốn chai.");
+}
+const requiredOnlyRuleCandidates = ruleBox.buildBatchCandidates([
+  { webCode: "1500007", webName: "Hoa quả to", webUnit: "đĩa", webPrice: 400000, availableQty: 1 },
+  { webCode: "1100019", webName: "Bia Tiger Crystal", webUnit: "chai", webPrice: 55000, availableQty: 20 }
+], 1500000, { id: "tx-rule-fallback", transactionDate: "2026-06-30", credit: 1500000 }, new Map(), {
+  includeRotatingRule: false
+});
+if (requiredOnlyRuleCandidates.find(item => item.code === "1500007")?.minQty !== 0) {
+  throw new Error("Lượt tính dự phòng phải bỏ sàn số lượng của rule luân phiên.");
+}
+if (requiredOnlyRuleCandidates.find(item => item.code === "1100019")?.minQty !== 1) {
+  throw new Error("Lượt tính dự phòng vẫn phải giữ rule bắt buộc.");
 }
 
 // --- Nhánh already_issued / needs_new_invoice trong buildBatchReview ---

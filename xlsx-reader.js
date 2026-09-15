@@ -118,6 +118,102 @@
     return parseStockRows(await readFirstSheet(file));
   }
 
+  function parseAmount(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+    const text = String(value == null ? "" : value).trim()
+      .replace(/[₫đ]/gi, "")
+      .replace(/\s/g, "");
+    if (!text) return 0;
+    // Excel exports commonly use either 3,000,000 or 3.000.000. Keep a
+    // decimal point only when the separators do not look like thousands.
+    const normalized = /^-?\d{1,3}([.,]\d{3})+$/.test(text)
+      ? text.replace(/[.,]/g, "")
+      : text.replace(/,/g, "");
+    const amount = Number(normalized);
+    return Number.isFinite(amount) ? amount : 0;
+  }
+
+  function periodDateKey(day, options = {}) {
+    const year = Number(options.year);
+    const month = Number(options.month);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100 ||
+        !Number.isInteger(month) || month < 1 || month > 12) {
+      throw new Error("Phải chọn tháng và năm hợp lệ trước khi nhập danh sách số tiền.");
+    }
+    const raw = String(day == null ? "" : day).trim();
+    const numericDay = typeof day === "number" && Number.isFinite(day)
+      ? day
+      : (/^\d{1,2}$/.test(raw) ? Number(raw) : Number(raw.match(/(?:^|[-/])(\d{1,2})(?:$|\D)/)?.[1] || 0));
+    if (!Number.isInteger(numericDay) || numericDay < 1 || numericDay > 31) return "";
+    const date = new Date(year, month - 1, numericDay);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== numericDay) return "";
+    return `${year}-${String(month).padStart(2, "0")}-${String(numericDay).padStart(2, "0")}`;
+  }
+
+  function parseInvoiceAmountRows(rows, options = {}) {
+    const headerIndex = rows.findIndex(row => {
+      const headers = Array.from(row || [], normalizedHeader);
+      return headers.includes("ngay hoa don") && headers.includes("hinh thuc tt");
+    });
+    if (headerIndex < 0) throw new Error("Không tìm thấy cột Ngày hóa đơn/Hình thức TT.");
+    const headers = Array.from(rows[headerIndex] || [], normalizedHeader);
+    const subHeaders = Array.from(rows[headerIndex + 1] || [], normalizedHeader);
+    const dateIndex = headers.indexOf("ngay hoa don");
+    const paymentIndex = headers.indexOf("hinh thuc tt");
+    const revenueIndex = headers.findIndex(value => value === "chia lai dt" || value.startsWith("chia lai dt "));
+    const paymentColumns = {
+      CK: subHeaders.findIndex((value, index) => index >= paymentIndex && value === "ck"),
+      TM: subHeaders.findIndex((value, index) => index >= paymentIndex && value === "tm")
+    };
+    const revenueColumns = {
+      CK: revenueIndex >= 0 ? subHeaders.findIndex((value, index) => index >= revenueIndex && value === "ck") : -1,
+      TM: revenueIndex >= 0 ? subHeaders.findIndex((value, index) => index >= revenueIndex && value === "tm") : -1
+    };
+    if (dateIndex < 0 || paymentColumns.CK < 0 || paymentColumns.TM < 0) {
+      throw new Error("Thiếu cột CK/TM trong phần Hình thức TT.");
+    }
+    const result = [];
+    for (let index = headerIndex + 2; index < rows.length; index += 1) {
+      const row = rows[index] || [];
+      const dateKey = periodDateKey(row[dateIndex], options);
+      if (!dateKey) continue;
+      for (const method of ["CK", "TM"]) {
+        const parsedGrandTotal = parseAmount(row[paymentColumns[method]]);
+        if (!(parsedGrandTotal > 0)) continue;
+        const grandTotalRounded = Math.round(parsedGrandTotal);
+        // Excel stores many calculated integer amounts with binary floating
+        // noise (for example 440000.00000000006). Only a material currency
+        // fraction should require accountant confirmation; tiny IEEE-754
+        // residue is normalized back to the integer shown in the workbook.
+        const amountNeedsReview = Math.abs(parsedGrandTotal - grandTotalRounded) > 0.001;
+        const grandTotal = amountNeedsReview ? parsedGrandTotal : grandTotalRounded;
+        const netTotal = revenueColumns[method] >= 0 ? parseAmount(row[revenueColumns[method]]) : 0;
+        result.push({
+          id: `amount:${dateKey}:${grandTotal}:${method}:${index + 1}`,
+          sourceType: "invoice_amount",
+          sourceRow: index + 1,
+          dateKey,
+          transactionDate: dateKey,
+          grandTotal,
+          grandTotalRounded,
+          netTotal,
+          paymentMethod: method,
+          amountNeedsReview,
+          // Keep the source row so two legitimate invoices with the same day,
+          // amount and payment method are not collapsed into one transaction.
+          // Re-importing the same workbook remains idempotent because the row
+          // number is stable for that source file.
+          sourceKey: `${dateKey}|${grandTotal}|${method}|row:${index + 1}`
+        });
+      }
+    }
+    return result;
+  }
+
+  async function parseInvoiceAmountWorkbook(file, options = {}) {
+    return parseInvoiceAmountRows(await readFirstSheet(file), options);
+  }
+
   async function parseMappingWorkbook(file) {
     const files = await unzip(await file.arrayBuffer());
     const sharedXml = files.get("xl/sharedStrings.xml");
@@ -277,5 +373,9 @@
     return parseBankRows(await readFirstSheet(file), options);
   }
 
-  root.InvoiceXlsxReader = { parseStockRows, parseStockWorkbook, parseMappingWorkbook, parseWebCatalogWorkbook, parseBankStatementWorkbook, parseBankRows, dateKey };
+  root.InvoiceXlsxReader = {
+    parseStockRows, parseStockWorkbook, parseMappingWorkbook, parseWebCatalogWorkbook,
+    parseBankStatementWorkbook, parseBankRows, parseInvoiceAmountRows, parseInvoiceAmountWorkbook,
+    dateKey
+  };
 })(typeof globalThis !== "undefined" ? globalThis : this);

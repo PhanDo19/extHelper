@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.27.0 (2026-09-15)
+
+- Riêng Paris Nhơn: nhập danh sách số tiền CK/TM từ `inputInvoice.xlsx` theo kỳ tháng/năm.
+- Khi tạo/lưu phiếu, gửi `PHUONGTHUCTT` đúng `CK` hoặc `TM`; các cơ sở khác giữ `TM/CK`.
+- Chuẩn hóa sai số thập phân do Excel, để 434/435 dòng vào luồng ngay và chỉ giữ dòng `241.950,5đ` ở trạng thái cần xác nhận.
+- Đưa nút nhập danh sách số tiền ra thẳng màn Giao dịch ngân hàng để tránh chọn nhầm nút nhập sao kê.
+- Khi đã có sao kê đang chờ xử lý, hỏi xác nhận và thay thế phần đang chờ bằng danh sách số tiền; các phiếu đã lưu/đối soát vẫn giữ.
+- Phiếu nhỏ dưới 500.000đ ưu tiên mã bia có giá thấp nhất để còn được Tiền giờ (không bị chọn nhầm bia đắt làm Tiền giờ = 0).
+- Batch Review không gán lại phiếu khi website timeout/lỗi đọc; phiếu ứng viên đã thử được chặn trong batch để tránh nhiều giao dịch cùng báo một số phiếu.
+- Paris Nhơn: phiếu mới từ 5.000.000đ áp sàn Tiền giờ 1.500.000đ để giảm số dòng hàng giá thấp; các cơ sở và phiếu đã có giữ nguyên sàn cũ.
+
 ## 1.26.0 (2026-09-11)
 
 - Đặt `Giá bán kho` và `Giá bán web` cạnh nhau trong sheet `Ánh xạ` để đối chiếu nhanh.

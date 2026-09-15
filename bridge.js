@@ -1751,6 +1751,25 @@
   // Phieu do extension lap deu bat nguon tu giao dich chuyen khoan trong sao ke,
   // nen phuong thuc thanh toan ghi la TM/CK thay vi TM.
   const INVOICE_PAYMENT_METHOD = "TM/CK";
+  const CREATION_PAYMENT_METHODS = new Set(["CK", "TM", INVOICE_PAYMENT_METHOD]);
+  function activeTenantSlug(expected) {
+    const currentPage = String(location.pathname.split("/").filter(Boolean)[0] || "").trim().toLowerCase();
+    if (currentPage) return currentPage;
+    return String(expected?.tenantSlug || "").trim().toLowerCase();
+  }
+  function invoiceCreationPaymentMethod(expected) {
+    const requested = String(expected?.paymentMethod || "").trim().toUpperCase();
+    if (!requested) return INVOICE_PAYMENT_METHOD;
+    if (!CREATION_PAYMENT_METHODS.has(requested)) {
+      throw new Error(`Phuong thuc thanh toan khi tao phieu khong hop le: ${requested}.`);
+    }
+    // CK/TM is the accountant amount-list rule for Paris Nhon only. Other
+    // branches keep the website/legacy TM/CK creation behavior.
+    if (requested !== INVOICE_PAYMENT_METHOD && activeTenantSlug(expected) !== "parisnhon") {
+      throw new Error("Phuong thuc CK/TM khi tao phieu chi duoc ap dung cho Paris Nhon.");
+    }
+    return requested;
+  }
   const DEFAULT_INVOICE_BUYER = "Kh\u00e1ch l\u1ebb - Kh\u00f4ng l\u1ea5y h\u00f3a \u0111\u01a1n";
   const DEFAULT_INVOICE_ADDRESS = "Kh\u00e1ch kh\u00f4ng cung c\u1ea5p th\u00f4ng tin";
   const SALES_TABLE_ID = "d56b4b85-68c8-44c1-947d-9f3899e55a7c";
@@ -2178,9 +2197,10 @@
     }
     // Chi kiem tra voi payload do extension tu dung. Payload bat duoc tu nut Luu
     // cua website la do website tao nen giu nguyen phuong thuc cua no.
+    const expectedPaymentMethod = invoiceCreationPaymentMethod(expected);
     if (expected?.expectsPaymentMethod &&
-        String(fields.PHUONGTHUCTT || "") !== INVOICE_PAYMENT_METHOD) {
-      throw new Error(`Phuong thuc thanh toan trong request la "${fields.PHUONGTHUCTT || "trong"}", phai la "${INVOICE_PAYMENT_METHOD}".`);
+        String(fields.PHUONGTHUCTT || "") !== expectedPaymentMethod) {
+      throw new Error(`Phuong thuc thanh toan trong request la "${fields.PHUONGTHUCTT || "trong"}", phai la "${expectedPaymentMethod}".`);
     }
 
     const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey);
@@ -2249,6 +2269,7 @@
     const tax = Math.round(Number(expected?.targetTax) || valueOf("numTIENTHUE"));
     const checkIn = parseDateTime(expected?.checkIn);
     const checkOut = parseDateTime(expected?.checkOut);
+    const paymentMethod = invoiceCreationPaymentMethod(expected);
     const invoiceDateKey = normalizeDateKey(expected?.invoiceDateKey) || localDateKey(checkIn);
     if ((invoiceDateKey || expected?.requiresFreshDraft) && (!invoiceDateKey || !checkIn || !checkOut || checkOut <= checkIn)) {
       throw new Error("Phuong an thieu ngay hoa don hoac Gio vao/Ra hop le; khong the luu va doi soat.");
@@ -2272,7 +2293,7 @@
       TIENTHANHTOAN: grand,
       TRALAI: 0,
       // Phieu tu phuong an deu la khach chuyen khoan roi doi soat qua sao ke.
-      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD,
+      PHUONGTHUCTT: paymentMethod,
       NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
       DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS
     };
@@ -2333,7 +2354,8 @@
       targetHour: hour,
       targetTax: tax,
       // Payload nay do extension tu dung nen bat buoc dung PHUONGTHUCTT.
-      expectsPaymentMethod: true
+      expectsPaymentMethod: true,
+      paymentMethod
     });
     return { payload, verified };
   }
@@ -2665,6 +2687,7 @@
 
   async function createAndPayFreshInvoiceViaApiLegacy(expected) {
     const formData = currentFormData({ allowBlankRecordId: true });
+    const paymentMethod = invoiceCreationPaymentMethod(expected);
     if (isGuid(formDataRecordId(formData))) {
       throw new Error("Form hien tai da co ID; khong duoc dung flow tao phieu moi hai buoc.");
     }
@@ -2707,7 +2730,7 @@
       TIENGIOPHONGCUOI: hour,
       TIENTHUE: tax,
       TONGCONG: grand,
-      PHUONGTHUCTT: String(INVOICE_PAYMENT_METHOD),
+      PHUONGTHUCTT: paymentMethod,
       NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
       DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS,
       SOHD: "",
@@ -2811,6 +2834,7 @@
   // live action below uses the website's two-step session/payment protocol.
   async function createAndPayFreshInvoiceViaApiOneRequest(expected) {
     const formData = currentFormData({ allowBlankRecordId: true });
+    const paymentMethod = invoiceCreationPaymentMethod(expected);
     if (isGuid(formDataRecordId(formData))) {
       throw new Error("Form hien tai da co ID; khong duoc dung flow tao phieu moi.");
     }
@@ -2854,7 +2878,7 @@
       TIENGIOPHONGCUOI: hour,
       TIENTHUE: tax,
       TONGCONG: grand,
-      PHUONGTHUCTT: INVOICE_PAYMENT_METHOD,
+      PHUONGTHUCTT: paymentMethod,
       NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
       DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS,
       SOHD: "",

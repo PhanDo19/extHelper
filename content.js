@@ -390,9 +390,18 @@
       ? Math.max(0, Math.floor(preTaxForCap * MAX_HOUR_PRETAX_RATIO))
       : 0;
     const nominalMinimumHour = grand > 1000000 ? 500000 : 300000;
+    // Paris Nhơn groups large new invoices into a longer room session so the
+    // item portion does not need an unnecessarily large number of low-priced
+    // lines. Existing invoices and the other tenants keep the normal 30/50
+    // minute floor.
+    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
+    const tenantMinimumHour = currentTenantSlug === "parisnhon" &&
+      plan.requiresNewInvoice && grand >= PARIS_NHON_LARGE_INVOICE_THRESHOLD
+      ? PARIS_NHON_LARGE_INVOICE_MIN_HOUR
+      : nominalMinimumHour;
     const minimumHour = plan.specialRule === "under-500k-two-beers"
       ? 0
-      : (hourCap > 0 ? Math.min(nominalMinimumHour, hourCap) : nominalMinimumHour);
+      : (hourCap > 0 ? Math.min(tenantMinimumHour, hourCap) : tenantMinimumHour);
     if (hour <= 0 || hourFromTime <= 0 || hourFromTime % 6000 !== 0) {
       return "Giờ vào/ra chưa sinh được tiền giờ theo đúng bước 6.000đ của website.";
     }
@@ -485,7 +494,9 @@
       invoiceDateKey: transaction.transactionDate,
       statementClientTime: transaction.requestedAt || "",
       checkIn: plan.checkIn,
-      checkOut: plan.checkOut
+      checkOut: plan.checkOut,
+      paymentMethod: transaction.paymentMethod || "",
+      tenantSlug: pageTenantSlug
     };
     // Always trace extension-generated DoSave calls. This is independent from
     // the manual "Bắt API" button and captures both success and failure.
@@ -676,7 +687,9 @@
       invoiceDateKey: transaction.transactionDate,
       checkIn: plan.checkIn,
       checkOut: plan.checkOut,
-      requiresFreshDraft: true
+      requiresFreshDraft: true,
+      paymentMethod: transaction.paymentMethod || "",
+      tenantSlug: pageTenantSlug
     });
     if (!saved?.saved) throw new Error("Website chưa xác nhận lưu phiếu mới qua API.");
     pendingNewInvoice.appliedAt = new Date().toISOString();
@@ -1546,6 +1559,7 @@
             <details><summary>Công cụ dữ liệu nâng cao</summary><div class="it-advanced-actions">
               <button id="it-import-web" type="button">Cập nhật danh mục web (.xlsx)</button>
               <button id="it-import-statement" type="button">Nhập nhanh sao kê (.xlsx)</button>
+              ${pageTenantSlug === "parisnhon" ? '<label class="it-amount-period">Kỳ số tiền <input id="it-amount-period" type="month"></label><button id="it-import-invoice-amount" type="button">Nhập danh sách số tiền CK/TM (.xlsx)</button>' : ""}
             </div></details>
             <details class="it-help-box"><summary>Giải thích các thuật ngữ</summary><dl><dt>Tồn kho</dt><dd>Số lượng hàng còn có thể đưa vào hóa đơn.</dd><dt>Ánh xạ</dt><dd>Ghép một mặt hàng trong kho với đúng mặt hàng trên website.</dd><dt>Batch Review</dt><dd>Màn hình xem trước nhiều hóa đơn trước khi lưu.</dd><dt>Đối soát</dt><dd>Kiểm tra hóa đơn đã lưu khớp đúng số tiền sao kê.</dd></dl></details>
           </div>
@@ -1556,6 +1570,7 @@
           <input id="it-stock-file" type="file" accept=".xlsx" hidden>
           <input id="it-mapping-file" type="file" accept=".xlsx,.json,application/json" hidden>
           <input id="it-statement-file" type="file" accept=".xlsx" hidden>
+          <input id="it-invoice-amount-file" type="file" accept=".xlsx" hidden>
           <input id="it-state-file" type="file" accept=".json,application/json" hidden>
         </div>
         <section id="it-stock-admin" hidden>
@@ -1704,6 +1719,8 @@
     root.querySelector("#it-mapping-file").addEventListener("change", importMappingFile);
     root.querySelector("#it-import-statement").addEventListener("click", () => root.querySelector("#it-statement-file").click());
     root.querySelector("#it-statement-file").addEventListener("change", importStatementFile);
+    root.querySelector("#it-import-invoice-amount")?.addEventListener("click", () => root.querySelector("#it-invoice-amount-file").click());
+    root.querySelector("#it-invoice-amount-file")?.addEventListener("change", importInvoiceAmountFile);
     root.querySelector("#it-import-state").addEventListener("click", () => root.querySelector("#it-state-file").click());
     root.querySelector("#it-state-file").addEventListener("change", previewStockStateFile);
     root.querySelector("#it-export-state").addEventListener("click", exportStockState);
@@ -2340,6 +2357,116 @@
       setStatus(`Đã nhập ${items.length} mã web; cập nhật ${report.updated} ánh xạ, ${report.missing} mã cần duyệt lại.`, report.missing ? "warn" : "ok");
     } catch (error) {
       setStatus(`Không đọc được data.xlsx: ${error.message}`, "error");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function invoiceAmountSourceKey(transaction) {
+    if (String(transaction?.sourceKey || "").trim()) return String(transaction.sourceKey).trim();
+    const date = String(transaction?.transactionDate || "");
+    const amount = Number(transaction?.sourceGrandTotal ?? transaction?.credit ?? 0);
+    const method = String(transaction?.paymentMethod || "").trim().toUpperCase();
+    const row = Number(transaction?.sourceRow) || 0;
+    return `${date}|${amount}|${method}${row ? `|row:${row}` : ""}`;
+  }
+
+  async function importInvoiceAmountFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      if (pageTenantSlug !== "parisnhon") throw new Error("Danh sách số tiền hiện chỉ dùng cho Paris Nhơn.");
+      const period = String(
+        document.getElementById("it-statement-amount-period")?.value ||
+        document.getElementById("it-amount-period")?.value ||
+        ""
+      );
+      const match = period.match(/^(\d{4})-(\d{2})$/);
+      if (!match) throw new Error("Hãy chọn kỳ tháng/năm trước khi nhập danh sách số tiền.");
+      setStatus("Đang đọc danh sách số tiền CK/TM…", "warn");
+      const parsed = await InvoiceXlsxReader.parseInvoiceAmountWorkbook(file, {
+        year: Number(match[1]), month: Number(match[2])
+      });
+      if (!parsed.length) throw new Error("File không có dòng CK/TM có số tiền hợp lệ.");
+      const existing = [...(statementDataset.transactions || [])];
+      const protectedStatuses = new Set(["planned", "batch_ready", "done", "already_issued"]);
+      const openExisting = existing.filter(item => !protectedStatuses.has(String(item.status || "")));
+      const sameAmountSource = statementDataset.sourceType === "invoice_amount" &&
+        String(statementDataset.source || "") === file.name;
+      let baseTransactions = existing;
+      let replacedOpenCount = 0;
+      if (openExisting.length && !sameAmountSource) {
+        const openTotal = openExisting.reduce((sum, item) => sum + Number(item.credit || 0), 0);
+        const replaceConfirmed = window.confirm(
+          `Đang có ${openExisting.length} giao dịch chờ xử lý (${formatMoney(openTotal)}đ).\n\n` +
+          `Danh sách ${file.name} có ${parsed.length} dòng. Nhấn OK để thay thế các giao dịch đang chờ ` +
+          "bằng danh sách số tiền này. Phiếu đã lưu/đối soát vẫn được giữ lại."
+        );
+        if (!replaceConfirmed) {
+          setStatus("Đã hủy nhập danh sách số tiền; dữ liệu hiện tại không thay đổi.", "warn");
+          return;
+        }
+        baseTransactions = existing.filter(item => protectedStatuses.has(String(item.status || "")));
+        replacedOpenCount = openExisting.length;
+      }
+      const existingKeys = new Set(baseTransactions
+        .filter(item => item.sourceType === "invoice_amount")
+        .map(invoiceAmountSourceKey));
+      const imported = [];
+      const duplicates = [];
+      for (const row of parsed) {
+        if (existingKeys.has(row.sourceKey)) {
+          duplicates.push(row);
+          continue;
+        }
+        existingKeys.add(row.sourceKey);
+        const amount = Number(row.grandTotalRounded || 0);
+        const needsReview = Boolean(row.amountNeedsReview);
+        imported.push({
+          id: row.id,
+          sourceType: "invoice_amount",
+          sourceFile: file.name,
+          sourceRow: row.sourceRow,
+          sourceKey: row.sourceKey,
+          sourceGrandTotal: row.grandTotal,
+          sourceNetTotal: row.netTotal,
+          amountNeedsReview: needsReview,
+          requestedAt: `${row.dateKey} 17:00:00`,
+          transactionDate: row.dateKey,
+          reference: `AMOUNT-${row.sourceRow}`,
+          description: `Danh sách số tiền ${row.paymentMethod} · dòng ${row.sourceRow}`,
+          debit: 0,
+          credit: amount,
+          balance: 0,
+          paymentMethod: row.paymentMethod,
+          status: needsReview ? "review" : "pending",
+          reviewNote: needsReview
+            ? `Số tiền nguồn ${formatMoney(row.grandTotal)}đ có phần lẻ; cần xác nhận làm tròn thành ${formatMoney(amount)}đ trước khi tạo phiếu.`
+            : ""
+        });
+      }
+      statementDataset = {
+        source: file.name,
+        sourceType: "invoice_amount",
+        importedAt: new Date().toISOString(),
+        transactions: [...baseTransactions, ...imported]
+      };
+      await InvoiceMappingStore.saveStatement(statementDataset);
+      issueCoordination = InvoiceIssueCoordination.recordStatement(
+        issueCoordination, pageTenantSlug, statementDataset.transactions, statementDataset.importedAt
+      );
+      await InvoiceMappingStore.saveIssueCoordination(issueCoordination);
+      renderStatementAdmin();
+      setStatementMode(true);
+      setStatus(
+        `Đã nhập ${imported.length} dòng số tiền cho Paris Nhơn` +
+        (replacedOpenCount ? `; đã thay ${replacedOpenCount} giao dịch chờ xử lý.` : "") +
+        (duplicates.length ? `; bỏ qua ${duplicates.length} dòng trùng.` : ".") +
+        (imported.some(item => item.amountNeedsReview) ? " Có dòng cần xác nhận làm tròn, chưa được tạo phiếu." : ""),
+        imported.some(item => item.amountNeedsReview) ? "warn" : "ok"
+      );
+    } catch (error) {
+      setStatus(`Không đọc được danh sách số tiền: ${error.message}`, "error");
     } finally {
       event.target.value = "";
     }
@@ -3829,11 +3956,21 @@
     if (!node) return;
     const statementTransactions = statementDataset.transactions || [];
     const statementTotal = statementTransactions.reduce((sum, item) => sum + Number(item.credit || 0), 0);
+    const statementSourceLabel = statementDataset.sourceType === "invoice_amount" ? "Danh sách số tiền" : "Sao kê";
+    const statementTotalLabel = statementDataset.sourceType === "invoice_amount" ? "Tổng danh sách" : "Tổng tiền sao kê";
     // Không còn hàng sub-tab riêng: menu chuyển bước ở đầu panel đã có sẵn
     // "3 Sao kê" và "5 Phát hành", hai hàng nút cùng chức năng gây rối.
+    const amountPeriod = String(
+      document.getElementById("it-statement-amount-period")?.value ||
+      document.getElementById("it-amount-period")?.value ||
+      ""
+    );
+    const amountImportControls = pageTenantSlug === "parisnhon"
+      ? `<div class="it-statement-source"><label>Kỳ số tiền <input id="it-statement-amount-period" type="month" value="${escapeHtml(amountPeriod)}"></label><button id="it-statement-import-amount-button" type="button" class="primary">Nhập danh sách số tiền CK/TM</button></div>`
+      : "";
     node.innerHTML = `<div id="it-statement-view">
-        <div class="it-statement-toolbar"><div class="it-statement-source"><b>Sao kê: ${escapeHtml(statementDataset.source || "chưa nhập")}</b><button id="it-statement-import-button" type="button" class="primary">Nhập sao kê Excel</button></div>
-        <div class="it-statement-total"><small>Tổng tiền sao kê</small><strong>${formatMoney(statementTotal)} đ</strong><span id="it-statement-visible-total"></span></div>
+        <div class="it-statement-toolbar"><div class="it-statement-source"><b>${statementSourceLabel}: ${escapeHtml(statementDataset.source || "chưa nhập")}</b><button id="it-statement-import-button" type="button" class="primary">Nhập sao kê Excel</button></div>
+        ${amountImportControls}<div class="it-statement-total"><small>${statementTotalLabel}</small><strong>${formatMoney(statementTotal)} đ</strong><span id="it-statement-visible-total"></span></div>
         <select id="it-statement-filter"><option value="open">Chưa xử lý</option><option value="all">Tất cả</option><option value="pending">Chờ xử lý</option><option value="review">Cần kiểm tra</option><option value="done">Đã xử lý</option></select></div>
         <div class="it-table-wrap"><table class="it-statement-table"><thead><tr><th>Ngày GD</th><th>Diễn giải</th><th>Phiếu</th><th>Credit</th><th>Trạng thái</th><th></th></tr></thead><tbody id="it-statement-body"></tbody></table></div>
       </div>
@@ -3841,6 +3978,13 @@
     node.querySelector("#it-statement-filter").addEventListener("change", renderStatementRows);
     node.querySelector("#it-statement-import-button").addEventListener("click", () => {
       document.getElementById("it-statement-file")?.click();
+    });
+    node.querySelector("#it-statement-import-amount-button")?.addEventListener("click", () => {
+      document.getElementById("it-invoice-amount-file")?.click();
+    });
+    node.querySelector("#it-statement-amount-period")?.addEventListener("change", event => {
+      const advancedPeriod = document.getElementById("it-amount-period");
+      if (advancedPeriod) advancedPeriod.value = event.target.value;
     });
     renderStatementRows();
     showStatementSubtab(statementSubtab);
@@ -4882,6 +5026,13 @@
   const SESSION_CANDIDATE_PROBE_TIMEOUT_MS = 5000;
   const SMALL_INVOICE_BEER_LIMIT = 500000;
   const SMALL_INVOICE_BEER_QTY = 2;
+  // Nhơn has many mapped web items in the 25.000–90.000đ range. For a new
+  // invoice from 5 million onward, a 1.500.000đ singing floor keeps the plan
+  // from spreading into an excessive number of low-priced lines. This is
+  // intentionally tenant- and new-invoice-specific; existing forms and the
+  // other branches keep the normal 30/50-minute floor.
+  const PARIS_NHON_LARGE_INVOICE_THRESHOLD = 5000000;
+  const PARIS_NHON_LARGE_INVOICE_MIN_HOUR = 1500000;
 
   function websiteHourAmountForMinutes(durationMinutes, hourlyRate = 600000) {
     const minutes = Math.max(0, Math.round(Number(durationMinutes) || 0));
@@ -4931,8 +5082,13 @@
     // Nếu dùng thẳng số 0 làm nền, goodsTarget sẽ bằng toàn bộ tiền trước VAT;
     // solver ghép tiền hàng ăn hết phần này rồi chốt cuối mới báo "không có Tiền giờ".
     // Với trường hợp đó, dùng mốc 30/50 phút giống phiếu mới ngay từ lúc lập kế hoạch.
+    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
+    const tenantMinimumHour = isNewInvoice && currentTenantSlug === "parisnhon" &&
+      bankGrand >= PARIS_NHON_LARGE_INVOICE_THRESHOLD
+      ? PARIS_NHON_LARGE_INVOICE_MIN_HOUR
+      : 0;
     const nominalBaseHour = isNewInvoice || currentHour <= 0
-      ? minuteBaseHour
+      ? Math.max(minuteBaseHour, tenantMinimumHour)
       : currentHour;
     const baseHour = preTaxCap > 0 ? Math.min(nominalBaseHour, preTaxCap) : nominalBaseHour;
     const adjustmentLimit = Math.max(step, Math.round(baseHour * MAX_HOUR_BASE_ADJUSTMENT_RATIO));
@@ -5116,9 +5272,16 @@
     );
     const seed = `${transaction?.id || ""}|${transaction?.transactionDate || ""}|small-beer|${transaction?.recalculationNonce || 0}`;
     return eligible.sort((a, b) => {
+      // A small invoice has a fixed two-beer rule.  Choose the cheapest
+      // eligible beer first so the remaining pre-VAT amount can still become
+      // Tiền giờ (for example, 143,000đ must leave 30,000đ after two 50,000đ
+      // beers; two 65,000đ beers would incorrectly leave zero).
+      const aPrice = Math.round(Number(a.webPrice) || 0);
+      const bPrice = Math.round(Number(b.webPrice) || 0);
       const aRule = rulePriority.has(String(a.webCode)) ? rulePriority.get(String(a.webCode)) : Number.POSITIVE_INFINITY;
       const bRule = rulePriority.has(String(b.webCode)) ? rulePriority.get(String(b.webCode)) : Number.POSITIVE_INFINITY;
-      return aRule - bRule ||
+      return aPrice - bPrice ||
+        aRule - bRule ||
         Number(productUsage?.get(String(a.webCode)) || 0) - Number(productUsage?.get(String(b.webCode)) || 0) ||
         stableDiversityRank(seed, a.webCode) - stableDiversityRank(seed, b.webCode) ||
         String(a.webCode).localeCompare(String(b.webCode));
@@ -5192,7 +5355,7 @@
     };
   }
 
-  function buildBatchCandidates(inventoryState, target, transaction, productUsage) {
+  function buildBatchCandidates(inventoryState, target, transaction, productUsage, options) {
     const sellableStock = (inventoryState || []).filter(isAutoSellableStock);
     const eligibleRules = priorityRules
       .filter(rule => rule.enabled !== false && target > Number(rule.minTotal || 0) &&
@@ -5201,7 +5364,14 @@
     const rotatingRule = eligibleRules
       .filter(rule => rule.mode !== "required")
       .sort((a, b) => Number(a.priority || 999) - Number(b.priority || 999))[0];
-    const activeRules = rotatingRule ? [...requiredRules, rotatingRule] : requiredRules;
+    // Rule "rotate" is a preference for spreading products across invoices,
+    // not an accounting requirement. The first solve may enforce it, but a
+    // retry must be able to drop only that preference when its per-invoice
+    // quantity conflicts with stock/product limits. Required rules remain.
+    const includeRotatingRule = options?.includeRotatingRule !== false;
+    const activeRules = includeRotatingRule && rotatingRule
+      ? [...requiredRules, rotatingRule]
+      : requiredRules;
     const seed = `${transaction?.id || ""}|${transaction?.transactionDate || ""}|${transaction?.credit || target}|${transaction?.recalculationNonce || 0}`;
     // Mã càng bị bỏ nhiều lần càng bị đẩy ra xa, nên bấm Tính toán lại liên tiếp
     // vẫn ra tổ hợp mới thay vì quay vòng về phương án cũ.
@@ -5341,9 +5511,9 @@
         };
       }
     }
-    const candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage);
+    let candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage);
     const activeLineLimit = maxActiveLines(targets.goodsTarget);
-    const solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, {
+    const solverOptions = {
       maxQty: 20,
       tolerance: 0,
       preTaxTarget: targets.preTaxTarget,
@@ -5367,7 +5537,28 @@
       minGroupCount: minimumGroupCount(targets.goodsTarget),
       preferredLineCount: preferredLineCount(targets.goodsTarget),
       maxActiveLines: activeLineLimit
-    });
+    };
+    let solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, solverOptions);
+    let rotatingPriorityRelaxed = false;
+    if (!solution.items) {
+      const requiredOnlyCandidates = buildBatchCandidates(
+        inventoryState,
+        targetGrand,
+        transaction,
+        productUsage,
+        { includeRotatingRule: false }
+      );
+      const requiredOnlySolution = InvoiceTargetSolver.solveQuantities(
+        requiredOnlyCandidates,
+        targets.goodsTarget,
+        solverOptions
+      );
+      if (requiredOnlySolution.items) {
+        candidates = requiredOnlyCandidates;
+        solution = requiredOnlySolution;
+        rotatingPriorityRelaxed = true;
+      }
+    }
     if (!solution.items) {
       const reachableUpperBound = reachableGoodsUpperBound(candidates, activeLineLimit, 20);
       const capacityExplanation = reachableUpperBound < minGoodsForHourRange
@@ -5444,6 +5635,7 @@
       hourPreTaxCap,
       hourAdjustmentSmall,
       hourWithinPreTaxCap,
+      rotatingPriorityRelaxed,
       hourFromTime,
       hourAdjustment,
       tax: targets.vatTarget,
@@ -5806,11 +5998,12 @@
           ? available.find(item => String(item.invoiceNo) === String(transaction.invoiceNo))
           : null;
         const rankedCandidates = rankInvoiceCandidates(available, transaction.credit, transaction.invoiceNo);
-        let candidate = rankedCandidates[0] || null;
-        const automaticallySelected = !linkedCandidate && available.length > 1 && candidate;
+        const rankedCandidate = rankedCandidates[0] || null;
+        let candidate = rankedCandidate;
+        const automaticallySelected = !linkedCandidate && available.length > 1 && rankedCandidate;
         const automaticSelectionReason = automaticallySelected
-          ? `Tự chọn ${candidate.invoiceNo} gần tiền sao kê nhất trong ${available.length} phiếu cùng ngày ` +
-            `(chênh ${formatMoney(Math.abs(Number(candidate.grandTotal || 0) - Number(transaction.credit || 0)))}đ).`
+          ? `Tự chọn ${rankedCandidate.invoiceNo} gần tiền sao kê nhất trong ${available.length} phiếu cùng ngày ` +
+            `(chênh ${formatMoney(Math.abs(Number(rankedCandidate.grandTotal || 0) - Number(transaction.credit || 0)))}đ).`
           : "";
         if (!candidate) {
           // Không còn phiếu chưa xuất: dò trong các phiếu ĐÃ xuất xem giao dịch đã được lập HĐ khớp tiền chưa.
@@ -5875,11 +6068,21 @@
         let rebasedCandidateScan = null;
         let selectedCandidateScan = null;
         let selectedCandidateLeftOpen = false;
+        let candidateProbeSucceeded = false;
         const candidatesToProbe = rankedCandidates.slice(0, MAX_SESSION_CANDIDATE_PROBES);
+        // Do not fall back to the first list row after every probe fails.  A
+        // timed-out row is not a usable invoice, and reusing it for the next
+        // transaction caused several transactions to report the same invoice
+        // number (for example 01000000150).
+        candidate = null;
         for (let probeIndex = 0; probeIndex < candidatesToProbe.length; probeIndex += 1) {
           const currentCandidate = candidatesToProbe[probeIndex];
           let inspecting = false;
           try {
+            // Reserve every attempted row, including failed probes, so a
+            // later transaction cannot repeatedly select the same unreadable
+            // invoice in this batch.
+            usedInvoiceNos.add(String(currentCandidate.invoiceNo));
             if (summary) {
               summary.textContent =
                 `Đang tính ${index + 1}/${transactions.length}: ${transaction.transactionDate} · ${formatMoney(transaction.credit)}` +
@@ -5897,7 +6100,25 @@
             );
             if (invoiceSessionTouchesTransactionDate(inspectedScan, transaction.transactionDate)) {
               candidate = currentCandidate;
+              candidateProbeSucceeded = true;
               rebasedCandidateScan = null;
+              selectedCandidateScan = inspectedScan;
+              selectedCandidateLeftOpen = true;
+              inspecting = false;
+              break;
+            }
+            // Some older website forms expose a ready scan without any
+            // check-in/check-out fields. Keep the candidate open in that
+            // case; calculateBatchPlan will perform the final date check.
+            // This is different from a timeout/exception, which must never
+            // fall back to the same unreadable row.
+            const hasSessionDate = Boolean(
+              inspectedScan?.checkIn || inspectedScan?.checkOut ||
+              inspectedScan?.invoiceDateKey || inspectedScan?.transactionDate
+            );
+            if (inspectedScan?.ready && !hasSessionDate) {
+              candidate = currentCandidate;
+              candidateProbeSucceeded = true;
               selectedCandidateScan = inspectedScan;
               selectedCandidateLeftOpen = true;
               inspecting = false;
@@ -5907,6 +6128,7 @@
               const rebased = rebaseInvoiceSession(inspectedScan, transaction.transactionDate);
               if (rebased) {
                 candidate = currentCandidate;
+                candidateProbeSucceeded = true;
                 rebasedCandidateScan = rebased;
               }
             }
@@ -5919,6 +6141,19 @@
               await new Promise(resolve => setTimeout(resolve, 120));
             }
           }
+        }
+        if (!candidate || !candidateProbeSucceeded) {
+          const attempted = candidatesToProbe.map(item => String(item.invoiceNo || "")).filter(Boolean);
+          batchPlans.push({
+            transactionId: String(transaction.id),
+            status: "error",
+            transaction,
+            candidates: available,
+            reason: attempted.length
+              ? `Không mở/đọc được các phiếu ứng viên ${attempted.join(", ")}; đã bỏ qua để không gán nhầm phiếu cho giao dịch ${formatMoney(transaction.credit)}đ. Hãy kiểm tra website rồi tính lại.`
+              : "Không có phiếu ứng viên đọc được cho giao dịch này; chưa gán nhầm phiếu.",
+          });
+          continue;
         }
         let opened = selectedCandidateLeftOpen;
         try {
@@ -6580,7 +6815,9 @@
         // gốc và có thể nằm ở một ngày quá khứ khác.
         invoiceDateKey: plan.invoiceDateKey || transaction.transactionDate,
         checkIn: plan.checkIn,
-        checkOut: plan.checkOut
+        checkOut: plan.checkOut,
+        paymentMethod: transaction.paymentMethod || "",
+        tenantSlug: pageTenantSlug
       });
     } catch (error) {
       transaction.status = "batch_ready";
@@ -6885,6 +7122,7 @@
       transactionDate: t.transactionDate,
       credit: Number(t.credit || 0),
       description: t.description || "",
+      paymentMethod: t.paymentMethod || "",
       plan: structuredClone(plan),
       requestedAt: new Date().toISOString()
     };
