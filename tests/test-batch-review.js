@@ -490,7 +490,11 @@ const rotatingFallbackPlan = rotatingFallbackBox.calculateBatchPlan({
 if (rotatingFallbackPlan.status !== "ready" || !rotatingFallbackPlan.rotatingPriorityRelaxed) {
   throw new Error(`Rule luân phiên không ghép được phải tự nới và tính lại: ${rotatingFallbackPlan.reason || ""}`);
 }
-if (rotateRetryCalls.length !== 2 || rotateRetryCalls[1].includeRotatingRule !== false) {
+// calculateBatchPlan còn gọi buildBatchCandidates để đo sức chứa (chọn bội số
+// trần số lượng/HĐ) trước khi giải, nên chỉ đếm lần gọi nới rule luân phiên:
+// phải đúng một lần, và phải là lần cuối cùng (sau lần giải đầy đủ rule).
+const requiredOnlyCalls = rotateRetryCalls.filter(options => options.includeRotatingRule === false);
+if (requiredOnlyCalls.length !== 1 || rotateRetryCalls[rotateRetryCalls.length - 1].includeRotatingRule !== false) {
   throw new Error("Solver phải thử đúng một lần nữa với các rule bắt buộc duy nhất.");
 }
 
@@ -1100,7 +1104,12 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
       checkOut: "20/07/2026 15:46",
       items: [{ code: "A", qty: 1, price: 900000, maxQty: 1 }]
     }),
-    waitForOpenedInvoice: invoiceNo => ({ ready: true, invoiceNo })
+    waitForOpenedInvoice: invoiceNo => ({ ready: true, invoiceNo }),
+    // Chốt chặn context mồ côi và tự tải lại khi quá tải nằm ngoài phạm vi
+    // luồng này: context luôn "sống", không lỗi nào là quá tải.
+    assertRuntimeContext: () => {},
+    isPageOverloadError: () => false,
+    scheduleAutoReloadResume: async () => false
   };
   vm.createContext(box);
   vm.runInContext(`${extractFunction("buildBatchReview")}; this.buildBatchReview = buildBatchReview;`, box);
@@ -1471,7 +1480,8 @@ vm.createContext(realStockBox);
 vm.runInContext(
   `${batchPlanDeps}; ${extractConst("PARIS_NHON_LARGE_INVOICE_THRESHOLD")}; ` +
   `${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
-  `${extractFunction("candidateFromStock")}; ${extractFunction("buildBatchCandidates")};`,
+  `${extractFunction("candidateFromStock")}; ${extractFunction("buildBatchCandidates")}; ` +
+  `${extractFunction("newInvoicePlanValidationError")}; this.newInvoicePlanValidationError = newInvoicePlanValidationError;`,
   realStockBox
 );
 const countByRule = (plan, matcher) => (plan.items || [])
@@ -1527,3 +1537,170 @@ if (plainRealPlan.status !== "ready") {
 if (countByRule(plainRealPlan, realStockBox.isBeerStock) < 3 || countByRule(plainRealPlan, realStockBox.isWetTowelStock) < 2) {
   throw new Error(`Kho thật constraintGroupMax = null vẫn phải ra ≥3 bia + ≥2 khăn: ${plainRealPlan.items.map(item => `${item.name} x${item.qty}`).join(", ")}`);
 }
+
+// --- Hóa đơn rất lớn ở Nhơn: nâng trần số lượng/HĐ theo bội số vừa đủ ---------
+//
+// Sao kê 14.000.000đ: trước VAT 12.727.273đ, trần Tiền giờ 35% = 4.454.545đ nên
+// tiền hàng phải ≥ 8.272.728đ. Với trần mặc định (bia 12 lon, đồ khô 2-4) 20 mã
+// ở mức trần chỉ được ~6,8 triệu → không thể lập. Phải nâng trần vừa đủ, còn
+// phiếu thường (7.457.000đ) giữ nguyên bội số 1.
+if (nhonLargePlan.quantityScale !== 1) {
+  throw new Error(`Phiếu 7.457.000đ còn đủ sức chứa nên phải giữ trần mặc định, nhận ${nhonLargePlan.quantityScale}`);
+}
+const nhonHugePlan = realStockBox.calculateBatchPlan({
+  ready: true, newInvoicePlanning: true, invoiceNo: "", invoiceDateKey: "2026-07-05",
+  currentGoods: 0, currentHour: 0, currentTax: 0, taxRate: 10, currentGrand: 0,
+  checkIn: "05/07/2026 20:00", checkOut: "05/07/2026 20:00", durationMinutes: 1, items: []
+}, { id: "nhon-14000000", transactionDate: "2026-07-05", credit: 14000000 }, nhonInventory, new Map());
+if (nhonHugePlan.status !== "ready") {
+  throw new Error(`Paris Nhơn 14.000.000đ phải lập được phương án bằng cách nâng trần số lượng/HĐ: ${nhonHugePlan.reason || nhonHugePlan.status}`);
+}
+if (!(nhonHugePlan.quantityScale > 1)) throw new Error("Phiếu 14 triệu phải dùng bội số trần > 1.");
+if (nhonHugePlan.goods < 8272728) throw new Error(`Tiền hàng ${nhonHugePlan.goods} phải ≥ 8.272.728đ để Tiền giờ không vượt trần 35%`);
+if (nhonHugePlan.goods + nhonHugePlan.hour + nhonHugePlan.tax !== 14000000) throw new Error("Tổng phải khớp sao kê 14.000.000đ.");
+if (nhonHugePlan.items.length > 20) throw new Error(`Không vượt 20 dòng: ${nhonHugePlan.items.length}`);
+for (const item of nhonHugePlan.items) {
+  if (item.qty > item.maxQty) throw new Error(`${item.name} vượt trần đã nâng: ${item.qty} > ${item.maxQty}`);
+}
+if (countByRule(nhonHugePlan, realStockBox.isBeerStock) < 3 || countByRule(nhonHugePlan, realStockBox.isWetTowelStock) < 2) {
+  throw new Error("Phiếu 14 triệu vẫn phải có ≥3 bia + ≥2 khăn ướt.");
+}
+
+// --- Hoa quả theo NHÓM và luân phiên mã trong lô (kho thật Nhơn) ---------------
+//
+// Ảnh chụp Batch Review 16/09/2026: mọi phiếu đều Tiger + Bưởi da xanh (đĩa nhỏ)
+// + khăn dù kho có 3 loại bia, 4 loại đĩa. Ba nguyên nhân: phiếu nhỏ luôn chọn
+// bia rẻ nhất; rule hoa quả ghim một mã; hình phạt "đã dùng" tuyến tính cộng
+// theo dòng nên tổ hợp ít dòng lặp mã cũ vẫn rẻ hơn tổ hợp nhiều dòng mã mới.
+const FRUIT_CODES = new Set(["0000012", "0000013", "0000047", "0000048"]);
+const nhonFruitDataset = mappingEngineForStock.applyBusinessRules(JSON.parse(JSON.stringify(nhonDataset)), "parisnhon");
+const nhonFruitInventory = mappingEngineForStock.buildInventory(nhonFruitDataset);
+if (nhonFruitInventory.filter(stock => FRUIT_CODES.has(String(stock.webCode))).length !== 4) {
+  throw new Error("Kho Nhơn sau rule nghiệp vụ phải có 4 đĩa hoa quả bán theo suất.");
+}
+const newNhonScan = date => ({
+  ready: true, newInvoicePlanning: true, invoiceNo: "", invoiceDateKey: date,
+  currentGoods: 0, currentHour: 0, currentTax: 0, taxRate: 10, currentGrand: 0,
+  checkIn: "05/07/2026 20:00", checkOut: "05/07/2026 20:00", durationMinutes: 1, items: []
+});
+const fruitItems = plan => (plan.items || []).filter(item => FRUIT_CODES.has(String(item.code)));
+const withFruitPlan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+  { id: "fruit-2m", transactionDate: "2026-07-05", credit: 2000000 }, nhonFruitInventory, new Map());
+if (withFruitPlan.status !== "ready") throw new Error(`Phiếu 2 triệu Nhơn phải lập được: ${withFruitPlan.reason}`);
+if (fruitItems(withFruitPlan).length !== 1 || fruitItems(withFruitPlan)[0].qty !== 1) {
+  throw new Error(`Phiếu Nhơn trên 1 triệu phải có đúng một đĩa hoa quả: ${withFruitPlan.items.map(item => `${item.name} x${item.qty}`).join(", ")}`);
+}
+const bigFruitPlan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+  { id: "fruit-7m", transactionDate: "2026-07-05", credit: 7457000 }, nhonFruitInventory, new Map());
+if (bigFruitPlan.status !== "ready" || fruitItems(bigFruitPlan).length !== 1) {
+  throw new Error(`Phiếu 7.457.000đ vẫn phải có đúng một đĩa hoa quả: ${bigFruitPlan.reason || bigFruitPlan.items.length}`);
+}
+const underMillionPlan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+  { id: "fruit-800k", transactionDate: "2026-07-05", credit: 800000 }, nhonFruitInventory, new Map());
+if (underMillionPlan.status !== "ready") throw new Error(`Phiếu 800.000đ phải lập được: ${underMillionPlan.reason}`);
+
+// Luân phiên: cùng một số tiền lặp lại nhiều lần trong lô phải đổi bia và đổi
+// đĩa hoa quả thay vì ra đúng một bộ mã.
+const accumulateUsage = (usage, plan) => {
+  for (const item of plan.items || []) usage.set(String(item.code), (usage.get(String(item.code)) || 0) + 1);
+  return usage;
+};
+const beerCodes = plan => (plan.items || []).filter(item => realStockBox.isBeerStock({ webName: item.name })).map(item => item.code).sort().join("+");
+const rotationUsage = new Map();
+const rotationPlans = [];
+for (let round = 0; round < 4; round += 1) {
+  const plan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+    { id: `rotate-${round}`, transactionDate: "2026-07-05", credit: 1500000 }, nhonFruitInventory, rotationUsage);
+  if (plan.status !== "ready") throw new Error(`Phiếu luân phiên ${round} phải lập được: ${plan.reason}`);
+  rotationPlans.push(plan);
+  accumulateUsage(rotationUsage, plan);
+}
+if (new Set(rotationPlans.map(plan => fruitItems(plan)[0]?.code)).size < 2) {
+  throw new Error(`Bốn phiếu 1,5 triệu liên tiếp phải đổi loại đĩa hoa quả: ${rotationPlans.map(plan => fruitItems(plan)[0]?.name).join(" | ")}`);
+}
+if (new Set(rotationPlans.map(beerCodes)).size < 2) {
+  throw new Error(`Bốn phiếu 1,5 triệu liên tiếp phải đổi bộ bia: ${rotationPlans.map(beerCodes).join(" | ")}`);
+}
+
+// Phiếu nhỏ dưới 500.000đ: ba loại bia đều "vừa" nên phải luân phiên, không
+// phải lúc nào cũng Tiger.
+const smallUsage = new Map();
+const smallBeers = [];
+for (let round = 0; round < 3; round += 1) {
+  const plan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+    { id: `small-${round}`, transactionDate: "2026-07-05", credit: 393800 }, nhonFruitInventory, smallUsage);
+  if (plan.status !== "ready" || plan.specialRule !== "under-500k-two-beers") throw new Error(`Phiếu nhỏ ${round} phải đi nhánh 2 bia: ${plan.reason}`);
+  smallBeers.push(plan.items[0].code);
+  accumulateUsage(smallUsage, plan);
+}
+if (new Set(smallBeers).size !== 3) {
+  throw new Error(`Ba phiếu nhỏ liên tiếp phải dùng ba loại bia khác nhau: ${smallBeers.join(", ")}`);
+}
+// Phiếu quá nhỏ thì vẫn phải lấy bia rẻ nhất để còn Tiền giờ.
+const tinyPlan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+  { id: "tiny", transactionDate: "2026-07-05", credit: 143000 }, nhonFruitInventory, new Map([["0000045", 5]]));
+if (tinyPlan.status !== "ready" || tinyPlan.items[0].code !== "0000045") {
+  throw new Error(`143.000đ chỉ vừa hai chai Tiger dù Tiger đã dùng nhiều lần: ${tinyPlan.reason || tinyPlan.items[0]?.name}`);
+}
+
+// --- Phương án "Sẵn sàng" phải qua được kiểm tra lúc mở tab worker ---------------
+//
+// Ca thật Nhơn 541.200đ: Batch Review báo sẵn sàng với Tiền giờ 172.000đ trong
+// khi sàn là 172.200đ; tới lúc mở tab worker mới bị "Tiền giờ thấp hơn mức tối
+// thiểu" và Lưu API dừng 0/10 với lý do chung chung. Mọi phương án mới ở nhiều
+// mức tiền phải qua được newInvoicePlanValidationError ngay từ Batch Review.
+// Khoảng 500.000đ - 860.000đ là nơi mốc phút 30/50 bị kẹp xuống bằng trần 35%:
+// sàn = trần nên Tiền giờ chỉ còn một giá trị hợp lệ. Sàn được bỏ ở đúng khoảng
+// này (xem hourPlanningBounds.floorClampedToCap), phần dư dồn vào Tiền giờ.
+const clampedBounds = realStockBox.hourPlanningBounds(
+  { newInvoicePlanning: true, currentHour: 0 }, { hourlyRate: 600000, hourStep: 6000 }, 541200, 492000
+);
+if (!clampedBounds.floorClampedToCap || clampedBounds.minHourAmount !== 0) {
+  throw new Error(`Sàn phải bị bỏ khi mốc phút chạm trần 35%: ${JSON.stringify(clampedBounds)}`);
+}
+if (clampedBounds.maxHourAmount < 172200) {
+  throw new Error("Trần Tiền giờ phải được giữ nguyên khi bỏ sàn.");
+}
+const normalBounds = realStockBox.hourPlanningBounds(
+  { newInvoicePlanning: true, currentHour: 0 }, { hourlyRate: 600000, hourStep: 6000 }, 3000000, 2727273
+);
+if (normalBounds.floorClampedToCap || normalBounds.minHourAmount !== 500000) {
+  throw new Error(`Phiếu đủ lớn phải giữ sàn 50 phút: ${JSON.stringify(normalBounds)}`);
+}
+
+const floorSweep = [541200, 500000, 523800, 600000, 655100, 700000, 777700, 850000, 933800, 999900, 1000000, 1004000, 1200000, 1477000];
+for (const credit of floorSweep) {
+  const transaction = { id: `floor-${credit}`, transactionDate: "2026-07-05", credit };
+  const plan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"), transaction, nhonFruitInventory, new Map());
+  if (plan.status !== "ready") continue;
+  const validation = realStockBox.newInvoicePlanValidationError(plan, transaction);
+  if (validation) {
+    throw new Error(`Phương án ${credit}đ được báo sẵn sàng nhưng bước mở form chặn: ${validation}`);
+  }
+}
+// 541.200đ: sàn đã bị bỏ (chạm trần) nên Tiền giờ chỉ cần > 0 và ≤ trần; phần
+// dư sau tiền hàng dồn hết vào Tiền giờ.
+const floorPlan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+  { id: "floor-541200", transactionDate: "2026-07-05", credit: 541200 }, nhonFruitInventory, new Map());
+if (floorPlan.status !== "ready" || floorPlan.hour <= 0) {
+  throw new Error(`541.200đ phải sẵn sàng và có Tiền giờ: ${floorPlan.reason || floorPlan.hour}`);
+}
+if (floorPlan.goods + floorPlan.hour + floorPlan.tax !== 541200) {
+  throw new Error("Phương án 541.200đ phải khớp tuyệt đối tổng sao kê.");
+}
+const openPosSource = extractFunction("openPosForNewInvoice");
+if (!openPosSource.includes("Phương án đã bị hủy và Batch Review đã tính lại") ||
+    openPosSource.indexOf("Phương án đã bị hủy và Batch Review đã tính lại") < openPosSource.indexOf("opened: false,")) {
+  throw new Error("Phương án bị hủy lúc mở tab worker phải trả lý do thật cho Lưu API, không phải thông báo chung.");
+}
+
+// Mã bán theo suất và mã có trần cứng khai báo riêng không được nhân.
+const scaledCandidates = realStockBox.buildBatchCandidates([
+  { webCode: "1500006", webName: "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", webUnit: "đĩa", webPrice: 350000, availableQty: 1, availabilityMode: "per_invoice", constraintGroup: "fruit_platter", constraintGroupMax: 1 },
+  { webCode: "1000064", webName: "Hạt Mắc Ca (hộp 500g)", webUnit: "Hộp", webPrice: 180000, availableQty: 50, constraintGroup: "", constraintGroupMax: null },
+  { webCode: "0000045", webName: "Bia Tiger lon", webUnit: "Lon", webPrice: 50000, availableQty: 500, constraintGroup: "", constraintGroupMax: null }
+], 14000000, { id: "scale-check", transactionDate: "2026-07-05", credit: 14000000 }, new Map(), { quantityScale: 3 });
+const byCode = code => scaledCandidates.find(item => String(item.code) === code);
+if (byCode("1500006").maxQty !== 1) throw new Error("Đĩa hoa quả bán theo suất phải giữ 1/HĐ dù nâng bội số.");
+if (byCode("1000064").maxQty !== 2) throw new Error("Hộp mắc ca có trần cứng 2 không được nhân.");
+if (byCode("0000045").maxQty !== 36) throw new Error(`Bia phải được nhân theo bội số 3: 12 × 3 = 36, nhận ${byCode("0000045").maxQty}`);

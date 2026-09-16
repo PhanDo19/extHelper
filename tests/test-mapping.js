@@ -44,4 +44,32 @@ assert.equal(reconcileData.mappings[1].status, "review");
 const fruitRules = engine.applyBusinessRules({ mappings: [{ stockCode: "TCTO" }] });
 assert.equal(fruitRules.mappings[0].webPrice, 400000);
 assert.equal(fruitRules.mappings[0].perInvoiceMax, 1);
+assert.equal(fruitRules.mappings.length, 1, "Kim Giang chỉ ghi đè dòng có sẵn, không tự thêm dòng.");
+
+// Nhơn: file kho không có hoa quả nên rule phải TỰ THÊM 4 đĩa bán theo suất,
+// tối đa một đĩa (bất kỳ loại) mỗi hóa đơn; áp lại lần nữa không nhân đôi.
+const nhonFruit = engine.applyBusinessRules({ tenant: "parisnhon", mappings: [{ stockCode: "HH_Heneiken", status: "confirmed", webCode: "0000004" }] });
+const nhonFruitRows = nhonFruit.mappings.filter(row => row.constraintGroup === "fruit_platter");
+assert.equal(nhonFruitRows.length, 4, "Nhơn phải có 4 đĩa hoa quả bán theo suất.");
+assert.deepEqual(nhonFruitRows.map(row => row.webCode).sort(), ["0000012", "0000013", "0000047", "0000048"]);
+for (const row of nhonFruitRows) {
+  assert.equal(row.status, "confirmed");
+  assert.equal(row.availabilityMode, "per_invoice");
+  assert.equal(row.perInvoiceMax, 1);
+  assert.equal(row.constraintGroupMax, 1);
+  assert.ok(row.synthetic, "Dòng tự thêm phải được đánh dấu synthetic.");
+}
+assert.equal(nhonFruit.mappings.find(row => row.webCode === "0000013").webPrice, 450000);
+assert.equal(engine.applyBusinessRules(nhonFruit).mappings.length, 5, "Áp lại rule không được nhân đôi dòng.");
+assert.equal(engine.applyBusinessRules({ mappings: [] }, "parisnhon").mappings.length, 4, "Tham số cơ sở ghi đè dataset.tenant.");
+const nhonInventory = engine.buildInventory(nhonFruit);
+const fruitStock = nhonInventory.find(item => item.webCode === "0000013");
+assert.ok(fruitStock, "Đĩa hoa quả bán theo suất phải vào tồn khả dụng dù tồn kho bằng 0.");
+assert.equal(fruitStock.availableQty, 1);
+assert.equal(fruitStock.availabilityMode, "per_invoice");
+assert.equal(fruitStock.constraintGroupMax, 1);
+// Linh Đàm không có trong bảng: giữ nguyên.
+const linhDam = engine.applyBusinessRules({ tenant: "parislinhdam", mappings: [{ stockCode: "TCTO" }] });
+assert.equal(linhDam.mappings.length, 1);
+assert.equal(linhDam.mappings[0].webPrice, undefined, "Linh Đàm phải tự ánh xạ, không mượn rule cơ sở khác.");
 console.log("mapping-engine: OK");

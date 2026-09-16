@@ -83,24 +83,67 @@
     });
   }
 
-  function applyBusinessRules(dataset) {
-    // Các mã web đặc biệt dưới đây chỉ đúng ở Kim Giang. Linh Đàm (và cơ sở
-    // mới sau này) phải tự ánh xạ theo danh mục web của chính cơ sở đó.
-    if (dataset?.tenant && String(dataset.tenant).toLowerCase() !== "pariskimgiang") return dataset;
-    const rules = {
-      TC: { webCode: "1500006", webName: "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", webUnit: "đĩa", webPrice: 350000 },
-      TCTO: { webCode: "1500007", webName: "HOA QUẢ THẬP CẨM (ĐĨA TO)", webUnit: "đĩa", webPrice: 400000 }
-    };
-    for (const row of dataset?.mappings || []) {
-      const rule = rules[String(row.stockCode)];
-      if (!rule) continue;
+  // Đĩa hoa quả bán theo suất: không có tồn kho, tối đa MỘT đĩa (bất kỳ loại)
+  // trên mỗi hóa đơn. Mỗi cơ sở dùng đúng mã web của mình; cơ sở không có
+  // trong bảng (Linh Đàm) giữ nguyên dữ liệu và tự ánh xạ.
+  //
+  // Kim Giang: dòng TC/TCTO đã có sẵn trong file kho (tồn 0), chỉ ghi đè.
+  // Nhơn: file Kho HG không có hoa quả nên phải TỰ THÊM dòng; nếu không, rule
+  // ưu tiên hoa quả không bao giờ có mã hàng để áp và phiếu không có hoa quả.
+  const FRUIT_PLATTER_RULES = Object.freeze({
+    pariskimgiang: {
+      synthesizeMissing: false,
+      reviewNote: "Ngoại lệ kế toán: tối đa một đĩa hoa quả thập cẩm (nhỏ hoặc to) trên mỗi hóa đơn.",
+      rows: {
+        TC: { webCode: "1500006", webName: "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", webUnit: "đĩa", webPrice: 350000 },
+        TCTO: { webCode: "1500007", webName: "HOA QUẢ THẬP CẨM (ĐĨA TO)", webUnit: "đĩa", webPrice: 400000 }
+      }
+    },
+    parisnhon: {
+      synthesizeMissing: true,
+      reviewNote: "Ngoại lệ kế toán: tối đa một đĩa hoa quả (bất kỳ loại) trên mỗi hóa đơn; bán theo suất, không trừ tồn.",
+      rows: {
+        HQ_THAPCAM: { webCode: "0000013", webName: "Hoa quả thập cẩm", webUnit: "Đĩa", webPrice: 450000, webGroup: "SETUP TẠI PHÒNG" },
+        HQ_BUOI: { webCode: "0000012", webName: "Hoa quả bưởi da xanh", webUnit: "Đĩa", webPrice: 350000, webGroup: "SETUP TẠI PHÒNG" },
+        HQ_NHO: { webCode: "0000047", webName: "Hoa quả Nho", webUnit: "Đĩa", webPrice: 250000, webGroup: "HÀNG HÓA MỞ" },
+        HQ_BUOINHO: { webCode: "0000048", webName: "Hoa quả Bưởi da xanh (đĩa nhỏ)", webUnit: "Đĩa", webPrice: 250000, webGroup: "HÀNG HÓA MỞ" }
+      }
+    }
+  });
+
+  function applyBusinessRules(dataset, tenantSlug) {
+    if (!dataset) return dataset;
+    const tenant = String(tenantSlug || dataset.tenant || "pariskimgiang").toLowerCase();
+    const config = FRUIT_PLATTER_RULES[tenant];
+    if (!config) return dataset;
+    if (!Array.isArray(dataset.mappings)) dataset.mappings = [];
+    for (const [stockCode, rule] of Object.entries(config.rows)) {
+      let row = dataset.mappings.find(item => String(item.stockCode) === stockCode);
+      if (!row) {
+        if (!config.synthesizeMissing) continue;
+        row = {
+          stockCode,
+          stockName: `${rule.webName} (bán theo suất)`,
+          stockUnit: rule.webUnit,
+          stockQty: 0,
+          conversion: 1,
+          availableQty: 0,
+          salePrice: rule.webPrice,
+          webType: "Mặt hàng kiêm vật tư",
+          confidence: 100,
+          confirmedAt: "",
+          suggestions: [],
+          synthetic: true
+        };
+        dataset.mappings.push(row);
+      }
       Object.assign(row, rule, {
         status: "confirmed",
         availabilityMode: "per_invoice",
         perInvoiceMax: 1,
         constraintGroup: "fruit_platter",
         constraintGroupMax: 1,
-        reviewNote: "Ngoại lệ kế toán: tối đa một đĩa hoa quả thập cẩm (nhỏ hoặc to) trên mỗi hóa đơn."
+        reviewNote: config.reviewNote
       });
     }
     return dataset;

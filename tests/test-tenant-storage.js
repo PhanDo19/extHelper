@@ -115,6 +115,11 @@ assert.equal(linhDam.api.currentTenant(), "parislinhdam");
   const kgRules = await makeStore("/pariskimgiang/Form").api.loadPriorityRules();
   assert.equal(kgRules.length, 2, "Chi nhanh mac dinh van giu quy tac san co");
 
+  // Nhon khong gieo rule uu tien: dia hoa qua duoc dat toi thieu theo NHOM
+  // trong content.js de bon loai dia luan phien, khong ghim mot ma.
+  const nhonFresh = await makeStore("/parisnhon/Form").api.loadPriorityRules();
+  assert.deepEqual(nhonFresh, [], "Nhon bat dau voi danh sach rule uu tien rong");
+
   // --- Mapping tách theo cơ sở, kho vật lý dùng chung ---
   const multiTenantStorage = {};
   const kgStock = makeStore("/pariskimgiang/Form", multiTenantStorage);

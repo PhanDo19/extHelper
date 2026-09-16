@@ -50,6 +50,13 @@ Mục tiêu của flow này là giảm thao tác nhưng vẫn giữ nguyên các
     - không commit tồn;
     - lưu response và payload đã làm sạch để người dùng kiểm tra.
 
+## Tự tải lại trang khi website quá tải
+
+- Lô dài (nhiều ngày, nhiều phiếu) làm grid Kendo của website tích lũy lỗi: `Cannot call method 'value' of kendoDropDownList before it is initialized`, danh sách không tải xong, trang không phản hồi. Chỉ tải lại trang mới phục hồi.
+- Extension nhận diện các dấu hiệu đó trong lúc chạy Lưu API hoặc Batch Review, ghi cờ tiếp tục vào phiên rồi tự tải lại trang; sau khi tải lại, chờ danh sách Bán hàng dựng xong rồi chạy tiếp phần dở. Lưu API bỏ qua dòng đã xong; Batch Review tính lại theo khoảng ngày đã lưu.
+- Tối đa 3 lần tải lại vì lỗi trong một lô, để lỗi không phải do quá tải không lặp vô hạn. Ngoài ra Lưu API tự tải lại chủ động sau mỗi 15 phiếu (không tính vào giới hạn trên).
+- An toàn dữ liệu không đổi: mỗi phiếu chỉ được đánh dấu xong sau khi đối soát; phiếu đang `Chờ lưu/đối soát` lúc tải lại được giữ nguyên để bấm Đối soát sau lưu.
+
 ## Điều chưa được phép suy đoán
 
 Endpoint, method, token chống giả mạo, tên trường payload và định dạng danh sách hàng phải được lấy từ một request `Lưu HĐ` thật trên Network. Không tái tạo chúng dựa trên tên nút hoặc HTML.

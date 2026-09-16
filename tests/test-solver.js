@@ -426,3 +426,38 @@ assert(nhonLarge.items.filter(item => item.constraintGroup === "beer").reduce((s
   "phương án Nhơn phải có ≥3 bia");
 
 console.log("solver group-max null tests: OK");
+
+// --- Sàn Tiền giờ so bằng mức chính xác, không phải mức làm tròn lên ----------
+//
+// Ca thật Nhơn 541.200đ: trước VAT 492.000đ, sàn Tiền giờ = trần 35% = 172.200đ,
+// mục tiêu tiền hàng 319.800đ. Tiền hàng 320.000đ cho Tiền giờ 172.000đ (vỡ sàn
+// 200đ) nhưng làm tròn lên bước 6.000đ thành 174.000đ nên từng được coi là hợp
+// lệ và thắng 315.000đ vì gần mục tiêu hơn. Tiền giờ cuối được chốt chính xác
+// (492.000 − 320.000 = 172.000) nên bước mở form chặn lại và cả lô dừng.
+const exactFloor = solver.solveQuantities([
+  { code: "A", name: "Mã 5.000đ", price: 5000, qty: 0, maxQty: 70 }
+], 250000, {
+  maxQty: 70, tolerance: 0, preTaxTarget: 492000, currentHour: 250000, hourStep: 6000,
+  minHourAmount: 242000, maxHourAmount: 258000, enforceHourRange: true,
+  minGoodsAmount: 234000, maxGoodsAmount: 250000, requireHourStepExact: false
+});
+assert(exactFloor.items, "phải giải được");
+// Tiền hàng 250.000đ cho Tiền giờ 242.000đ = đúng sàn; 255.000đ cho 237.000đ
+// (vỡ sàn 5.000đ) nhưng làm tròn lên thành 240.000đ nên từng được coi là hợp lệ.
+assert(492000 - exactFloor.actual >= 242000,
+  `Tiền giờ chốt chính xác ${492000 - exactFloor.actual}đ không được dưới sàn 242.000đ`);
+// Không khóa cứng một mức tiền hàng: nhiều mức đều hợp lệ (240.000đ cho Tiền
+// giờ 252.000đ cũng nằm trong khoảng). Điều phải khóa là Tiền giờ chốt chính
+// xác luôn nằm trong [sàn, trần], không phải mức làm tròn lên mới đạt.
+assert(492000 - exactFloor.actual <= 258000,
+  `Tiền giờ ${492000 - exactFloor.actual}đ không được vượt trần 258.000đ`);
+// Khi bắt buộc đúng bước 6.000đ thì vẫn so bằng mức đã làm tròn như trước.
+const stepExact = solver.solveQuantities([
+  { code: "A", name: "Mã 6.000đ", price: 6000, qty: 0, maxQty: 60 }
+], 318000, {
+  maxQty: 60, tolerance: 0, preTaxTarget: 492000, currentHour: 174000, hourStep: 6000,
+  minHourAmount: 174000, maxHourAmount: 210000, enforceHourRange: true, requireHourStepExact: true
+});
+assert(stepExact.items && (492000 - stepExact.actual) % 6000 === 0 && 492000 - stepExact.actual >= 174000,
+  "requireHourStepExact vẫn phải giữ Tiền giờ đúng bước và không dưới sàn");
+console.log("solver exact hour floor: OK");

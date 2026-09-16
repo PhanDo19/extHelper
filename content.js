@@ -287,6 +287,11 @@
       batchToDate: toDate,
       batchPlans: serializeBatchPlans(batchPlans),
       pendingNewInvoice: pendingNewInvoice ? structuredClone(pendingNewInvoice) : null,
+      // Số lần đã tự tải lại vì quá tải trong lô hiện tại (reset khi lô xong).
+      autoResumeAttempts: Number(uiSession?.autoResumeAttempts) || 0,
+      // Cờ "tải lại rồi chạy tiếp" chỉ tồn tại giữa lúc ghi và lúc tải lại;
+      // mọi lần lưu phiên khác đều xóa để không lặp vô hạn.
+      autoResume: null,
       updatedAt: new Date().toISOString(),
       ...(overrides || {})
     };
@@ -576,9 +581,11 @@
       plan.requiresNewInvoice && grand >= PARIS_NHON_LARGE_INVOICE_THRESHOLD
       ? PARIS_NHON_LARGE_INVOICE_MIN_HOUR
       : nominalMinimumHour;
-    const minimumHour = plan.specialRule === "under-500k-two-beers"
+    // Giống hourPlanningBounds: mốc phút bị kẹp xuống bằng trần 35% thì bỏ hẳn
+    // sàn, vì sàn = trần chỉ cho đúng một giá trị Tiền giờ hợp lệ.
+    const minimumHour = plan.specialRule === "under-500k-two-beers" || (hourCap > 0 && tenantMinimumHour >= hourCap)
       ? 0
-      : (hourCap > 0 ? Math.min(tenantMinimumHour, hourCap) : tenantMinimumHour);
+      : tenantMinimumHour;
     if (hour <= 0 || hourFromTime <= 0 || hourFromTime % 6000 !== 0) {
       return "Giờ vào/ra chưa sinh được tiền giờ theo đúng bước 6.000đ của website.";
     }
@@ -1124,6 +1131,15 @@
         );
       }
     } else {
+      const resume = stored.autoResume;
+      const requestedAt = Date.parse(resume?.requestedAt || "");
+      if (resume?.mode && Number.isFinite(requestedAt) && Date.now() - requestedAt <= AUTO_RESUME_MAX_AGE_MS) {
+        // Xóa cờ TRƯỚC khi chạy để một lần tải lại nữa không lặp vô hạn; số lần
+        // đã thử được giữ để giới hạn vẫn có hiệu lực qua nhiều lần tải lại.
+        await saveBatchUiSession({ panelOpen: true, autoResumeAttempts: Number(stored.autoResumeAttempts) || 0 });
+        void continueAfterAutoReload(resume);
+        return;
+      }
       setStatus("Đã khôi phục phiên Batch Review trước khi chuyển trang.", "ok");
     }
   }
@@ -1183,6 +1199,9 @@
   }
 
   function refreshMappingState() {
+    // Dòng hoa quả bán theo suất do rule nghiệp vụ tự thêm; nhập lại kho có thể
+    // làm mất dòng đó nên áp lại rule (idempotent) trước mỗi lần dựng tồn.
+    mappingDataset = InvoiceMappingEngine.applyBusinessRules(mappingDataset, pageTenantSlug);
     mappingDataset = InvoiceSharedWarehouse.overlayMappings(mappingDataset, sharedWarehouse);
     inventory = InvoiceMappingEngine.buildInventory(mappingDataset);
     mappingSummary = InvoiceMappingEngine.summarize({ ...mappingDataset, mappings: activeMappingRows() });
@@ -1597,6 +1616,9 @@
 
   function openAccountingDashboardAction(event) {
     const action = event.target.closest("button")?.dataset.action;
+    // Tải lại trang là cách duy nhất phục hồi content script mồ côi; làm được
+    // ngay cả khi chrome.* đã mất vì location thuộc về trang.
+    if (action === "reload") { location.reload(); return; }
     if (action === "stock") setStockMode(true);
     else if (action === "mapping") setMappingMode(true);
     else if (action === "statement") setStatementMode(true);
@@ -2017,6 +2039,16 @@
   function setStatus(message, kind, next) {
     const node = document.getElementById("it-status");
     if (!node) return;
+    // "Extension context invalidated" của Chrome (extension vừa Reload/cập
+    // nhật, tab còn content script cũ) lọt ra từ nhiều đường: catch của Batch
+    // Review, Lưu API, lưu phiên... Dù đến từ đâu cũng đổi thành hướng dẫn F5
+    // kèm nút tải lại, vì trang này không làm gì thêm được cho tới khi tải lại.
+    message = String(message == null ? "" : message);
+    if (message === RUNTIME_REFRESH_MESSAGE || isInvalidRuntimeContext(message)) {
+      message = RUNTIME_REFRESH_MESSAGE;
+      kind = "error";
+      next = { label: "Tải lại trang", action: "reload" };
+    }
     node.className = `it-status ${kind || ""}`;
     // Dựng bằng DOM node: message có thể chứa số phiếu, diễn giải sao kê hoặc
     // thông báo lỗi lấy từ website, không được diễn giải như thẻ HTML.
@@ -5291,8 +5323,12 @@
     } catch (error) { setStatus(error.message, "error"); }
   }
 
+  // Số dòng hàng "đẹp" theo tiền hàng. Mốc cũ (350.000đ/dòng, tối đa 6) cho
+  // phiếu ~1 triệu chỉ 3 dòng: một đĩa hoa quả, một mã bia, khăn — trông giả.
+  // Đơn thật cỡ đó thường 4-6 dòng (hoa quả, 1-2 loại bia, 1-2 món ăn vặt,
+  // khăn), nên hạ mốc còn 250.000đ/dòng và nâng trần lên 7 cho phiếu lớn.
   function preferredLineCount(goodsTarget) {
-    return Math.max(3, Math.min(6, Math.round(Number(goodsTarget || 0) / 350000) + 1));
+    return Math.max(3, Math.min(7, Math.round(Number(goodsTarget || 0) / 250000) + 2));
   }
 
   // Hóa đơn càng lớn = nhóm khách càng đông = càng nhiều dòng hàng và nhiều
@@ -5306,7 +5342,9 @@
     // hóa đơn thông thường vẫn giữ tối đa 12 mã để không tạo đơn phi thực tế.
     const target = Math.max(0, Number(goodsTarget || 0));
     const adaptiveCap = target >= 6000000 ? 20 : target >= 4000000 ? 16 : 12;
-    return Math.max(4, Math.min(adaptiveCap, Math.round(target / 250000) + 2));
+    // Trần phải rộng hơn số dòng "đẹp" một chút, nếu không solver không có chỗ
+    // để đổi tổ hợp: phiếu ~400.000đ tiền hàng được tối đa 5 dòng thay vì 4.
+    return Math.max(5, Math.min(adaptiveCap, Math.round(target / 200000) + 3));
   }
 
   function reachableGoodsUpperBound(candidates, lineLimit, globalQtyLimit = 20) {
@@ -5411,6 +5449,14 @@
       : currentHour;
     const baseHour = preTaxCap > 0 ? Math.min(nominalBaseHour, preTaxCap) : nominalBaseHour;
     const adjustmentLimit = Math.max(step, Math.round(baseHour * MAX_HOUR_BASE_ADJUSTMENT_RATIO));
+    // Mốc phút bị kẹp xuống ĐÚNG bằng trần 35% tổng trước VAT: sàn và trần trùng
+    // nhau nên Tiền giờ chỉ còn một giá trị hợp lệ duy nhất, và tiền hàng phải
+    // khớp chính xác giá trị đó theo bước giá. Thực tế hầu như không ghép được:
+    // sao kê 541.200đ (trước VAT 492.000đ) có sàn = trần = 172.200đ, tổ hợp gần
+    // nhất lệch 200đ và phiếu bị loại. Trần là ràng buộc cơ cấu nên phải giữ;
+    // sàn chỉ là mốc thời lượng gợi ý nên bỏ hẳn ở đúng trường hợp này, để phần
+    // dư dồn vào Tiền giờ như phiếu nhỏ dưới 500.000đ.
+    const floorClampedToCap = preTaxCap > 0 && nominalBaseHour >= preTaxCap;
     return {
       baseHour,
       adjustmentLimit,
@@ -5418,11 +5464,14 @@
       minuteBaseHour,
       nominalBaseHour,
       baseHourClamped: baseHour < nominalBaseHour,
+      floorClampedToCap,
       // A new invoice uses 30 or 50 minutes as the minimum singing baseline,
       // depending on the bank-statement total.
-      minHourAmount: isNewInvoice || currentHour <= 0
-        ? baseHour
-        : Math.max(step, baseHour - adjustmentLimit),
+      minHourAmount: floorClampedToCap
+        ? 0
+        : (isNewInvoice || currentHour <= 0
+          ? baseHour
+          : Math.max(step, baseHour - adjustmentLimit)),
       maxHourAmount: baseHour + adjustmentLimit
     };
   }
@@ -5446,9 +5495,17 @@
     return Math.max(minimumGoods, Math.max(0, preTax - minHour));
   }
 
-  function candidateFromStock(stock, minQty, selectionPenalty, ruleMaxQty) {
+  function candidateFromStock(stock, minQty, selectionPenalty, ruleMaxQty, quantityScale = 1) {
     const stockQty = Math.max(0, Math.floor(Number(stock.availableQty) || 0));
-    const invoiceLimit = InvoiceTargetSolver.recommendInvoiceLimit(stock);
+    const baseInvoiceLimit = InvoiceTargetSolver.recommendInvoiceLimit(stock);
+    // Hóa đơn rất lớn ở cơ sở toàn mã giá thấp không đạt được tiền hàng tối
+    // thiểu với trần mặc định; calculateBatchPlan nâng trần theo bội số vừa đủ.
+    // Không nhân trần của mã bán theo suất (đĩa hoa quả 1/HĐ) và mã có trần
+    // cứng khai báo riêng.
+    const scale = Math.max(1, Math.floor(Number(quantityScale) || 1));
+    const scalable = stock.availabilityMode !== "per_invoice" &&
+      !InvoiceTargetSolver.explicitInvoiceLimit(stock);
+    const invoiceLimit = scalable ? baseInvoiceLimit * scale : baseInvoiceLimit;
     const configuredMax = Number.isFinite(Number(ruleMaxQty)) && Number(ruleMaxQty) > 0
       ? Math.floor(Number(ruleMaxQty))
       : Number.POSITIVE_INFINITY;
@@ -5460,6 +5517,8 @@
       qty: 0,
       stockQty,
       invoiceLimit,
+      baseInvoiceLimit,
+      quantityScale: scalable ? scale : 1,
       maxQty: Math.min(stockQty, invoiceLimit, configuredMax),
       stockCodes: stock.stockCodes,
       minQty: Number(minQty || 0),
@@ -5574,7 +5633,7 @@
     return null;
   }
 
-  function selectSmallInvoiceBeer(inventoryState, transaction, productUsage) {
+  function selectSmallInvoiceBeer(inventoryState, transaction, productUsage, preTaxTarget) {
     const eligible = (inventoryState || []).filter(stock => {
       if (!isAutoSellableStock(stock) || !isBeerStock(stock)) return false;
       if (Math.floor(Number(stock.availableQty) || 0) < SMALL_INVOICE_BEER_QTY) return false;
@@ -5590,25 +5649,41 @@
         .map((rule, index) => [String(rule.webCode), index])
     );
     const seed = `${transaction?.id || ""}|${transaction?.transactionDate || ""}|small-beer|${transaction?.recalculationNonce || 0}`;
-    return eligible.sort((a, b) => {
-      // A small invoice has a fixed two-beer rule.  Choose the cheapest
-      // eligible beer first so the remaining pre-VAT amount can still become
-      // Tiền giờ (for example, 143,000đ must leave 30,000đ after two 50,000đ
-      // beers; two 65,000đ beers would incorrectly leave zero).
-      const aPrice = Math.round(Number(a.webPrice) || 0);
-      const bPrice = Math.round(Number(b.webPrice) || 0);
-      const aRule = rulePriority.has(String(a.webCode)) ? rulePriority.get(String(a.webCode)) : Number.POSITIVE_INFINITY;
-      const bRule = rulePriority.has(String(b.webCode)) ? rulePriority.get(String(b.webCode)) : Number.POSITIVE_INFINITY;
-      return aPrice - bPrice ||
-        aRule - bRule ||
-        Number(productUsage?.get(String(a.webCode)) || 0) - Number(productUsage?.get(String(b.webCode)) || 0) ||
+    const price = stock => Math.round(Number(stock.webPrice) || 0);
+    const usage = stock => Number(productUsage?.get(String(stock.webCode)) || 0);
+    const rulePosition = stock => rulePriority.has(String(stock.webCode))
+      ? rulePriority.get(String(stock.webCode))
+      : Number.POSITIVE_INFINITY;
+    // Bia "vừa" là bia mà hai chai vẫn để lại ít nhất 30.000đ (3 phút) cho Tiền
+    // giờ. Trong số đó LUÂN PHIÊN theo số lần đã dùng trong lô rồi theo hash ổn
+    // định, không theo giá: chọn bia rẻ nhất mọi lúc làm mọi phiếu nhỏ giống
+    // hệt nhau (luôn Tiger x2) dù kho có ba loại bia. Không bia nào vừa thì mới
+    // rơi về rẻ nhất để còn Tiền giờ (143.000đ chỉ vừa hai chai 50.000đ).
+    const preTax = Math.max(0, Math.round(Number(preTaxTarget) || 0));
+    const minHourLeft = 30000;
+    const fitting = preTax > 0
+      ? eligible.filter(stock => price(stock) * SMALL_INVOICE_BEER_QTY <= preTax - minHourLeft)
+      : [];
+    if (fitting.length) {
+      return fitting.sort((a, b) =>
+        usage(a) - usage(b) ||
+        rulePosition(a) - rulePosition(b) ||
         stableDiversityRank(seed, a.webCode) - stableDiversityRank(seed, b.webCode) ||
-        String(a.webCode).localeCompare(String(b.webCode));
-    })[0];
+        price(a) - price(b) ||
+        String(a.webCode).localeCompare(String(b.webCode))
+      )[0];
+    }
+    return eligible.sort((a, b) =>
+      price(a) - price(b) ||
+      rulePosition(a) - rulePosition(b) ||
+      usage(a) - usage(b) ||
+      stableDiversityRank(seed, a.webCode) - stableDiversityRank(seed, b.webCode) ||
+      String(a.webCode).localeCompare(String(b.webCode))
+    )[0];
   }
 
   function calculateSmallInvoiceBeerPlan(scan, transaction, inventoryState, productUsage, targets, targetGrand, statementGrand, grandDifference) {
-    const beer = selectSmallInvoiceBeer(inventoryState, transaction, productUsage);
+    const beer = selectSmallInvoiceBeer(inventoryState, transaction, productUsage, targets.preTaxTarget);
     if (!beer) {
       return {
         status: "error",
@@ -5700,21 +5775,40 @@
       .filter(Boolean);
     const rejectionCountFor = code =>
       Number(rejectionCounts[code]) || (legacyRejected.includes(code) ? 1 : 0);
+    const quantityScale = Math.max(1, Math.floor(Number(options?.quantityScale) || 1));
+    // Đĩa hoa quả ở Nhơn: hóa đơn trên 1 triệu phải có đúng một đĩa, BẤT KỲ
+    // loại nào trong nhóm fruit_platter (tối đa 1 đĩa/HĐ theo ánh xạ). Đặt theo
+    // NHÓM chứ không ghim một mã để 4 loại đĩa được luân phiên như bia. Kim
+    // Giang giữ rule ưu tiên TCTO có sẵn của kế toán nên không đi qua đây.
+    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
+    const fruitGroupRule = currentTenantSlug === "parisnhon" ? { minTotal: 1000000, minQty: 1 } : null;
+    const requireFruitPlatter = Boolean(fruitGroupRule) && Number(target) > fruitGroupRule.minTotal;
     return sellableStock.map(stock => {
       const code = String(stock.webCode);
-      const priorUseCount = Number(productUsage?.get(code) || 0);
+      // Hình phạt "đã dùng" tăng theo BÌNH PHƯƠNG số lần dùng trong lô. Hình
+      // phạt tuyến tính cộng theo dòng khiến tổ hợp ít dòng lặp lại mã cũ vẫn
+      // rẻ hơn tổ hợp nhiều dòng toàn mã mới, nên cả lô cứ quay về cùng một bộ
+      // (Tiger + Bưởi nhỏ + khăn). Bình phương làm lần dùng thứ 3, thứ 4 của một
+      // mã đắt hẳn so với lần đầu của mã khác, kéo lô rải đều 3 loại bia, 4 loại
+      // hoa quả và các mã đồ khô. Kẹp trần để lô rất dài không tràn số.
+      const priorUseCount = Math.min(30, Number(productUsage?.get(code) || 0));
       const rotation = stableDiversityRank(seed, code) % 20;
       const rules = activeRules.filter(rule => String(rule.webCode) === code);
       const minQty = rules.reduce((maximum, rule) => Math.max(maximum, Number(rule.minQty || 1)), 0);
       const maxQty = rules.length
         ? rules.reduce((minimum, rule) => Math.min(minimum, Number(rule.maxQty || rule.minQty || 1)), Number.POSITIVE_INFINITY)
         : undefined;
-      return candidateFromStock(
+      const candidate = candidateFromStock(
         stock,
         minQty,
-        priorUseCount * 30 + rotation + rejectionCountFor(code) * 200,
-        maxQty
+        priorUseCount * priorUseCount * 100 + rotation + rejectionCountFor(code) * 500,
+        maxQty,
+        quantityScale
       );
+      if (requireFruitPlatter && candidate.constraintGroup === "fruit_platter") {
+        candidate.constraintGroupMin = Math.max(Number(candidate.constraintGroupMin) || 0, fruitGroupRule.minQty);
+      }
+      return candidate;
     }).sort((a, b) =>
       Number(b.minQty || 0) - Number(a.minQty || 0) ||
       Number(a.selectionPenalty || 0) - Number(b.selectionPenalty || 0) ||
@@ -5830,10 +5924,28 @@
         };
       }
     }
-    let candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage);
     const activeLineLimit = maxActiveLines(targets.goodsTarget);
+    // Trần số lượng/HĐ mặc định (bia 12 lon, đồ khô 2-4 gói...) là cho hóa đơn
+    // thường. Hóa đơn rất lớn ở cơ sở toàn mã giá thấp không thể đạt tiền hàng
+    // tối thiểu mà trần 35% Tiền giờ đặt ra: Nhơn 14 triệu cần tiền hàng
+    // ≥ 8,27 triệu trong khi 20 mã ở mức trần chỉ được ~6,8 triệu. Khi đó nâng
+    // trần theo bội số VỪA ĐỦ (dư 10% cho solver ghép), tối đa 5 lần; hóa đơn
+    // thường còn đủ sức chứa thì giữ nguyên bội số 1. Mã bán theo suất và mã có
+    // trần cứng riêng không được nhân (xem candidateFromStock).
+    const solverMaxQty = 20;
+    const maxQuantityScale = 5;
+    const capacityAtScale = scale => reachableGoodsUpperBound(
+      buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage, { quantityScale: scale }),
+      activeLineLimit,
+      solverMaxQty * scale
+    );
+    let quantityScale = 1;
+    while (quantityScale < maxQuantityScale && capacityAtScale(quantityScale) < minGoodsForHourRange * 1.1) {
+      quantityScale += 1;
+    }
+    let candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage, { quantityScale });
     const solverOptions = {
-      maxQty: 20,
+      maxQty: solverMaxQty * quantityScale,
       tolerance: 0,
       preTaxTarget: targets.preTaxTarget,
       currentHour: hourBounds.baseHour,
@@ -5844,10 +5956,13 @@
       enforceHourRange: true,
       minGoodsAmount,
       maxGoodsAmount: maximumGoodsForHourRange(targets.preTaxTarget, minHourAmount, minGoodsAmount),
-      // Ưu tiên phương án nhiều số lượng: bỏ phạt tập trung, thưởng tổng số
-      // lượng, và cho hình phạt "mã vừa bị loại" đủ nặng để Tính toán lại thực
-      // sự đổi sang tổ hợp khác.
-      concentrationWeight: 0,
+      // Ưu tiên phương án nhiều số lượng: thưởng tổng số lượng, và cho hình
+      // phạt "mã vừa bị loại" đủ nặng để Tính toán lại thực sự đổi sang tổ hợp
+      // khác. Phạt tập trung để NHẸ (không bỏ hẳn): dồn 6 lon vào một mã bia
+      // đắt hơn chia 3 + 3 cho hai mã, nên phiếu tự rải sang 2 loại bia, 2 món
+      // ăn vặt thay vì một mã mỗi thứ; thưởng số lượng (5.000đ/đơn vị) vẫn lớn
+      // hơn nhiều nên tổng số lượng không giảm.
+      concentrationWeight: 200,
       unitWeight: 5000,
       selectionWeight: 20000,
       // Cơ cấu hóa đơn thật: không nhóm hàng nào chiếm quá 60% tiền hàng, và
@@ -5865,7 +5980,7 @@
         targetGrand,
         transaction,
         productUsage,
-        { includeRotatingRule: false }
+        { includeRotatingRule: false, quantityScale }
       );
       const requiredOnlySolution = InvoiceTargetSolver.solveQuantities(
         requiredOnlyCandidates,
@@ -5879,9 +5994,10 @@
       }
     }
     if (!solution.items) {
-      const reachableUpperBound = reachableGoodsUpperBound(candidates, activeLineLimit, 20);
+      const reachableUpperBound = reachableGoodsUpperBound(candidates, activeLineLimit, solverMaxQty * quantityScale);
+      const scaleNote = quantityScale > 1 ? ` (đã nâng trần số lượng/HĐ ×${quantityScale})` : "";
       const capacityExplanation = reachableUpperBound < minGoodsForHourRange
-        ? ` Với tối đa ${activeLineLimit} mã và giới hạn số lượng/HĐ hiện tại, sức chứa tiền hàng chỉ khoảng ${formatMoney(reachableUpperBound)} đ.`
+        ? ` Với tối đa ${activeLineLimit} mã và giới hạn số lượng/HĐ hiện tại${scaleNote}, sức chứa tiền hàng chỉ khoảng ${formatMoney(reachableUpperBound)} đ.`
         : ` Kho có sức chứa lý thuyết khoảng ${formatMoney(reachableUpperBound)} đ nhưng không ghép được tổ hợp hợp lệ theo đơn giá và các rule hiện tại.`;
       return {
         status: "error",
@@ -5916,6 +6032,15 @@
       return {
         status: "error",
         reason: "Phương án không có Tiền giờ; chưa được tạo hóa đơn thiếu Tiền giờ. Hãy chỉnh tồn kho/rule rồi tính lại."
+      };
+    }
+    // Phiếu mới: sàn Tiền giờ là luật cứng, newInvoicePlanValidationError sẽ
+    // chặn ở bước mở tab worker. Chặn ngay tại đây với lý do rõ ràng thay vì
+    // báo "Sẵn sàng" rồi vỡ lúc chạy Lưu API và làm cả lô dừng.
+    if (scan.newInvoicePlanning && minHourAmount > 0 && finalHourAmount < minHourAmount) {
+      return {
+        status: "error",
+        reason: `Tiền giờ ${formatMoney(finalHourAmount)}đ thấp hơn sàn ${formatMoney(minHourAmount)}đ: kho không ghép được tổ hợp tiền hàng ≤ ${formatMoney(targets.preTaxTarget - minHourAmount)}đ. Hãy kiểm tra ánh xạ/giới hạn số lượng rồi tính lại.`
       };
     }
     const hourAdjustmentSmall = Math.abs(hourBaseAdjustment) <= hourBounds.adjustmentLimit;
@@ -5955,6 +6080,9 @@
       hourAdjustmentSmall,
       hourWithinPreTaxCap,
       rotatingPriorityRelaxed,
+      // Bội số trần số lượng/HĐ đã dùng (1 = trần mặc định). Ghi lại để kế
+      // toán thấy phiếu lớn được lập với trần nào.
+      quantityScale,
       hourFromTime,
       hourAdjustment,
       tax: targets.vatTarget,
@@ -6170,6 +6298,10 @@
       : -1;
     try {
       if (button) button.disabled = true;
+      // Context mồ côi vẫn gọi được bridge (dò phiếu chạy hết lô) rồi mới vỡ ở
+      // bước lưu phiên/sao kê với "Extension context invalidated": mất công cả
+      // lô. Kiểm tra trước để báo F5 ngay.
+      assertRuntimeContext();
       const current = await request("scan");
       if (current?.ready) throw new Error("Hãy bấm Thoát để đóng phiếu đang mở trước khi tạo Batch Review.");
       const limit = Math.max(1, Math.min(50, Number(document.getElementById("it-batch-limit")?.value) || 10));
@@ -6273,8 +6405,22 @@
       const usedInvoiceNos = new Set((statementDataset.transactions || [])
         .filter(item => ["done", "planned", "batch_ready"].includes(item.status) && item.invoiceNo)
         .map(item => String(item.invoiceNo)));
+      let consecutiveOverloadEntries = 0;
       for (let index = 0; index < transactions.length; index += 1) {
         const transaction = transactions[index];
+        // Website quá tải thường không ném lỗi ra ngoài mà sinh liên tiếp các
+        // dòng lỗi dò phiếu cho mọi giao dịch còn lại. Ba dòng liên tiếp cùng
+        // dấu hiệu là dừng lô để tải lại trang thay vì chạy hết với toàn lỗi.
+        const previousEntry = batchPlans[batchPlans.length - 1];
+        if (index > 0 && previousEntry && ["error", "lookup_error"].includes(previousEntry.status) &&
+            isPageOverloadError(previousEntry.reason)) {
+          consecutiveOverloadEntries += 1;
+          if (consecutiveOverloadEntries >= 3 && !onlyTransactionId) {
+            throw new Error(`Website quá tải: ${previousEntry.reason}`);
+          }
+        } else {
+          consecutiveOverloadEntries = 0;
+        }
         if (summary) summary.textContent = `Đang tính ${index + 1}/${transactions.length}: ${transaction.transactionDate} · ${formatMoney(transaction.credit)}`;
         if (transaction.status === "done") {
           addPlanProductUsage(productUsage, transaction.batchApprovedPlan?.items);
@@ -6551,6 +6697,10 @@
     } catch (error) {
       console.error("[InvoiceTarget batch review]", error);
       if (summary) summary.textContent = error.message;
+      if (!onlyTransactionId && isPageOverloadError(error) &&
+          await scheduleAutoReloadResume("batch-review", error.message)) {
+        return;
+      }
       setStatus(error.message, "error");
     } finally {
       if (button?.isConnected) button.disabled = false;
@@ -7352,6 +7502,74 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Tự tải lại trang khi website quá tải rồi chạy tiếp.
+  //
+  // Sau nhiều lần đổi bộ lọc ngày/mở-đóng phiếu trong một lô dài, grid Kendo
+  // của website tích lũy lỗi ("Cannot call method 'value' of kendoDropDownList
+  // before it is initialized", danh sách không tải xong, trang không phản hồi)
+  // và chỉ tải lại trang mới phục hồi. Mọi tiến độ đã nằm trong storage (giao
+  // dịch done/planned, batchPlans, khoảng ngày) nên sau khi tải lại chỉ cần
+  // chạy tiếp phần dở: Lưu API bỏ qua dòng đã xong, Batch Review tính lại.
+  // ---------------------------------------------------------------------------
+  const AUTO_RELOAD_MAX_ATTEMPTS = 3;
+  const AUTO_RELOAD_EVERY_SAVED_INVOICES = 15;
+  const AUTO_RESUME_MAX_AGE_MS = 15 * 60 * 1000;
+
+  function isPageOverloadError(error) {
+    const message = String(error?.message || error || "");
+    return /Danh sách phiếu chưa tải xong|chưa khởi tạo xong bộ lọc Kendo|Trang không phản hồi sau|before it is initialized|Rất tiếc, không thể xử lý|Website quá tải/i.test(message);
+  }
+
+  function autoResumeLabel(mode) {
+    return mode === "batch-api" ? "Lưu API" : "Batch Review";
+  }
+
+  // Ghi cờ tiếp tục vào phiên rồi tải lại trang. Tải lại vì lỗi bị giới hạn số
+  // lần để không lặp vô hạn khi lỗi không phải do quá tải; tải lại chủ động
+  // (sau mỗi N phiếu) không tính vào giới hạn đó.
+  async function scheduleAutoReloadResume(mode, reason, options = {}) {
+    const planned = Boolean(options.planned);
+    const attempts = (Number(uiSession?.autoResumeAttempts) || 0) + (planned ? 0 : 1);
+    if (!planned && attempts > AUTO_RELOAD_MAX_ATTEMPTS) return false;
+    await saveBatchUiSession({
+      panelOpen: true,
+      autoResumeAttempts: attempts,
+      autoResume: { mode, reason: String(reason || ""), planned, requestedAt: new Date().toISOString() }
+    });
+    setStatus(
+      planned
+        ? `Đã lưu ${reason}. Extension tự tải lại trang để website không quá tải, rồi tiếp tục ${autoResumeLabel(mode)}…`
+        : `Website không tải được danh sách (${reason}). Extension tự tải lại trang và tiếp tục ${autoResumeLabel(mode)} ` +
+          `(lần ${attempts}/${AUTO_RELOAD_MAX_ATTEMPTS})…`,
+      "warn"
+    );
+    window.setTimeout(() => location.reload(), 800);
+    return true;
+  }
+
+  async function continueAfterAutoReload(resume) {
+    setStatus(
+      `Đã tải lại trang (${resume.planned ? "chủ động sau một lô phiếu" : `sau lỗi: ${resume.reason}`}). ` +
+      `Đang chờ danh sách phiếu rồi tiếp tục ${autoResumeLabel(resume.mode)}…`,
+      "warn"
+    );
+    try {
+      if (!await ensureInvoiceListScreen(20000)) {
+        throw new Error("Chưa mở được màn hình danh sách Bán hàng sau khi tải lại; hãy đăng nhập hoặc mở danh sách rồi bấm lại nút.");
+      }
+      // Cho grid Kendo dựng xong hẳn trước khi đổi bộ lọc.
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      if (resume.mode === "batch-api") {
+        await runAcceptedBatchApi({ target: { closest: () => document.getElementById("it-run-batch-api") } });
+      } else {
+        await buildBatchReview();
+      }
+    } catch (error) {
+      setStatus(`Không tự chạy tiếp được sau khi tải lại: ${error.message}`, "error");
+    }
+  }
+
   async function runAcceptedBatchApi(event) {
     const button = event.target.closest("button");
     const indexes = batchPlans
@@ -7364,7 +7582,9 @@
       button.textContent = `Đang xử lý 0/${indexes.length}…`;
     }
     let completed = 0;
+    let savedSinceReload = 0;
     try {
+      assertRuntimeContext();
       for (const index of indexes) {
         if (button?.isConnected) button.textContent = `Đang xử lý ${completed + 1}/${indexes.length}…`;
         if (batchPlans[index]?.plan?.requiresNewInvoice) {
@@ -7373,9 +7593,19 @@
           await saveBatchEntryViaApi(index);
         }
         completed += 1;
+        savedSinceReload += 1;
+        // Lô dài: tải lại trang trước khi grid Kendo của website quá tải. Mỗi
+        // phiếu đã xong đều nằm trong storage nên chạy tiếp là an toàn.
+        if (completed < indexes.length && savedSinceReload >= AUTO_RELOAD_EVERY_SAVED_INVOICES) {
+          renderBatchPlans();
+          renderStatementAdmin();
+          await scheduleAutoReloadResume("batch-api", `${completed}/${indexes.length} phiếu`, { planned: true });
+          return;
+        }
       }
       renderBatchPlans();
       renderStatementAdmin();
+      await saveBatchUiSession({ panelOpen: true, autoResumeAttempts: 0 });
       // Lưu xong là dữ liệu bước 5 đã sẵn sàng. Mời sang thẳng màn phát hành thay
       // vì bắt kế toán tự thoát ra, đổi tab rồi bấm Tải danh sách. Vẫn phải bấm
       // vì phát hành hóa đơn là thao tác không hoàn tác được.
@@ -7387,6 +7617,7 @@
     } catch (error) {
       renderBatchPlans();
       renderStatementAdmin();
+      if (isPageOverloadError(error) && await scheduleAutoReloadResume("batch-api", error.message)) return;
       setStatus(
         `Batch API đã dừng sau ${completed}/${indexes.length} phiếu: ${error.message} ` +
         "Các phiếu phía sau chưa được gửi; tồn kho chỉ ghi cho phiếu đã đối soát thành công.",
@@ -7449,7 +7680,10 @@
       }
       setStatus(`${planError} Không mở form bằng phương án này; đang tính lại Batch Review.`, "error");
       await buildBatchReview();
-      return;
+      return {
+        opened: false,
+        error: `${planError} Phương án đã bị hủy và Batch Review đã tính lại; hãy Accept lại phương án mới rồi chạy Lưu API.`
+      };
     }
     const salesAnchor = Array.from(document.querySelectorAll("a"))
       .find(anchor => (anchor.innerText || "").trim() === "Bán hàng" && anchor.href);

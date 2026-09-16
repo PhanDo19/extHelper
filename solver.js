@@ -113,10 +113,19 @@
       .toUpperCase();
   }
 
-  function recommendInvoiceLimit(stock) {
+  // Trần cứng khai báo riêng cho một mã (ví dụ hộp mắc ca 500g tối đa 2). Khác
+  // với trần suy ra theo nhóm/đơn vị, trần này KHÔNG được nhân lên cho hóa đơn
+  // lớn: nó phản ánh giới hạn thật của mặt hàng chứ không phải quy mô bữa tiệc.
+  function explicitInvoiceLimit(stock) {
     const code = String(stock?.webCode || stock?.code || "");
     const explicit = Number(REALISTIC_MAX_BY_WEB_CODE[code]);
-    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    return Number.isFinite(explicit) && explicit > 0 ? explicit : null;
+  }
+
+  function recommendInvoiceLimit(stock) {
+    const code = String(stock?.webCode || stock?.code || "");
+    const explicit = explicitInvoiceLimit(stock);
+    if (explicit) return explicit;
     if (stock?.availabilityMode === "per_invoice") {
       return Math.max(1, Math.floor(Number(stock.availableQty) || 1));
     }
@@ -411,13 +420,24 @@
       const overshoot = hourStep && preTaxTarget && requiredHour < 0
         ? Math.abs(requiredHour)
         : 0;
+      // Tiền giờ cuối cùng được chốt CHÍNH XÁC bằng preTax − tiền hàng (xem
+      // reconcileHourAmount), không phải mức đã làm tròn LÊN theo bước 6.000đ.
+      // So sàn bằng mức làm tròn từng che mất phương án vỡ sàn vài trăm đồng:
+      // tiền hàng 320.000đ cho Tiền giờ 172.000đ dưới sàn 172.200đ, nhưng làm
+      // tròn thành 174.000đ nên được coi là hợp lệ và thắng phương án 315.000đ
+      // (gần mục tiêu hơn 4.600đ); tới bước mở form mới bị chặn "Tiền giờ thấp
+      // hơn mức tối thiểu" và cả lô Lưu API dừng. Chỉ khi bắt buộc đúng bước
+      // (requireHourStepExact) mới so bằng mức đã làm tròn.
+      const hourForBounds = opts.requireHourStepExact || hourActual == null || requiredHour < 0
+        ? hourActual
+        : requiredHour;
       const hourShortfall = overshoot > 0
         ? minHourAmount + overshoot
-        : (hourActual == null || !minHourAmount ? 0 : Math.max(0, minHourAmount - hourActual));
+        : (hourForBounds == null || !minHourAmount ? 0 : Math.max(0, minHourAmount - hourForBounds));
       const maxHourAmount = Math.max(0, Math.round(Number(opts.maxHourAmount) || 0));
-      const hourExcess = hourActual == null || !maxHourAmount
+      const hourExcess = hourForBounds == null || !maxHourAmount
         ? 0
-        : Math.max(0, hourActual - maxHourAmount);
+        : Math.max(0, hourForBounds - maxHourAmount);
       const hourRangeViolation = hourShortfall + hourExcess;
       // Vượt maxGoodsAmount vẫn hợp lệ nhưng bị xếp sau: đây là sàn mềm giữ cho
       // tỷ lệ tiền giờ/tiền hàng gần với hóa đơn thật.
@@ -509,6 +529,7 @@
     deriveGoodsTarget,
     reconcileHourAmount,
     recommendInvoiceLimit,
+    explicitInvoiceLimit,
     solveQuantities
   };
 });

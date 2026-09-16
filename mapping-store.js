@@ -134,7 +134,9 @@
 
   function defaultPriorityRules() {
     // webCode 1500007/1300013 chi ton tai o chi nhanh mac dinh. Chi nhanh khac
-    // bat dau voi danh sach rong de khong lap phuong an bang ma hang sai.
+    // bat dau voi danh sach rong de khong lap phuong an bang ma hang sai. Dia
+    // hoa qua cua Nhon khong di qua rule uu tien: content.js dat toi thieu theo
+    // NHOM fruit_platter de bon loai dia duoc luan phien.
     if (currentTenant() !== DEFAULT_TENANT) return [];
     return structuredClone(DEFAULT_PRIORITY_RULES);
   }
