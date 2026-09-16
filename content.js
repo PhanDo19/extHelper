@@ -317,9 +317,169 @@
 
   function isIdleRoomLabel(label, visibleText) {
     const roomName = normalizeRoomText(label);
+    const roomKey = roomName
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleUpperCase("vi-VN");
     return Boolean(roomName) &&
-      roomName.toLocaleUpperCase("vi-VN") !== "BÁN LẺ" &&
+      roomKey !== "BAN LE" &&
       normalizeRoomText(visibleText) === roomName;
+  }
+
+  // Paris Nhơn trả tên phòng trong dữ liệu item nhưng một số bản UI không gắn
+  // tên đó vào alt của ảnh. Khi ấy thẻ vẫn có text phòng (VIP 21, VIP 22...),
+  // nên không được coi là chỉ có BÁN LẺ vì thiếu alt.
+  function roomCardName(room) {
+    if (!room) return "";
+    const image = room.querySelector("img");
+    const textLines = String(room.innerText || "")
+      .split(/\r?\n/)
+      .map(normalizeRoomText)
+      .filter(Boolean);
+    const attributes = [
+      room.getAttribute("data-room-name"),
+      room.getAttribute("data-name"),
+      room.dataset?.roomName,
+      room.dataset?.name,
+      textLines[0],
+      image?.getAttribute("alt")
+    ];
+    const named = attributes.map(normalizeRoomText).find(Boolean);
+    return named || "";
+  }
+
+  function roomAreaKey(value) {
+    return normalizeRoomText(value)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleUpperCase("vi-VN");
+  }
+
+  // "BÁN LẺ"/"BAN LE" là quầy bán lẻ, không phải phòng hát: không được nhận
+  // phiếu có tiền giờ. Phiếu 01000000260 (Nhơn, 01/07/2026) đã bị tạo trên
+  // BAN LE đúng vì bộ loại trừ trước đây chỉ nhận cách viết có dấu.
+  function isRetailRoomName(value) {
+    return roomAreaKey(value) === "BAN LE";
+  }
+
+  // Nút chọn khu "TẤT CẢ" trên sơ đồ phòng. Ưu tiên id _ALL_ đã quan sát được
+  // ở Nhơn; dự phòng theo chữ trên nút (có dấu hay không dấu) để không phụ
+  // thuộc vào một id có thể đổi theo bản website.
+  function findAllRoomAreasButton() {
+    const byId = document.getElementById("_ALL_");
+    if (byId && isRendered(byId)) return byId;
+    return Array.from(document.querySelectorAll("button, a, li, label, span, div"))
+      .find(element => element.children.length <= 1 &&
+        roomAreaKey(element.innerText) === "TAT CA" &&
+        isRendered(element)) || null;
+  }
+
+  function roomCardsExcludingRetail() {
+    return Array.from(document.querySelectorAll(".table.context"))
+      .filter(room => isRendered(room) && !isRetailRoomName(roomCardName(room)));
+  }
+
+  async function waitForRoomCards(previousCount, timeoutMs) {
+    const deadline = Date.now() + Math.max(100, Number(timeoutMs) || 0);
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      if (roomCardsExcludingRetail().length > previousCount) return true;
+    }
+    return false;
+  }
+
+  // Phòng trống theo sơ đồ API của website: trạng thái 0, không có giờ đang
+  // chạy, không phải quầy bán lẻ (theo tên phòng, tên khu hay cờ quầy).
+  function isIdleMapRoom(room) {
+    return Boolean(room?.id) &&
+      Number(room.status) === 0 &&
+      !normalizeRoomText(room.gio) &&
+      Number(room.counter) === 0 &&
+      !isRetailRoomName(room.name) &&
+      !isRetailRoomName(room.areaName);
+  }
+
+  // Phòng trống và không chồng giờ với phiếu đã lập trong ngày. Phòng chưa
+  // dùng trong ngày đứng trước để dàn đều; phòng đã dùng mà giờ rời nhau vẫn
+  // hợp lệ và đứng sau. Giữ nguyên thứ tự khu/phòng của website trong mỗi nhóm.
+  function rankIdleRoomsFromMap(rooms, bookings, checkIn, checkOut) {
+    const bookedKey = name => normalizeRoomText(name).toLocaleUpperCase("vi-VN");
+    return (rooms || [])
+      .filter(isIdleMapRoom)
+      .filter(room => !checkIn || !checkOut || roomIsFreeForRange(bookings, room.name, checkIn, checkOut))
+      .map((room, index) => ({ room, index, used: bookings?.has?.(bookedKey(room.name)) ? 1 : 0 }))
+      .sort((left, right) => left.used - right.used || left.index - right.index)
+      .map(entry => entry.room);
+  }
+
+  function chooseIdleRoomFromMap(rooms, bookings, checkIn, checkOut) {
+    return rankIdleRoomsFromMap(rooms, bookings, checkIn, checkOut)[0] || null;
+  }
+
+  async function loadRoomMapForSelection() {
+    const diagnostics = { mapAvailable: false, mapRooms: 0, mapIdle: 0, mapFreeForTime: 0 };
+    try {
+      const map = await request("getRoomMap", { refresh: true });
+      const rooms = Array.isArray(map?.rooms) ? map.rooms : [];
+      diagnostics.mapAvailable = Boolean(map?.available) && rooms.length > 0;
+      diagnostics.mapRooms = rooms.length;
+      diagnostics.mapIdle = rooms.filter(isIdleMapRoom).length;
+      return { rooms, diagnostics };
+    } catch (error) {
+      console.warn("[InvoiceTarget] Không đọc được sơ đồ phòng từ website; dùng cách quét thẻ.", error);
+      return { rooms: [], diagnostics };
+    }
+  }
+
+  // Mở đúng thẻ phòng đã chọn từ sơ đồ API. Thẻ chưa render (Nhơn mặc định
+  // chỉ hiện khu BÁN LẺ) thì chọn TẤT CẢ rồi chờ. Sau khi form mở, đối chiếu
+  // DBANID trên form với id phòng đã chọn: đây là chốt chặn để không bao giờ
+  // lặp lại việc lập phiếu lên BAN LE (phiếu 01000000260).
+  async function openRoomCardByName(chosen, diagnostics) {
+    const wantedKey = roomAreaKey(chosen.name);
+    const findCard = () => Array.from(document.querySelectorAll(".table.context"))
+      .find(room => isRendered(room) && roomAreaKey(roomCardName(room)) === wantedKey) || null;
+    let card = findCard();
+    if (!card) {
+      const allRoomsButton = findAllRoomAreasButton();
+      if (allRoomsButton) {
+        diagnostics.allRoomAreasSelected = true;
+        allRoomsButton.click();
+        await waitForRoomCards(roomCardsExcludingRetail().length, 2500);
+        card = findCard();
+      }
+    }
+    if (!card) return null;
+    diagnostics.selectedFromMap = chosen.name;
+    (card.querySelector("img") || card).click();
+    for (let wait = 0; wait < 30; wait += 1) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const openedSaveButton = Array.from(document.querySelectorAll("button"))
+        .find(button => (button.innerText || "").trim() === "Lưu HĐ" && isRendered(button));
+      if (!openedSaveButton) continue;
+      const openForm = await request("getOpenFormRoom").catch(() => null);
+      const actualRoomId = String(openForm?.roomId || "").toLowerCase();
+      if (actualRoomId && actualRoomId !== String(chosen.id || "").toLowerCase()) {
+        diagnostics.roomMismatch = `form đang mở phòng ${actualRoomId} nhưng đã chọn ${chosen.name} (${chosen.id})`;
+        await request("closeInvoiceDetail").catch(() => null);
+        return { opened: false, roomName: chosen.name, roomId: chosen.id, diagnostics };
+      }
+      return { opened: true, roomName: chosen.name, roomId: chosen.id, diagnostics };
+    }
+    return { opened: false, roomName: chosen.name, roomId: chosen.id, diagnostics };
+  }
+
+  function roomSearchDiagnosticsText(diagnostics) {
+    const d = diagnostics || {};
+    const parts = [
+      d.mapAvailable
+        ? `Sơ đồ API: ${d.mapRooms || 0} phòng, ${d.mapIdle || 0} trống, ${d.mapFreeForTime || 0} không trùng giờ.`
+        : "Chưa bắt được sơ đồ phòng từ API của website.",
+      `Thẻ trên trang: ${d.roomCards || 0} thẻ phòng, ${d.idleLabels || 0} thẻ rảnh, ${d.freeForTime || 0} không trùng giờ; ` +
+        `${d.allRoomAreasSelected ? "đã chọn TẤT CẢ khu phòng" : "chưa thấy nút TẤT CẢ khu phòng"}.`
+    ];
+    if (d.roomMismatch) parts.push(`Form mở nhầm phòng: ${d.roomMismatch}; đã đóng form, không lập phiếu.`);
+    return parts.join(" ");
   }
 
   // Website không cho hai phiếu cùng PHÒNG chồng giờ. Chỉ cần khoảng giờ rời
@@ -455,38 +615,94 @@
     const bookings = roomBookingsOnDate(pendingNewInvoice.transactionDate, pendingNewInvoice.transactionId);
     const plannedCheckIn = pendingNewInvoice.plan?.checkIn || "";
     const plannedCheckOut = pendingNewInvoice.plan?.checkOut || "";
+    const diagnostics = {
+      roomCards: 0,
+      idleLabels: 0,
+      freeForTime: 0,
+      reservedRooms: bookings.size,
+      allRoomAreasSelected: false
+    };
+    const alreadyOpenButton = Array.from(document.querySelectorAll("button"))
+      .find(button => (button.innerText || "").trim() === "Lưu HĐ" && isRendered(button));
+    if (alreadyOpenButton) return { opened: true, roomName: pendingNewInvoice.roomName || "", diagnostics };
+
+    // Ưu tiên sơ đồ phòng do website trả về (bridge bắt được khi trang tải):
+    // có đủ phòng của mọi khu, trạng thái thật và id phòng để đối chiếu form.
+    // Sơ đồ có nhưng không còn phòng trống/không trùng giờ thì dừng luôn — sơ
+    // đồ là nguồn đầy đủ, quét thẻ trên trang không thể tìm thêm được gì.
+    const roomMap = await loadRoomMapForSelection();
+    Object.assign(diagnostics, roomMap.diagnostics);
+    if (roomMap.rooms.length) {
+      const ranked = rankIdleRoomsFromMap(roomMap.rooms, bookings, plannedCheckIn, plannedCheckOut);
+      diagnostics.mapFreeForTime = ranked.length;
+      if (!ranked.length) return { opened: false, roomName: "", diagnostics };
+      const openedFromMap = await openRoomCardByName(ranked[0], diagnostics);
+      if (openedFromMap) return openedFromMap;
+      // Không tìm thấy thẻ theo tên: rơi về cách quét thẻ trên trang bên dưới.
+    }
     for (let attempt = 0; attempt < 50; attempt += 1) {
       const saveButton = Array.from(document.querySelectorAll("button"))
         .find(button => (button.innerText || "").trim() === "Lưu HĐ" && isRendered(button));
-      if (saveButton) return { opened: true, roomName: pendingNewInvoice.roomName || "" };
-      const idleRooms = Array.from(document.querySelectorAll(".table.context"))
+      if (saveButton) return { opened: true, roomName: pendingNewInvoice.roomName || "", diagnostics };
+
+      // Paris Nhơn mặc định mở khu BÁN LẺ nên DOM chỉ có đúng một thẻ BAN LE.
+      // Chọn TẤT CẢ trước khi quét để website render đủ VIP 21-55. Quyết định
+      // bấm theo KẾT QUẢ (chưa có thẻ phòng nào ngoài BÁN LẺ) chứ không theo
+      // class "đang chọn" của nút, vì class đó chưa được kiểm chứng; bấm lại
+      // TẤT CẢ khi đã chọn cũng vô hại. Sau khi bấm phải chờ thẻ phòng render
+      // xong rồi mới quét lại, nếu không lần quét kế tiếp vẫn chỉ thấy BAN LE.
+      // Các cơ sở khác giữ nguyên hành vi hiện tại vì cấu trúc khu vực có thể khác.
+      if (pageTenantSlug === "parisnhon" && !diagnostics.allRoomAreasSelected) {
+        const allRoomsButton = findAllRoomAreasButton();
+        if (allRoomsButton) {
+          diagnostics.allRoomAreasSelected = true;
+          const cardsBefore = roomCardsExcludingRetail().length;
+          if (cardsBefore === 0) {
+            allRoomsButton.click();
+            await waitForRoomCards(cardsBefore, 2500);
+            continue;
+          }
+        }
+      }
+      const roomCards = Array.from(document.querySelectorAll(".table.context"));
+      diagnostics.roomCards = Math.max(diagnostics.roomCards, roomCards.length);
+      const idleRooms = roomCards
         .filter(room => {
-          const image = room.querySelector("img[alt]");
-          return isRendered(room) && isRendered(image) &&
-            isIdleRoomLabel(image?.getAttribute("alt"), room.innerText);
+          const image = room.querySelector("img");
+          const roomName = roomCardName(room);
+          return isRendered(room) && (!image || isRendered(image)) &&
+            isIdleRoomLabel(roomName, room.innerText);
         });
+      diagnostics.idleLabels = Math.max(diagnostics.idleLabels, idleRooms.length);
       // Chọn phòng mà khoảng giờ của phương án không chồng với phiếu nào đã lập
       // trong ngày. Phòng tái sử dụng được miễn là giờ rời nhau.
       const idleRoom = idleRooms.find(room => {
-        const name = normalizeRoomText(room.querySelector("img[alt]")?.getAttribute("alt"));
+        const name = roomCardName(room);
         if (!name) return false;
         if (!plannedCheckIn || !plannedCheckOut) return true;
         return roomIsFreeForRange(bookings, name, plannedCheckIn, plannedCheckOut);
       });
+      diagnostics.freeForTime = Math.max(
+        diagnostics.freeForTime,
+        idleRooms.filter(room => {
+          const name = roomCardName(room);
+          return name && (!plannedCheckIn || !plannedCheckOut || roomIsFreeForRange(bookings, name, plannedCheckIn, plannedCheckOut));
+        }).length
+      );
       if (idleRoom) {
-        const roomName = normalizeRoomText(idleRoom.querySelector("img[alt]")?.getAttribute("alt"));
-        idleRoom.querySelector("img[alt]")?.click();
+        const roomName = roomCardName(idleRoom);
+        (idleRoom.querySelector("img") || idleRoom).click();
         for (let wait = 0; wait < 30; wait += 1) {
           await new Promise(resolve => setTimeout(resolve, 100));
           const openedSaveButton = Array.from(document.querySelectorAll("button"))
             .find(button => (button.innerText || "").trim() === "Lưu HĐ" && isRendered(button));
-          if (openedSaveButton) return { opened: true, roomName };
+          if (openedSaveButton) return { opened: true, roomName, diagnostics };
         }
-        return { opened: false, roomName };
+        return { opened: false, roomName, diagnostics };
       }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    return { opened: false, roomName: "" };
+    return { opened: false, roomName: "", diagnostics };
   }
 
   async function applyPendingNewInvoicePlan(transaction) {
@@ -866,6 +1082,7 @@
         const opened = await autoOpenIdleRoomInvoiceForm();
         if (opened.opened && opened.roomName) {
           pendingNewInvoice.roomName = opened.roomName;
+          pendingNewInvoice.roomId = opened.roomId || "";
           pendingNewInvoice.formAutoOpenedAt = new Date().toISOString();
           const roomNode = document.getElementById("it-pending-room");
           if (roomNode) roomNode.textContent = opened.roomName;
@@ -873,6 +1090,7 @@
           // chỉ cần tránh trùng khoảng giờ, vẫn dùng lại được phòng này.
           if (transaction) {
             transaction.newInvoiceRoomName = opened.roomName;
+            transaction.newInvoiceRoomId = opened.roomId || "";
             transaction.newInvoiceCheckIn = pendingNewInvoice.plan?.checkIn || "";
             transaction.newInvoiceCheckOut = pendingNewInvoice.plan?.checkOut || "";
             await InvoiceMappingStore.saveStatement(statementDataset);
@@ -894,7 +1112,8 @@
         setStatus(
           opened.opened
             ? `Đã mở form trên phòng rảnh ${opened.roomName || pendingNewInvoice.roomName || ""} cho ngày ${date}, tổng mục tiêu ${formatMoney(credit)}đ. Chưa lưu hóa đơn.`
-            : "Không tìm thấy phòng rảnh để mở form. Extension không chọn BÁN LẺ hoặc phòng đang hoạt động.",
+            : `Không tìm thấy phòng rảnh để mở form. Extension không chọn BÁN LẺ hoặc phòng đang hoạt động. ` +
+              roomSearchDiagnosticsText(opened.diagnostics),
           opened.opened ? "ok" : "error"
         );
       } else if (isSalesWorkspacePage() && pendingNewInvoice.formAutoOpenedAt) {
@@ -932,7 +1151,7 @@
       const timeoutMs = ["replaceInvoiceItems", "applyInvoicePlan"].includes(action) ? 90000
         : action === "issueEInvoice" ? issueTimeoutMs(payload)
         : action === "readInvoiceItems" ? 45000
-        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog"].includes(action) ? 30000
+        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap"].includes(action) ? 30000
         : 5000;
       const timeout = setTimeout(
         () => reject(new Error(`Trang không phản hồi sau ${Math.round(timeoutMs / 1000)}s (${action}).`)),
@@ -4153,6 +4372,10 @@
     transaction.ledgerId = "";
     transaction.apiSavedAt = "";
     transaction.apiSavedRecordId = "";
+    delete transaction.newInvoiceRoomName;
+    delete transaction.newInvoiceRoomId;
+    delete transaction.newInvoiceCheckIn;
+    delete transaction.newInvoiceCheckOut;
     transaction.blockedNote = "";
     transaction.blockedAt = "";
     delete transaction.pendingPlan;
@@ -6483,7 +6706,13 @@
       for (const lookupDateKey of lookupDateKeys) {
         const found = await request("findInvoiceCandidates", {
           dateKey: lookupDateKey,
-          usedInvoiceNos
+          usedInvoiceNos,
+          // A newly saved invoice may be on another server-paged row and the
+          // bridge may still have a cached list from before DoSave.  Read back
+          // this exact number with a fresh list; never fall back to creating it
+          // again when the lookup fails.
+          invoiceNo: plan.invoiceNo,
+          forceRefresh: true
         });
         candidate = (found.candidates || []).find(item =>
           String(item.invoiceNo) === String(plan.invoiceNo) && item.available

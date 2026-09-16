@@ -69,6 +69,7 @@ console.log("existing invoice direct API path: OK");
 
 for (const lookupGuard of [
   "const invoiceListCache = new Map();",
+  "async function findInvoiceRowAcrossPages(dateKey, invoiceNo, initialRows)",
   "async function waitForInvoiceListRow(invoiceNo, uid, timeout = 5000)",
   "const initial = await waitForInvoiceListRow(invoiceNo, uid);",
   "const cachedRows = invoiceListCache.get(String(dateKey));",
@@ -76,6 +77,8 @@ for (const lookupGuard of [
   "(invoiceNo && (element.innerText || \"\").includes(String(invoiceNo)))",
   "const currentRows = invoiceListRows();",
   "if (unissuedRadio.checked &&",
+  "const wantedInvoiceNo = String(options.invoiceNo || \"\").trim();",
+  "const forceRefresh = Boolean(options.forceRefresh || wantedInvoiceNo);",
   "currentRows.every(row => row.dateKey === dateKey)",
   "cached: true"
 ]) {
@@ -85,6 +88,12 @@ for (const lookupGuard of [
 }
 
 console.log("same-day invoice-list reuse: OK");
+
+if (!source.includes("invoiceNo: plan.invoiceNo") || !source.includes("forceRefresh: true")) {
+  throw new Error("Post-save readback must refresh and search for the exact invoice number.");
+}
+
+console.log("post-save exact invoice lookup: OK");
 
 for (const readinessGuard of [
   "const pagerSelects = pagerElement ? Array.from(pagerElement.querySelectorAll(\"select\")) : [];",

@@ -129,6 +129,21 @@ Kết quả kiểm chứng của trace đầy đủ:
 - Server tạo `HD0126080017`; sau Refresh, phiếu xuất hiện trong danh sách với tổng `63.800`, phương thức `TM`.
 - Phòng `VIP 701` được giải phóng sau khi đóng bill.
 
+### 3.5 Sơ đồ phòng (danh sách khu và phòng)
+
+| Thuộc tính | Giá trị |
+|---|---|
+| Method | POST |
+| Endpoint | `/<cơ sở>/Khuvuccontrol/LayDanhSachBan?is_ajax=1` |
+| Headers | `Content-Type: application/json;utf-8`, `X-Requested-With: XMLHttpRequest` |
+| Body | `{"DKHUVUCID":"_ALL_","UITHIETKE":0,"MODE":0}` |
+| Response | `{ code: 1, Tag: [ { id, name, items: [ { id, name, DKHUVUCID, trangThai, gio, quay, ... } ] } ] }` |
+
+- Xác nhận từ Network ở Paris Nhơn ngày 16/09/2026; mẫu response lưu tại `fixtures/room-map-parisnhon.json`.
+- `items[].id` chính là `DBANID` của phiếu lập trên phòng đó; `items[].DKHUVUCID` là khu. `trangThai = 0` và `gio` rỗng là phòng trống.
+- `"_ALL_"` là mã khu "TẤT CẢ" (trùng id nút trên sơ đồ), trả về mọi khu. Nhơn mặc định hiển thị khu BÁN LẺ nên DOM chỉ có một thẻ BAN LE; extension chọn phòng từ API này, không dựa vào thẻ đang hiển thị.
+- Bridge gọi thẳng endpoint khi cần bản mới (`getRoomMap`), đồng thời bắt thụ động response website tự tải làm dự phòng.
+
 ## 4. Cấu trúc payload DoSave
 
 Payload phải được sinh từ mẫu website đã bắt, giữ nguyên tên khóa và kiểu dữ liệu. Các khối chính:

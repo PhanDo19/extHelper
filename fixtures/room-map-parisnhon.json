@@ -1,0 +1,111 @@
+{
+  "code": 1,
+  "message": null,
+  "strData": null,
+  "Tag": [
+    {
+      "backColor": "#FFFFFF",
+      "backUrl": "",
+      "width": 1024,
+      "height": 768,
+      "id": "418ad822-6916-498c-8527-3c4a0632f93b",
+      "name": "BÁN LẺ",
+      "items": [
+        {
+          "warning": "",
+          "isTable": 30,
+          "buttonShape": 0,
+          "chairNum": 0,
+          "quay": 0,
+          "fontName": "",
+          "fontSize": 0.0,
+          "foreColor": "",
+          "bold": 0,
+          "italic": 0,
+          "underline": 0,
+          "hasBorder": 0,
+          "borderWidth": 0,
+          "posX": 0,
+          "posY": 0,
+          "width": 75,
+          "height": 75,
+          "backColor": "#8D918D",
+          "hoverColor": "#B4B7B4",
+          "DKHUVUCID": "f568574c-49cf-4fcd-8fd3-134379f9d1b4",
+          "SuDungTheMoCua": false,
+          "hasContext": true,
+          "id": "6ce25a26-6800-41e8-bcd9-fabbe927a79e",
+          "name": "BAN LE",
+          "note": null,
+          "gio": "",
+          "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png",
+          "trangThai": 0,
+          "roomAddress": "",
+          "ipCongTacDen": "",
+          "thuTuLed": 0
+        }
+      ]
+    },
+    {
+      "backColor": "#FFFFFF",
+      "backUrl": "",
+      "width": 1024,
+      "height": 768,
+      "id": "0dce0c79-8cf2-4a9d-9ba1-94ca3753b48a",
+      "name": "TANG 2",
+      "items": [
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "53f05f3d-8781-4aaf-85a4-8b94f463c1d3", "SuDungTheMoCua": false, "hasContext": true, "id": "c804693e-c19d-4491-bfce-f0cef9c2fd4a", "name": "VIP 21", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "53f05f3d-8781-4aaf-85a4-8b94f463c1d3", "SuDungTheMoCua": false, "hasContext": true, "id": "85f3cee1-e2c6-4a41-a314-a4e4351534cb", "name": "VIP 22", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "53f05f3d-8781-4aaf-85a4-8b94f463c1d3", "SuDungTheMoCua": false, "hasContext": true, "id": "7ac0a43c-9423-4656-9d7b-f5d4fec5e11c", "name": "VIP 23", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "53f05f3d-8781-4aaf-85a4-8b94f463c1d3", "SuDungTheMoCua": false, "hasContext": true, "id": "c843f2a2-5d95-466c-baae-7da153514aae", "name": "VIP 26", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "53f05f3d-8781-4aaf-85a4-8b94f463c1d3", "SuDungTheMoCua": false, "hasContext": true, "id": "d5b4c997-8d44-448d-857a-83938b079c92", "name": "VIP 28", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 }
+      ]
+    },
+    {
+      "backColor": "#FFFFFF",
+      "backUrl": "",
+      "width": 1024,
+      "height": 768,
+      "id": "b26bf0d5-ecc1-4dd4-a169-7d13419f72a5",
+      "name": "TANG 3",
+      "items": [
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "269877de-64b4-4052-9937-33eb2db9af1b", "SuDungTheMoCua": false, "hasContext": true, "id": "beffa3ea-9ce1-4bcf-a74b-b868f7d7fb8d", "name": "VIP 31", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "269877de-64b4-4052-9937-33eb2db9af1b", "SuDungTheMoCua": false, "hasContext": true, "id": "416e4b3b-5f8d-4bd5-b782-09e1950bafe6", "name": "VIP 32", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "269877de-64b4-4052-9937-33eb2db9af1b", "SuDungTheMoCua": false, "hasContext": true, "id": "724a8cf5-daf3-4514-8743-dad30bc36fad", "name": "VIP 33", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "269877de-64b4-4052-9937-33eb2db9af1b", "SuDungTheMoCua": false, "hasContext": true, "id": "8115cf1b-e724-4839-90c1-69171b4c6c05", "name": "VIP 36", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "269877de-64b4-4052-9937-33eb2db9af1b", "SuDungTheMoCua": false, "hasContext": true, "id": "c61f050c-cfc6-432c-b0c9-6f1e04b466ab", "name": "VIP 38", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 }
+      ]
+    },
+    {
+      "backColor": "#FFFFFF",
+      "backUrl": "",
+      "width": 1024,
+      "height": 768,
+      "id": "55413a1d-02ce-4a75-b7e7-c585c4088762",
+      "name": "TANG 4",
+      "items": [
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "a429b431-3343-454b-bc00-33f239bd1bbc", "SuDungTheMoCua": false, "hasContext": true, "id": "ef101766-0cc7-494f-ad43-7da67cc6136e", "name": "VIP 41", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "a429b431-3343-454b-bc00-33f239bd1bbc", "SuDungTheMoCua": false, "hasContext": true, "id": "135858ef-06fb-40ab-9bae-7d36413b6f50", "name": "VIP 42", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "a429b431-3343-454b-bc00-33f239bd1bbc", "SuDungTheMoCua": false, "hasContext": true, "id": "deb1fbb5-69e1-4d23-9aab-cc0a9e69a4aa", "name": "VIP 43", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "a429b431-3343-454b-bc00-33f239bd1bbc", "SuDungTheMoCua": false, "hasContext": true, "id": "43e8cb70-d556-4c5a-aef0-cc61d1411ef1", "name": "VIP 46", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "a429b431-3343-454b-bc00-33f239bd1bbc", "SuDungTheMoCua": false, "hasContext": true, "id": "be451c60-4bbd-411c-851a-108ae8685d5d", "name": "VIP 48", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 }
+      ]
+    },
+    {
+      "backColor": "#FFFFFF",
+      "backUrl": "",
+      "width": 1024,
+      "height": 768,
+      "id": "23532f80-4a76-48b0-8de7-4e181491bded",
+      "name": "TANG 5",
+      "items": [
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "4f28768a-6aab-4ae9-bf5e-b5c0cf1a58db", "SuDungTheMoCua": false, "hasContext": true, "id": "16e079c0-ea18-4cc8-bbab-7e156884ec6d", "name": "VIP 51", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "4f28768a-6aab-4ae9-bf5e-b5c0cf1a58db", "SuDungTheMoCua": false, "hasContext": true, "id": "8b3e0379-e828-4542-86f2-8c47f7a07ba7", "name": "VIP 52", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 },
+        { "warning": "", "isTable": 30, "buttonShape": 0, "chairNum": 0, "quay": 0, "fontName": "", "fontSize": 0.0, "foreColor": "", "bold": 0, "italic": 0, "underline": 0, "hasBorder": 0, "borderWidth": 0, "posX": 0, "posY": 0, "width": 75, "height": 75, "backColor": "#8D918D", "hoverColor": "#B4B7B4", "DKHUVUCID": "4f28768a-6aab-4ae9-bf5e-b5c0cf1a58db", "SuDungTheMoCua": false, "hasContext": true, "id": "9096e5d3-aa40-49e0-8499-fcd7ead049bc", "name": "VIP 55", "note": null, "gio": "", "anh": "/Images/erp/__eca8d13dc1984300a6c9c27d119e37f1.png", "trangThai": 0, "roomAddress": "", "ipCongTacDen": "", "thuTuLed": 0 }
+      ]
+    }
+  ],
+  "Tag2": null,
+  "decData": 0.0,
+  "tableData": null
+}

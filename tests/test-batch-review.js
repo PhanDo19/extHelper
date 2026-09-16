@@ -83,7 +83,8 @@ vm.runInContext(
 );
 vm.runInContext(
   `${extractFunction("normalizeRoomText")}; ${extractFunction("isIdleRoomLabel")}; ` +
-  "this.isIdleRoomLabel = isIdleRoomLabel;",
+  `${extractFunction("roomCardName")}; ${extractFunction("roomAreaKey")}; ${extractFunction("isRetailRoomName")}; ` +
+  "this.isIdleRoomLabel = isIdleRoomLabel; this.roomCardName = roomCardName; this.isRetailRoomName = isRetailRoomName;",
   sandbox
 );
 vm.runInContext(
@@ -349,6 +350,26 @@ if (hydratedPlans.length !== 1 || hydratedPlans[0].transaction.status !== "revie
 if (!sandbox.isIdleRoomLabel("VIP 301", "VIP 301")) throw new Error("Phòng chỉ có tên phải được nhận diện là rảnh.");
 if (sandbox.isIdleRoomLabel("VIP 301", "VIP 301 1h 05'")) throw new Error("Phòng có thời lượng không được nhận diện là rảnh.");
 if (sandbox.isIdleRoomLabel("BÁN LẺ", "BÁN LẺ")) throw new Error("BÁN LẺ không được dùng cho hóa đơn có tiền giờ.");
+
+const roomCardWithoutAlt = {
+  innerText: "VIP 21",
+  dataset: {},
+  getAttribute: () => "",
+  querySelector: () => null
+};
+if (sandbox.roomCardName(roomCardWithoutAlt) !== "VIP 21") {
+  throw new Error("Paris Nhơn room name must fall back to card text when image alt is empty.");
+}
+if (sandbox.isIdleRoomLabel("BAN LE", "BAN LE")) {
+  throw new Error("BAN LE must not be selected for a room-hour invoice.");
+}
+// Quầy bán lẻ ở mọi cách viết đều bị loại; phòng thật thì không.
+for (const retail of ["BÁN LẺ", "BAN LE", "Bán lẻ", "  ban   le "]) {
+  if (!sandbox.isRetailRoomName(retail)) throw new Error(`"${retail}" phải được nhận là quầy bán lẻ.`);
+}
+for (const room of ["VIP 21", "VIP 55", "P.301", ""]) {
+  if (sandbox.isRetailRoomName(room)) throw new Error(`"${room}" không phải quầy bán lẻ.`);
+}
 
 // Tổng sao kê đã gồm VAT; phần dư nhỏ sau tiền hàng được bù vào Tiền giờ.
 const closest = sandbox.selectClosestInvoiceCandidate([
@@ -1224,6 +1245,27 @@ const baseTransaction = {
   }
   if (!source.includes('trim() === "Lưu HĐ" && isRendered(button)')) {
     throw new Error("Phải xác nhận form BÁN LẺ đã mở bằng nút Lưu HĐ hiển thị.");
+  }
+  // Paris Nhơn mặc định chỉ render khu BÁN LẺ: phải chọn TẤT CẢ trước khi
+  // quét, tìm nút theo id lẫn theo chữ, bấm theo kết quả quét và chờ thẻ phòng
+  // render xong thay vì ngủ cố định rồi quét lại ngay.
+  const autoOpenSource = extractFunction("autoOpenIdleRoomInvoiceForm");
+  for (const marker of [
+    'pageTenantSlug === "parisnhon" && !diagnostics.allRoomAreasSelected',
+    "const allRoomsButton = findAllRoomAreasButton();",
+    "const cardsBefore = roomCardsExcludingRetail().length;",
+    "if (cardsBefore === 0) {",
+    "await waitForRoomCards(cardsBefore, 2500);"
+  ]) {
+    if (!autoOpenSource.includes(marker)) throw new Error(`Tự chọn TẤT CẢ khu phòng ở Nhơn thiếu: ${marker}`);
+  }
+  const findAllSource = extractFunction("findAllRoomAreasButton");
+  if (!findAllSource.includes('document.getElementById("_ALL_")') ||
+      !findAllSource.includes('roomAreaKey(element.innerText) === "TAT CA"')) {
+    throw new Error("Nút TẤT CẢ phải được tìm theo id _ALL_ và dự phòng theo chữ trên nút.");
+  }
+  if (autoOpenSource.includes('classList.contains("btn-danger")')) {
+    throw new Error("Không được quyết định bấm TẤT CẢ theo class của nút; phải theo số thẻ phòng quét được.");
   }
   const openNewInvoiceSource = extractFunction("openPosForNewInvoice");
   if (openNewInvoiceSource.includes("offsetParent")) {

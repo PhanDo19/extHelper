@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.27.5 (2026-09-16)
+
+- Chọn phòng cho phiếu mới theo **sơ đồ phòng do website trả về** thay vì chỉ quét thẻ trên trang. Bridge bắt thụ động response sơ đồ (nhận diện theo hình dạng dữ liệu `Tag[].items[]` có `DKHUVUCID`/`trangThai`, không cần biết trước endpoint) khi màn hình Bán hàng tự tải, nhớ luôn request đó để gọi lại bản mới nhất. Mỗi cơ sở tự lấy sơ đồ của mình, không cần cung cấp dữ liệu tay.
+- Phòng hợp lệ: trạng thái 0, không có giờ đang chạy, không phải quầy bán lẻ (theo tên phòng, tên khu hoặc cờ quầy), không trùng giờ với phiếu đã lập trong ngày; phòng chưa dùng trong ngày được ưu tiên. Thẻ chưa render (Nhơn mặc định chỉ hiện BÁN LẺ) thì tự chọn TẤT CẢ rồi bấm đúng thẻ theo tên.
+- Sau khi form mở, đối chiếu `DBANID` trên form với id phòng đã chọn; lệch thì đóng form và báo lỗi, không lập phiếu. Đây là chốt chặn cho tình huống phiếu 01000000260 bị lập lên BAN LE.
+- Không bắt được sơ đồ thì giữ nguyên cách quét thẻ cũ. Thông báo lỗi nêu số phòng theo sơ đồ API và số thẻ trên trang để phân biệt hai nguồn.
+- `bridge.js` chuyển sang nạp ở `document_start` để móc XHR/fetch trước khi website tải sơ đồ phòng; các việc bridge làm lúc nạp (bọc alert, móc request, observer, listener) đều không cần DOM dựng xong.
+- Bridge gọi thẳng endpoint sơ đồ phòng đã xác nhận từ Network (`POST /<cơ sở>/Khuvuccontrol/LayDanhSachBan?is_ajax=1`, body `{"DKHUVUCID":"_ALL_","UITHIETKE":0,"MODE":0}`) khi cần bản mới nhất; bắt thụ động chỉ còn là dự phòng. Mất phiên (HTML login) được nhận diện, không coi là sơ đồ.
+
+## 1.27.4 (2026-09-16)
+
+- Paris Nhơn: tự chuyển sơ đồ sang khu `TẤT CẢ` trước khi tìm phòng, vì website mặc định chỉ render khu `BÁN LẺ` (một thẻ `BAN LE`). Loại trừ cả `BÁN LẺ` và `BAN LE` khỏi lựa chọn phòng có tiền giờ; thông báo lỗi cho biết đã chọn được toàn bộ khu hay chưa.
+- Nút `TẤT CẢ` được tìm theo id `_ALL_` và dự phòng theo chữ trên nút; quyết định bấm theo kết quả quét (chưa có thẻ phòng nào ngoài BÁN LẺ) thay vì theo class của nút, và chờ thẻ phòng render xong trước khi quét lại.
+- Lưu ý dữ liệu: phiếu 01000000260 (Nhơn, sao kê 01/07/2026, 393.800đ) đã được tạo trên `BAN LE` trước khi có bản sửa này; kế toán cần kiểm tra và chuyển phòng hoặc hủy phiếu trên website.
+
+## 1.27.3 (2026-09-15)
+
+- Paris Nhơn: khi giao diện phòng không đặt tên vào `img alt`, extension lấy tên từ thuộc tính dữ liệu hoặc nội dung thẻ phòng (VIP 21–55), chọn được phòng riêng thay vì báo chỉ có BÁN LẺ. Thông báo lỗi mở form bổ sung số thẻ phòng, thẻ rảnh và phòng không trùng giờ; thao tác làm lại xoá đặt phòng tạm cũ.
+
+## 1.27.2 (2026-09-15)
+
+- Sau khi API tạo phiếu thành công, bước đối soát đọc lại đúng số phiếu với danh sách mới tải; không dùng cache cũ và có thể quét các trang Kendo phân trang để tìm phiếu vừa cấp số. Không gọi lại API tạo nếu đọc lại chưa thấy.
+
 ## 1.27.1 (2026-09-15)
 
 - Sửa solver coi `constraintGroupMax = null` (giá trị kho thật ghi cho mọi mã không có trần nhóm) là trần nhóm = 0, khiến bia và khăn ướt không bao giờ được đưa vào phương án dù là món hàng bắt buộc. Hóa đơn thường lặng lẽ thiếu bia/khăn; ở Paris Nhơn, hóa đơn lớn (ví dụ 7.457.000đ) mất luôn sức chứa của 3 mã bia và báo "Không tìm được tổ hợp hàng đạt tối thiểu … Kho có sức chứa lý thuyết khoảng … nhưng không ghép được tổ hợp hợp lệ" dù kho đủ hàng.

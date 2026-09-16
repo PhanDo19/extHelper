@@ -114,6 +114,14 @@
       const meta = this.__invoiceTargetRequest;
       const captureSave = Boolean(meta && shouldCaptureSaveRequest(meta.method, meta.url));
       const traceApi = Boolean(meta && shouldTraceApiRequest(meta.method, meta.url));
+      if (meta && isSameOriginRequest(meta.url)) {
+        // Sơ đồ phòng: website tự tải khi mở màn hình Bán hàng. Nhận diện theo
+        // hình dạng dữ liệu (không cần biết trước endpoint) và giữ lại cả
+        // request để extension gọi lại khi cần bản mới.
+        this.addEventListener("loadend", () => {
+          captureRoomMapResponse(meta, body, this.status, xhrResponseText(this, ROOM_MAP_TEXT_LIMIT));
+        }, { once: true });
+      }
       if (captureSave || traceApi) {
         const serialized = serializeRequestBody(body);
         this.addEventListener("loadend", () => {
@@ -145,6 +153,12 @@
         const traceApi = shouldTraceApiRequest(method, url);
         const serialized = (capture || traceApi) ? serializeRequestBody(init?.body) : null;
         const response = await nativeFetch.apply(this, arguments);
+        if (isSameOriginRequest(url) && /json|text/i.test(String(response.headers?.get?.("content-type") || ""))) {
+          try {
+            const text = await response.clone().text();
+            captureRoomMapResponse({ method, url, headers }, init?.body, response.status, text.slice(0, ROOM_MAP_TEXT_LIMIT));
+          } catch (_) { /* Không đọc được body thì bỏ qua, không ảnh hưởng website. */ }
+        }
         if (capture || traceApi) {
           let responseText = "";
           try {
@@ -168,6 +182,181 @@
   }
 
   installSaveRequestCapture();
+
+  // ---------------------------------------------------------------------------
+  // Sơ đồ phòng (danh sách khu + phòng) do website trả về.
+  //
+  // Hình dạng: { code, Tag: [ { id, name, items: [ { id, name, DKHUVUCID,
+  // trangThai, gio, quay, ... } ] } ] }. item.id chính là DBANID của phiếu lập
+  // trên phòng đó; trangThai 0 và gio rỗng là phòng trống. Không suy đoán
+  // endpoint: bridge bắt đúng response website tự tải rồi nhớ request đó.
+  // ---------------------------------------------------------------------------
+  const ROOM_MAP_TEXT_LIMIT = 2 * 1024 * 1024;
+  let roomMapCapture = null;
+
+  function isSameOriginRequest(url) {
+    try { return new URL(url, location.href).origin === location.origin; } catch (_) { return false; }
+  }
+
+  function looksLikeRoomMapText(text) {
+    return typeof text === "string" &&
+      text.includes('"DKHUVUCID"') &&
+      text.includes('"trangThai"') &&
+      text.includes('"items"');
+  }
+
+  function parseRoomMapPayload(payload) {
+    const areas = Array.isArray(payload?.Tag) ? payload.Tag : null;
+    if (!areas || !areas.length) return null;
+    const parsed = areas
+      .filter(area => area && typeof area === "object" && Array.isArray(area.items))
+      .map(area => ({
+        id: String(area.id || ""),
+        name: String(area.name || "").trim(),
+        rooms: area.items
+          .filter(item => item && typeof item === "object" && ("DKHUVUCID" in item || "trangThai" in item))
+          .map(item => ({
+            id: String(item.id || ""),
+            name: String(item.name || "").trim(),
+            areaId: String(item.DKHUVUCID || ""),
+            areaName: String(area.name || "").trim(),
+            status: Number(item.trangThai) || 0,
+            gio: String(item.gio || "").trim(),
+            counter: Number(item.quay) || 0,
+            isTable: Number(item.isTable) || 0
+          }))
+      }))
+      .filter(area => area.rooms.length);
+    if (!parsed.length) return null;
+    return { areas: parsed, rooms: parsed.flatMap(area => area.rooms) };
+  }
+
+  function captureRoomMapResponse(meta, body, status, responseText) {
+    if (!looksLikeRoomMapText(responseText)) return;
+    let payload;
+    try { payload = JSON.parse(responseText); } catch (_) { return; }
+    const parsed = parseRoomMapPayload(payload);
+    if (!parsed) return;
+    roomMapCapture = {
+      method: String(meta?.method || "GET"),
+      url: new URL(meta?.url || location.href, location.href).href,
+      headers: safeRequestHeaders(meta?.headers || {}),
+      ...serializeRequestBody(body),
+      status: Number(status || 0),
+      source: "captured",
+      capturedAt: new Date().toISOString(),
+      ...parsed
+    };
+  }
+
+  function rebuildRequestBody(capture) {
+    if (!capture) return null;
+    if (capture.bodyType === "formdata") {
+      const form = new FormData();
+      for (const entry of capture.body || []) {
+        if (Array.isArray(entry) && typeof entry[1] === "string") form.append(entry[0], entry[1]);
+      }
+      return form;
+    }
+    if (["text", "urlencoded"].includes(capture.bodyType)) return String(capture.body || "");
+    return null;
+  }
+
+  // Endpoint sơ đồ phòng đã xác nhận từ Network (Paris Nhơn, 16/09/2026):
+  //   POST /<cơ sở>/Khuvuccontrol/LayDanhSachBan?is_ajax=1
+  //   body {"DKHUVUCID":"_ALL_","UITHIETKE":0,"MODE":0}
+  // "_ALL_" là mã khu "TẤT CẢ" (trùng id nút trên sơ đồ) nên trả đủ mọi khu.
+  // Đường dẫn lấy theo cơ sở của trang hiện tại, cookie phiên tự đi kèm.
+  const ROOM_MAP_ENDPOINT = "Khuvuccontrol/LayDanhSachBan?is_ajax=1";
+  const ROOM_MAP_REQUEST_BODY = Object.freeze({ DKHUVUCID: "_ALL_", UITHIETKE: 0, MODE: 0 });
+
+  async function fetchRoomMapDirect() {
+    const endpoint = `${location.origin}/${shopBasePath()}/${ROOM_MAP_ENDPOINT}`;
+    const response = await window.fetch(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/json;utf-8",
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify(ROOM_MAP_REQUEST_BODY)
+    });
+    const responseText = await response.text().catch(() => "");
+    if (!response.ok) throw new Error(`Website tu choi so do phong (HTTP ${response.status}).`);
+    if (isLoginRedirect(response, responseText)) {
+      throw new Error("Phien dang nhap da het hoac bi co so khac chiem khi doc so do phong.");
+    }
+    let payload = null;
+    try { payload = JSON.parse(responseText); } catch (_) {}
+    if (payload && Number(payload.code) !== 1) {
+      throw new Error(`Website tra loi so do phong: ${String(payload.message || payload.code || "khong ro")}`);
+    }
+    const parsed = parseRoomMapPayload(payload);
+    if (!parsed) throw new Error("Phan hoi so do phong khong dung hinh dang mong doi.");
+    return { url: endpoint, ...parsed };
+  }
+
+  // Thứ tự ưu tiên: gọi thẳng endpoint đã xác nhận → gọi lại request website
+  // đã dùng (bắt thụ động) → bản đã bắt (đủ danh sách phòng, trạng thái có
+  // thể cũ). Không có nguồn nào thì trả available=false để content rơi về
+  // cách quét thẻ trên trang.
+  async function getRoomMap(options = {}) {
+    if (options.refresh) {
+      try {
+        const direct = await fetchRoomMapDirect();
+        roomMapCapture = {
+          ...(roomMapCapture || {}),
+          ...direct,
+          method: "POST",
+          source: "direct",
+          capturedAt: new Date().toISOString(),
+          refreshed: true
+        };
+      } catch (error) {
+        console.warn("[InvoiceTarget bridge] Khong goi thang duoc so do phong; thu goi lai request da bat.", error);
+        if (roomMapCapture?.url && roomMapCapture.source !== "direct") {
+          try {
+            const init = { method: roomMapCapture.method, credentials: "same-origin", headers: { ...roomMapCapture.headers } };
+            const body = rebuildRequestBody(roomMapCapture);
+            if (body != null && !/^(GET|HEAD)$/i.test(init.method)) init.body = body;
+            const response = await window.fetch(roomMapCapture.url, init);
+            const parsed = parseRoomMapPayload(JSON.parse(await response.clone().text()));
+            if (parsed) roomMapCapture = { ...roomMapCapture, ...parsed, capturedAt: new Date().toISOString(), refreshed: true };
+          } catch (replayError) {
+            console.warn("[InvoiceTarget bridge] Khong goi lai duoc so do phong; dung ban da bat.", replayError);
+          }
+        }
+      }
+    }
+    if (!roomMapCapture) return { available: false, reason: "not-captured", areas: [], rooms: [] };
+    return {
+      available: true,
+      source: roomMapCapture.source || "captured",
+      capturedAt: roomMapCapture.capturedAt,
+      refreshed: Boolean(roomMapCapture.refreshed),
+      url: roomMapCapture.url,
+      areas: roomMapCapture.areas,
+      rooms: roomMapCapture.rooms
+    };
+  }
+
+  // Phòng/kho của form phiếu đang mở, để đối chiếu với phòng đã chọn trước khi
+  // gửi API tạo phiếu. Không có form thì trả rỗng, không ném lỗi.
+  function getOpenFormRoom() {
+    try {
+      const formData = currentFormData({ allowBlankRecordId: true });
+      const fields = mapObject(formData?.mapper?.Maps);
+      return {
+        roomId: String(fields.DBANID || "").trim(),
+        areaId: String(fields.DKHUVUCID || "").trim(),
+        warehouseId: String(fields.DKHOXUATID || "").trim(),
+        recordId: String(formDataRecordId(formData) || "").trim()
+      };
+    } catch (_) {
+      return { roomId: "", areaId: "", warehouseId: "", recordId: "" };
+    }
+  }
 
   function suffixInput(prefix) {
     const pattern = new RegExp(`^${prefix}\\d+$`);
@@ -1430,6 +1619,78 @@
     }).filter(item => item.invoiceNo && item.dateKey);
   }
 
+  function invoiceListDataSource() {
+    const grid = invoiceListElement();
+    const jq = window.jQuery || window.$;
+    const widget = grid && jq ? jq(grid).data("kendoGrid") : null;
+    return widget?.dataSource || null;
+  }
+
+  async function waitForInvoiceListPage(page, dateKey, timeout = 22000, previousSignature = "") {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const dataSource = invoiceListDataSource();
+      const currentPage = typeof dataSource?.page === "function" ? Number(dataSource.page()) : page;
+      const rows = invoiceListRows();
+      const loading = document.querySelector(".k-loading-mask");
+      const settled = !loading || !isVisible(loading);
+      const signature = rows.map(row => `${row.uid}:${row.invoiceNo}`).join("|");
+      const pageChanged = !previousSignature || signature !== previousSignature;
+      if (settled && currentPage === page && pageChanged &&
+          (!rows.length || rows.every(row => row.dateKey === dateKey))) {
+        return rows;
+      }
+      await wait(180);
+    }
+    throw new Error("Danh sách phiếu chưa tải xong. Hãy thử lại.");
+  }
+
+  // The grid is server-paged.  invoiceListRows() only sees the visible page,
+  // so a newly-created invoice can be present on the server while the first
+  // page does not contain it.  The post-save readback supplies an exact number
+  // and uses this helper to walk every page for that date.  When no match is
+  // found, the original page is restored; when found, the matching page is
+  // intentionally kept visible so openInvoiceRowForReading can open its row.
+  async function findInvoiceRowAcrossPages(dateKey, invoiceNo, initialRows) {
+    const wanted = String(invoiceNo || "").trim();
+    if (!wanted) return null;
+    const dataSource = invoiceListDataSource();
+    if (!dataSource || typeof dataSource.page !== "function") {
+      return (initialRows || []).find(row => String(row.invoiceNo) === wanted) || null;
+    }
+    const originalPage = Math.max(1, Number(dataSource.page()) || 1);
+    const pageSize = Math.max(1, Number(dataSource.pageSize?.()) || (initialRows || []).length || 20);
+    const total = Math.max(0, Number(dataSource.total?.()) || 0);
+    const pageCount = Math.min(100, Math.max(1, Math.ceil(total / pageSize)));
+    const pages = [...Array(pageCount)].map((_, index) => index + 1);
+    // Prefer the currently displayed page; it is already settled by the caller.
+    pages.sort((left, right) => (left === originalPage ? -1 : right === originalPage ? 1 : left - right));
+    try {
+      for (const page of pages) {
+        if (Number(dataSource.page()) !== page) {
+          const previousSignature = invoiceListRows().map(row => `${row.uid}:${row.invoiceNo}`).join("|");
+          dataSource.page(page);
+          await waitForInvoiceListPage(page, dateKey, 22000, previousSignature);
+        }
+        const rows = page === originalPage && Array.isArray(initialRows)
+          ? initialRows
+          : invoiceListRows();
+        const exact = rows.find(row => String(row.invoiceNo) === wanted && row.dateKey === dateKey);
+        if (exact) return exact;
+      }
+    } finally {
+      // Keep the matching page in place.  If the scan failed, avoid leaving the
+      // user on an arbitrary page of the sales list.
+      const currentRows = invoiceListRows();
+      const onTargetPage = currentRows.some(row => String(row.invoiceNo) === wanted && row.dateKey === dateKey);
+      if (!onTargetPage && Number(dataSource.page()) !== originalPage) {
+        dataSource.page(originalPage);
+        await waitForInvoiceListPage(originalPage, dateKey).catch(() => {});
+      }
+    }
+    return null;
+  }
+
   function setNativeValue(input, value) {
     const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
     if (descriptor?.set) descriptor.set.call(input, value);
@@ -1443,7 +1704,7 @@
     return match ? `${match[3]}/${match[2]}/${match[1]}` : "";
   }
 
-  async function findInvoiceCandidates(dateKey, usedInvoiceNos) {
+  async function findInvoiceCandidates(dateKey, usedInvoiceNos, options = {}) {
     const expected = dateDisplay(dateKey);
     if (!expected) throw new Error("Ngày giao dịch không hợp lệ.");
     if (!invoiceListElement()) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
@@ -1455,8 +1716,13 @@
     if (!unissuedRadio) throw new Error('Không tìm thấy bộ lọc "Chưa xuất hóa đơn".');
 
     const used = new Set((usedInvoiceNos || []).map(String));
+    const wantedInvoiceNo = String(options.invoiceNo || "").trim();
+    const forceRefresh = Boolean(options.forceRefresh || wantedInvoiceNo);
+    if (forceRefresh) invoiceListCache.delete(String(dateKey));
     const cachedRows = invoiceListCache.get(String(dateKey));
-    if (unissuedRadio.checked && cachedRows?.length) {
+    if (unissuedRadio.checked &&
+        !forceRefresh &&
+        cachedRows?.length) {
       return {
         dateKey,
         invoiceStatus: "unissued",
@@ -1470,6 +1736,7 @@
     // already loaded unissued list avoids repeatedly destroying/recreating the
     // Kendo pager DropDownList between transactions.
     if (unissuedRadio.checked &&
+        !forceRefresh &&
         currentRows.length &&
         currentRows.every(row => row.dateKey === dateKey)) {
       invoiceListCache.set(String(dateKey), currentRows.map(row => ({ ...row })));
@@ -1519,6 +1786,15 @@
         await new Promise(resolve => setTimeout(resolve, 180));
         const rows = invoiceListRows();
         if (rows.length && rows.every(row => row.dateKey === dateKey)) {
+          const exact = wantedInvoiceNo
+            ? await findInvoiceRowAcrossPages(dateKey, wantedInvoiceNo, rows)
+            : null;
+          if (wantedInvoiceNo) {
+            const candidates = exact
+              ? [{ ...exact, available: !used.has(String(exact.invoiceNo)) }]
+              : [];
+            return { dateKey, invoiceStatus: "unissued", exact: Boolean(exact), suppressedAlerts, candidates };
+          }
           invoiceListCache.set(String(dateKey), rows.map(row => ({ ...row })));
           return {
             dateKey,
@@ -3361,9 +3637,15 @@
     let result;
     try {
       if (detail.action === "scan") result = scan();
+      else if (detail.action === "getRoomMap") result = await getRoomMap({ refresh: Boolean(detail.refresh) });
+      else if (detail.action === "getOpenFormRoom") result = getOpenFormRoom();
       else if (detail.action === "apply") result = apply(detail.changes);
       else if (detail.action === "replaceInvoiceItems") result = await replaceInvoiceItems(detail.items);
-      else if (detail.action === "findInvoiceCandidates") result = await findInvoiceCandidates(detail.dateKey, detail.usedInvoiceNos);
+      else if (detail.action === "findInvoiceCandidates") result = await findInvoiceCandidates(
+        detail.dateKey,
+        detail.usedInvoiceNos,
+        { invoiceNo: detail.invoiceNo, forceRefresh: detail.forceRefresh }
+      );
       else if (detail.action === "findIssuedInvoiceByAmount") result = await findIssuedInvoiceByAmount(detail.dateKey, detail.amount);
       else if (detail.action === "openInvoiceCandidate") result = await openInvoiceCandidate(detail.uid, detail.invoiceNo);
       else if (detail.action === "applyCheckOut") result = applyCheckOut(detail.value);
