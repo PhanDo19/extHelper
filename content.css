@@ -290,6 +290,10 @@
 #it-stock-admin[hidden] { display: none !important; }
 #it-panel:not(.stock-mode) #it-state-preview { display: none !important; }
 .it-stock-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) 190px auto; align-items: center; gap: 10px; margin: 12px 0; }
+.it-restock-box { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; margin: 8px 0; border: 1px solid #f0c9a8; border-radius: 8px; background: #fff8f1; }
+.it-restock-box b { color: #a15c00; }
+.it-restock-box small { width: 100%; color: #52657d; }
+.it-restock-box label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
 .it-stock-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .it-stock-actions button { padding: 8px 10px !important; font-size: 11px; white-space: nowrap; }
 .it-stock-kpis { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 8px; margin-bottom: 10px; }

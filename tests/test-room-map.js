@@ -66,11 +66,16 @@ assert.strictEqual(bridgeBox.parseRoomMapPayload({ code: 1, Tag: { detail: {} } 
 const contentBox = {};
 vm.createContext(contentBox);
 vm.runInContext(
+  // Đơn giá giờ theo phòng: chọn phòng nay phụ thuộc đơn giá nên sandbox phải
+  // có cả bảng giá lẫn cơ sở đang mở.
+  'const pageTenantSlug = "parisnhon";\n' +
+  /const DEFAULT_HOURLY_RATE = \d+;/.exec(contentSource)[0] + "\n" +
+  /const PARIS_NHON_ROOM_HOURLY_RATES = Object\.freeze\([^;]+\);/.exec(contentSource)[0] + "\n" +
   [
     "normalizeRoomText", "roomAreaKey", "isRetailRoomName", "parseUiDateTime",
-    "roomIsFreeForRange", "isIdleMapRoom", "rankIdleRoomsFromMap", "chooseIdleRoomFromMap"
+    "roomIsFreeForRange", "roomHourlyRate", "isIdleMapRoom", "rankIdleRoomsFromMap", "chooseIdleRoomFromMap"
   ].map(name => extractFunction(contentSource, name)).join(";\n") +
-  ";\nthis.isIdleMapRoom = isIdleMapRoom; this.rankIdleRoomsFromMap = rankIdleRoomsFromMap; this.chooseIdleRoomFromMap = chooseIdleRoomFromMap;",
+  ";\nthis.isIdleMapRoom = isIdleMapRoom; this.rankIdleRoomsFromMap = rankIdleRoomsFromMap; this.chooseIdleRoomFromMap = chooseIdleRoomFromMap; this.roomHourlyRate = roomHourlyRate;",
   contentBox
 );
 const rooms = parsed.rooms;
@@ -103,11 +108,46 @@ const onlyRetailIdle = rooms.map(room => room.name === "BAN LE" ? room : { ...ro
 assert.strictEqual(contentBox.chooseIdleRoomFromMap(onlyRetailIdle, noBookings, checkIn, checkOut), null,
   "Chỉ còn BAN LE trống thì không được lập phiếu có tiền giờ.");
 
+// --- Đơn giá giờ theo phòng (khảo sát Nhơn 17/09/2026) ---------------------------
+// Đuôi 3 → 800.000đ/giờ, đuôi 6 → 400.000đ/giờ, còn lại 600.000đ/giờ.
+for (const [room, rate] of [
+  ["VIP 21", 600000], ["VIP 22", 600000], ["VIP 23", 800000], ["VIP 26", 400000], ["VIP 28", 600000],
+  ["VIP 31", 600000], ["VIP 33", 800000], ["VIP 36", 400000],
+  ["VIP 43", 800000], ["VIP 46", 400000], ["VIP 55", 600000]
+]) {
+  assert.strictEqual(contentBox.roomHourlyRate(room), rate, room + " phải là " + rate + "đ/giờ");
+}
+// Phương án tính theo đơn giá nào thì chỉ nhận phòng cùng đơn giá đó: mở phòng
+// khác giá sẽ cho Tiền giờ khác và phiếu lệch tổng.
+const only800 = contentBox.rankIdleRoomsFromMap(rooms, noBookings, checkIn, checkOut, 800000);
+assert.deepStrictEqual(only800.map(room => room.name), ["VIP 23", "VIP 33", "VIP 43"],
+  "Phương án phòng 800k chỉ được nhận phòng đuôi 3");
+const only400 = contentBox.rankIdleRoomsFromMap(rooms, noBookings, checkIn, checkOut, 400000);
+assert.deepStrictEqual(only400.map(room => room.name), ["VIP 26", "VIP 36", "VIP 46"],
+  "Phương án phòng 400k chỉ được nhận phòng đuôi 6");
+const only600 = contentBox.rankIdleRoomsFromMap(rooms, noBookings, checkIn, checkOut, 600000);
+assert.strictEqual(only600.length, 12, "Nhơn có 12 phòng 600k");
+assert(only600.every(room => contentBox.roomHourlyRate(room.name) === 600000));
+// Không truyền đơn giá (cơ sở khác) thì không lọc gì.
+assert.strictEqual(contentBox.rankIdleRoomsFromMap(rooms, noBookings, checkIn, checkOut, 0).length, 18);
+
+// Bảng giá 3 mức CHỈ áp cho Nhơn. Kim Giang và Linh Đàm chưa khảo sát nên mọi
+// phòng vẫn là 600.000đ, kể cả khi tên phòng trùng kiểu đặt của Nhơn — nếu rò
+// sang, phiếu hai cơ sở kia sẽ tính Tiền giờ theo đơn giá không có thật.
+for (const tenant of ["pariskimgiang", "parislinhdam"]) {
+  for (const room of ["VIP 21", "VIP 23", "VIP 26", "VIP 33", "VIP 46"]) {
+    assert.strictEqual(contentBox.roomHourlyRate(room, tenant), 600000,
+      `${tenant}: ${room} phải giữ 600.000đ/giờ, không dùng bảng giá của Nhơn`);
+  }
+}
+assert.strictEqual(contentBox.roomHourlyRate("VIP 23", "parisnhon"), 800000,
+  "Nhơn vẫn phải áp đúng bảng giá của mình");
+
 // --- bất biến nguồn --------------------------------------------------------------
 const autoOpenSource = extractFunction(contentSource, "autoOpenIdleRoomInvoiceForm");
 for (const marker of [
   "await loadRoomMapForSelection()",
-  "rankIdleRoomsFromMap(roomMap.rooms, bookings, plannedCheckIn, plannedCheckOut)",
+  "rankIdleRoomsFromMap(roomMap.rooms, bookings, plannedCheckIn, plannedCheckOut, plannedRate)",
   "await openRoomCardByName(ranked[0], diagnostics)"
 ]) {
   assert(autoOpenSource.includes(marker), `autoOpenIdleRoomInvoiceForm thiếu: ${marker}`);

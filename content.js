@@ -407,18 +407,22 @@
   // Phòng trống và không chồng giờ với phiếu đã lập trong ngày. Phòng chưa
   // dùng trong ngày đứng trước để dàn đều; phòng đã dùng mà giờ rời nhau vẫn
   // hợp lệ và đứng sau. Giữ nguyên thứ tự khu/phòng của website trong mỗi nhóm.
-  function rankIdleRoomsFromMap(rooms, bookings, checkIn, checkOut) {
+  function rankIdleRoomsFromMap(rooms, bookings, checkIn, checkOut, hourlyRate) {
     const bookedKey = name => normalizeRoomText(name).toLocaleUpperCase("vi-VN");
+    // Phương án được tính theo đúng đơn giá của một hạng phòng, nên chỉ phòng
+    // cùng đơn giá mới cho ra đúng Tiền giờ đó trên website.
+    const wantedRate = Number(hourlyRate) > 0 ? Math.round(Number(hourlyRate)) : 0;
     return (rooms || [])
       .filter(isIdleMapRoom)
+      .filter(room => !wantedRate || roomHourlyRate(room.name) === wantedRate)
       .filter(room => !checkIn || !checkOut || roomIsFreeForRange(bookings, room.name, checkIn, checkOut))
       .map((room, index) => ({ room, index, used: bookings?.has?.(bookedKey(room.name)) ? 1 : 0 }))
       .sort((left, right) => left.used - right.used || left.index - right.index)
       .map(entry => entry.room);
   }
 
-  function chooseIdleRoomFromMap(rooms, bookings, checkIn, checkOut) {
-    return rankIdleRoomsFromMap(rooms, bookings, checkIn, checkOut)[0] || null;
+  function chooseIdleRoomFromMap(rooms, bookings, checkIn, checkOut, hourlyRate) {
+    return rankIdleRoomsFromMap(rooms, bookings, checkIn, checkOut, hourlyRate)[0] || null;
   }
 
   async function loadRoomMapForSelection() {
@@ -483,6 +487,7 @@
       `Thẻ trên trang: ${d.roomCards || 0} thẻ phòng, ${d.idleLabels || 0} thẻ rảnh, ${d.freeForTime || 0} không trùng giờ; ` +
         `${d.allRoomAreasSelected ? "đã chọn TẤT CẢ khu phòng" : "chưa thấy nút TẤT CẢ khu phòng"}.`
     ];
+    if (d.plannedHourlyRate) parts.push(`Phương án tính theo phòng ${formatMoney(d.plannedHourlyRate)}đ/giờ nên chỉ nhận phòng cùng đơn giá.`);
     if (d.roomMismatch) parts.push(`Form mở nhầm phòng: ${d.roomMismatch}; đã đóng form, không lập phiếu.`);
     return parts.join(" ");
   }
@@ -571,7 +576,16 @@
     const hourCap = preTaxForCap > 0
       ? Math.max(0, Math.floor(preTaxForCap * MAX_HOUR_PRETAX_RATIO))
       : 0;
-    const nominalMinimumHour = grand > 1000000 ? 500000 : 300000;
+    // Bước giá và sàn phút đều tính theo đơn giá giờ của PHÒNG đã lập: bước là
+    // 1% đơn giá (6.000đ với 600k, 4.000đ với 400k, 8.000đ với 800k). Phương án
+    // cũ không ghi hourlyRate thì giữ 600k như trước.
+    const planHourlyRate = Math.max(1000, Math.round(Number(plan.hourlyRate) || DEFAULT_HOURLY_RATE));
+    const planHourStep = Math.round(planHourlyRate / 100);
+    // Sàn theo PHÚT (30 hoặc 50 phút) phải quy ra tiền theo đơn giá của chính
+    // phòng đã lập: 50 phút ở phòng 400.000đ/giờ là 333.333đ chứ không phải
+    // 500.000đ. Dùng mốc cố định sẽ chặn oan mọi phiếu lập trên phòng rẻ.
+    const nominalMinimumMinutes = grand > 1000000 ? 50 : 30;
+    const nominalMinimumHour = Math.round(planHourlyRate * nominalMinimumMinutes / 60);
     // Paris Nhơn groups large new invoices into a longer room session so the
     // item portion does not need an unnecessarily large number of low-priced
     // lines. Existing invoices and the other tenants keep the normal 30/50
@@ -586,11 +600,11 @@
     const minimumHour = plan.specialRule === "under-500k-two-beers" || (hourCap > 0 && tenantMinimumHour >= hourCap)
       ? 0
       : tenantMinimumHour;
-    if (hour <= 0 || hourFromTime <= 0 || hourFromTime % 6000 !== 0) {
-      return "Giờ vào/ra chưa sinh được tiền giờ theo đúng bước 6.000đ của website.";
+    if (hour <= 0 || hourFromTime <= 0 || hourFromTime % planHourStep !== 0) {
+      return `Giờ vào/ra chưa sinh được tiền giờ theo đúng bước ${formatMoney(planHourStep)}đ của website.`;
     }
-    if (Math.abs(hour - hourFromTime) > 6000) {
-      return "Phần bù trực tiếp vào tiền giờ vượt quá một bước 6.000đ.";
+    if (Math.abs(hour - hourFromTime) > planHourStep) {
+      return `Phần bù trực tiếp vào tiền giờ vượt quá một bước ${formatMoney(planHourStep)}đ.`;
     }
     if (hour < minimumHour) return `Tiền giờ thấp hơn mức tối thiểu ${formatMoney(minimumHour)}đ.`;
     if (goods + hour + tax !== grand) return "Tiền hàng + tiền giờ + VAT chưa khớp sao kê.";
@@ -640,8 +654,10 @@
     const roomMap = await loadRoomMapForSelection();
     Object.assign(diagnostics, roomMap.diagnostics);
     if (roomMap.rooms.length) {
-      const ranked = rankIdleRoomsFromMap(roomMap.rooms, bookings, plannedCheckIn, plannedCheckOut);
+      const plannedRate = Number(pendingNewInvoice.plan?.hourlyRate) || 0;
+      const ranked = rankIdleRoomsFromMap(roomMap.rooms, bookings, plannedCheckIn, plannedCheckOut, plannedRate);
       diagnostics.mapFreeForTime = ranked.length;
+      diagnostics.plannedHourlyRate = plannedRate;
       if (!ranked.length) return { opened: false, roomName: "", diagnostics };
       const openedFromMap = await openRoomCardByName(ranked[0], diagnostics);
       if (openedFromMap) return openedFromMap;
@@ -1870,6 +1886,13 @@
               <option value="out">Đã hết</option>
               <option value="per_invoice">Theo định mức/HĐ</option>
             </select>
+            <div class="it-restock-box">
+              <b>Hoàn kho để chạy lại batch</b>
+              <small>Trả số lượng đã trừ về kho cho các giao dịch đã đối soát trong khoảng ngày, rồi đưa chúng về Chưa xử lý. Hóa đơn đã lưu trên website không bị xóa.</small>
+              <label>Từ ngày<input id="it-restock-from" type="date"></label>
+              <label>Đến ngày<input id="it-restock-to" type="date"></label>
+              <button id="it-restock-range" type="button">Hoàn kho theo khoảng ngày</button>
+            </div>
             <div class="it-stock-actions">
               <button id="it-import-stock" type="button">Cập nhật kho chung</button>
               <button id="it-import-state" type="button">Khôi phục bản sao</button>
@@ -1995,6 +2018,7 @@
     root.querySelector("#it-import-state").addEventListener("click", () => root.querySelector("#it-state-file").click());
     root.querySelector("#it-state-file").addEventListener("change", previewStockStateFile);
     root.querySelector("#it-export-state").addEventListener("click", exportStockState);
+    root.querySelector("#it-restock-range")?.addEventListener("click", restockVerifiedRange);
     root.querySelector("#it-export-issued").addEventListener("click", exportIssuedInvoices);
     root.querySelector("#it-manage-stock").addEventListener("click", toggleStockAdmin);
     root.querySelector("#it-stock-search").addEventListener("input", renderStockRows);
@@ -4719,6 +4743,172 @@
     return next;
   }
 
+  // ---------------------------------------------------------------------------
+  // Hoàn kho theo khoảng ngày sao kê.
+  //
+  // Khi một lô chạy sai (phiếu lập nhầm phòng, sai đơn giá giờ, tổ hợp hàng
+  // không hợp lý), kế toán cần trả số lượng đã trừ về kho rồi chạy lại batch.
+  // Nguồn sự thật là SỔ ĐỐI SOÁT (verificationLedger): mỗi lần ghi sổ đều lưu
+  // đúng danh sách mặt hàng và số lượng đã trừ, nên hoàn kho là cộng ngược lại
+  // đúng những dòng đó — không suy đoán từ phương án hiện tại (phương án có thể
+  // đã bị tính lại và khác với thứ đã trừ).
+  //
+  // Phạm vi: CHỈ dữ liệu trong extension. Hóa đơn đã lưu trên website giữ
+  // nguyên; kế toán tự xử lý trên web. Xem docs/ACCOUNTING_CLOSE.md.
+  function ledgerEntriesInDateRange(fromDate, toDate) {
+    const from = String(fromDate || "");
+    const to = String(toDate || "");
+    const transactions = new Map((statementDataset.transactions || [])
+      .map(item => [String(item.id), item]));
+    return (verificationLedger.entries || [])
+      .map(entry => ({ entry, transaction: transactions.get(String(entry.transactionId)) || null }))
+      .filter(({ entry, transaction }) => {
+        // Ngày lấy từ giao dịch sao kê; bản ghi mồ côi (giao dịch đã bị xóa)
+        // không có ngày nên không thể lọc theo khoảng — bỏ qua để không hoàn
+        // nhầm kho của kỳ khác.
+        const dateKey = String(transaction?.transactionDate || "");
+        if (!dateKey) return false;
+        if (from && dateKey < from) return false;
+        if (to && dateKey > to) return false;
+        return Array.isArray(entry.items) && entry.items.length > 0;
+      });
+  }
+
+  // Gộp số lượng sẽ hoàn theo mã web, để hiển thị cho kế toán xác nhận trước
+  // khi ghi. Mã bán theo suất (đĩa hoa quả) không trừ tồn nên cũng không hoàn.
+  function summarizeRestockPreview(matches) {
+    const byCode = new Map();
+    for (const { entry } of matches) {
+      for (const item of entry.items || []) {
+        const code = String(item.code || "");
+        const quantity = Math.max(0, Math.round(Number(item.qty) || 0));
+        if (!code || !quantity) continue;
+        const rows = (mappingDataset.mappings || []).filter(row =>
+          row.status === "confirmed" && String(row.webCode) === code);
+        if (rows.some(row => row.availabilityMode === "per_invoice")) continue;
+        const current = byCode.get(code) || { code, name: item.name || rows[0]?.webName || code, qty: 0 };
+        current.qty += quantity;
+        byCode.set(code, current);
+      }
+    }
+    return [...byCode.values()].sort((left, right) =>
+      right.qty - left.qty || String(left.code).localeCompare(String(right.code)));
+  }
+
+  // Trả số lượng về kho và đưa giao dịch về "chưa xử lý" để Batch Review lập
+  // lại. Ghi một lần xuống storage để không có trạng thái nửa vời khi lỗi.
+  async function restockLedgerEntries(matches) {
+    if (!matches.length) throw new Error("Không có giao dịch đã đối soát nào trong khoảng ngày đã chọn.");
+    // Đọc lại kho chung ngay trước khi ghi: tab/cơ sở khác có thể vừa đổi tồn.
+    const latestSharedWarehouse = InvoiceSharedWarehouse.normalize(
+      await InvoiceMappingStore.loadSharedWarehouse(InvoiceSharedWarehouse.empty())
+    );
+    const beforeMapping = InvoiceSharedWarehouse.overlayMappings(mappingDataset, latestSharedWarehouse);
+    let nextMapping = beforeMapping;
+    for (const { entry } of matches) {
+      nextMapping = restoreVerifiedStock(nextMapping, entry.items);
+    }
+
+    const restoredIds = new Set(matches.map(({ entry }) => String(entry.transactionId)));
+    const nextStatement = structuredClone(statementDataset);
+    const invoiceNos = [];
+    for (const transaction of nextStatement.transactions || []) {
+      if (!restoredIds.has(String(transaction.id))) continue;
+      if (transaction.invoiceNo) invoiceNos.push(String(transaction.invoiceNo));
+      // Về đúng trạng thái trước khi lập: giữ lại số phiếu trong ghi chú để kế
+      // toán biết phiếu nào đã nằm trên website, nhưng bỏ liên kết để Batch
+      // Review không coi là đã xử lý.
+      transaction.status = "pending";
+      transaction.restockedAt = new Date().toISOString();
+      transaction.restockedNote = transaction.invoiceNo
+        ? `Đã hoàn kho; phiếu ${transaction.invoiceNo} vẫn còn trên website, cần kiểm tra/xóa thủ công.`
+        : "Đã hoàn kho để lập lại phương án.";
+      transaction.invoiceNo = "";
+      transaction.verifiedAt = "";
+      transaction.ledgerId = "";
+      transaction.reconciledAt = "";
+      transaction.reconciledNote = "";
+      transaction.apiSavedAt = "";
+      transaction.apiSavedRecordId = "";
+      transaction.pendingPlan = null;
+      delete transaction.batchApprovedPlan;
+      delete transaction.batchApprovedAt;
+      delete transaction.newInvoiceRoomName;
+      delete transaction.newInvoiceRoomId;
+      delete transaction.newInvoiceCheckIn;
+      delete transaction.newInvoiceCheckOut;
+    }
+
+    const nextLedger = {
+      entries: (verificationLedger.entries || [])
+        .filter(entry => !matches.some(match => match.entry === entry))
+    };
+    const nextSharedWarehouse = InvoiceSharedWarehouse.reconcileMappingDelta(
+      latestSharedWarehouse,
+      beforeMapping,
+      nextMapping,
+      { tenant: pageTenantSlug, invoiceNo: invoiceNos.join(", "), transactionId: `restock-${Date.now()}` }
+    );
+    await InvoiceMappingStore.commitVerifiedInvoice(nextMapping, nextStatement, nextLedger, nextSharedWarehouse);
+    mappingDataset = nextMapping;
+    statementDataset = nextStatement;
+    verificationLedger = nextLedger;
+    sharedWarehouse = nextSharedWarehouse;
+    return { restored: matches.length, invoiceNos };
+  }
+
+  async function restockVerifiedRange() {
+    const button = document.getElementById("it-restock-range");
+    const fromDate = document.getElementById("it-restock-from")?.value || "";
+    const toDate = document.getElementById("it-restock-to")?.value || "";
+    try {
+      assertRuntimeContext();
+      if (!fromDate || !toDate) throw new Error("Hãy chọn đủ Từ ngày và Đến ngày cần hoàn kho.");
+      if (fromDate > toDate) throw new Error("Từ ngày không được lớn hơn Đến ngày.");
+      const matches = ledgerEntriesInDateRange(fromDate, toDate);
+      if (!matches.length) {
+        return setStatus(`Không có giao dịch đã đối soát nào từ ${fromDate} đến ${toDate} để hoàn kho.`, "warn");
+      }
+      const preview = summarizeRestockPreview(matches);
+      const invoiceList = matches
+        .map(({ transaction, entry }) => String(transaction?.invoiceNo || entry.invoiceNo || "")).filter(Boolean);
+      const confirmed = window.confirm(
+        `Hoàn kho ${matches.length} giao dịch từ ${fromDate} đến ${toDate}?\n\n` +
+        `Sẽ trả về kho:\n${preview.slice(0, 12).map(item => `  ${item.name}: +${item.qty}`).join("\n")}` +
+        `${preview.length > 12 ? `\n  … và ${preview.length - 12} mã khác` : ""}\n\n` +
+        `Các giao dịch này sẽ về trạng thái Chưa xử lý để lập lại phương án.\n` +
+        `LƯU Ý: hóa đơn đã lưu trên website KHÔNG bị xóa` +
+        `${invoiceList.length ? `:\n  ${invoiceList.slice(0, 10).join(", ")}${invoiceList.length > 10 ? ` và ${invoiceList.length - 10} phiếu khác` : ""}` : "."}\n` +
+        `Hãy tự kiểm tra và xử lý các phiếu đó trên website.`
+      );
+      if (!confirmed) return setStatus("Đã hủy hoàn kho; tồn kho và sao kê không thay đổi.", "warn");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Đang hoàn kho…";
+      }
+      const result = await restockLedgerEntries(matches);
+      refreshMappingState();
+      renderStatementRows();
+      renderStatementAdmin();
+      batchPlans = [];
+      await saveBatchUiSession({ panelOpen: true, batchPlans: [] });
+      renderBatchPlans();
+      setStatus(
+        `Đã hoàn kho ${result.restored} giao dịch từ ${fromDate} đến ${toDate} và đưa về Chưa xử lý. ` +
+        `${result.invoiceNos.length ? `Hóa đơn trên website chưa bị xóa: ${result.invoiceNos.slice(0, 10).join(", ")}${result.invoiceNos.length > 10 ? "…" : ""}. ` : ""}` +
+        "Hãy bấm Tạo Batch Review để lập lại phương án.",
+        "ok"
+      );
+    } catch (error) {
+      setStatus(`Không hoàn kho được: ${error.message} Tồn kho và sao kê chưa thay đổi.`, "error");
+    } finally {
+      if (button?.isConnected) {
+        button.disabled = false;
+        button.textContent = "Hoàn kho theo khoảng ngày";
+      }
+    }
+  }
+
   async function verifySavedInvoice(verifiedSnapshot) {
     if (!currentBankTransaction?.pendingPlan) return setStatus("Không có phương án chờ đối soát.", "error");
     const button = document.getElementById("it-verify-saved-invoice");
@@ -5391,13 +5581,55 @@
   const PARIS_NHON_LARGE_INVOICE_THRESHOLD = 5000000;
   const PARIS_NHON_LARGE_INVOICE_MIN_HOUR = 1500000;
 
-  function websiteHourAmountForMinutes(durationMinutes, hourlyRate = 600000) {
+  // ---------------------------------------------------------------------------
+  // Đơn giá giờ hát theo PHÒNG.
+  //
+  // Khảo sát trực tiếp trên website Paris Nhơn ngày 17/09/2026 (mở từng phòng,
+  // đặt Giờ ra = Giờ vào + 1 giờ, đọc Tiền giờ): giá KHÔNG đồng nhất 600.000đ.
+  // Quy luật theo số cuối tên phòng, lặp lại giống nhau ở tầng 2, 3, 4:
+  //   đuôi 3 → 800.000đ/giờ; đuôi 6 → 400.000đ/giờ; còn lại → 600.000đ/giờ.
+  // Tầng 5 chỉ có VIP 51/52/55, đều 600.000đ.
+  //
+  // Đơn giá quyết định cả ba thứ: bước giá Tiền giờ (rate/100), sàn theo phút,
+  // và thời lượng gợi ý. Vì vậy phương án phải biết trước mình lập trên phòng
+  // nào; xem chooseNewInvoiceRoomPlan.
+  //
+  // Các cơ sở khác chưa khảo sát nên giữ nguyên 600.000đ như trước.
+  const DEFAULT_HOURLY_RATE = 600000;
+  const PARIS_NHON_ROOM_HOURLY_RATES = Object.freeze({ "3": 800000, "6": 400000 });
+
+  function roomHourlyRate(roomName, tenantSlug) {
+    const tenant = String(tenantSlug || (typeof pageTenantSlug === "string" ? pageTenantSlug : "")).toLowerCase();
+    if (tenant !== "parisnhon") return DEFAULT_HOURLY_RATE;
+    const name = normalizeRoomText(roomName).toLocaleUpperCase("vi-VN");
+    const match = name.match(/(\d)\s*$/);
+    if (!match) return DEFAULT_HOURLY_RATE;
+    return PARIS_NHON_ROOM_HOURLY_RATES[match[1]] || DEFAULT_HOURLY_RATE;
+  }
+
+  // Các mức đơn giá đang tồn tại ở cơ sở hiện tại, từ thấp lên cao. Phương án
+  // được thử lần lượt theo danh sách này rồi mới chốt phòng.
+  function tenantHourlyRates(tenantSlug) {
+    const tenant = String(tenantSlug || (typeof pageTenantSlug === "string" ? pageTenantSlug : "")).toLowerCase();
+    if (tenant !== "parisnhon") return [DEFAULT_HOURLY_RATE];
+    return [...new Set([...Object.values(PARIS_NHON_ROOM_HOURLY_RATES), DEFAULT_HOURLY_RATE])]
+      .sort((left, right) => left - right);
+  }
+
+  function hourPricingForRate(hourlyRate) {
+    const rate = Math.max(1000, Math.round(Number(hourlyRate) || DEFAULT_HOURLY_RATE));
+    // Website làm tròn thời lượng tới 0,01 giờ, nên bước giá nhỏ nhất là 1% đơn
+    // giá: 6.000đ với phòng 600k, 4.000đ với 400k, 8.000đ với 800k.
+    return { hourlyRate: rate, hourStep: Math.round(rate / 100) };
+  }
+
+  function websiteHourAmountForMinutes(durationMinutes, hourlyRate = DEFAULT_HOURLY_RATE) {
     const minutes = Math.max(0, Math.round(Number(durationMinutes) || 0));
     const hundredths = Math.round((minutes / 60) * 100);
     return Math.round(hundredths * Number(hourlyRate || 0) / 100);
   }
 
-  function closestReachableHourSlot(targetHour, minimumMinutes, maximumMinutes, hourlyRate = 600000) {
+  function closestReachableHourSlot(targetHour, minimumMinutes, maximumMinutes, hourlyRate = DEFAULT_HOURLY_RATE) {
     const target = Math.max(0, Math.round(Number(targetHour) || 0));
     const from = Math.max(1, Math.round(Number(minimumMinutes) || 1));
     const to = Math.max(from, Math.round(Number(maximumMinutes) || from));
@@ -5420,7 +5652,7 @@
     // Kế toán quy định giao dịch sao kê trên 1 triệu phải có tối thiểu 55 phút.
     // Các giao dịch còn lại dùng mốc tối thiểu 30 phút.
     const minimumMinutes = bankGrand > 1000000 ? 50 : 30;
-    const minuteBaseHour = Math.max(step, Math.round(Number(hourPricing?.hourlyRate || 600000) * minimumMinutes / 60));
+    const minuteBaseHour = Math.max(step, Math.round(Number(hourPricing?.hourlyRate || DEFAULT_HOURLY_RATE) * minimumMinutes / 60));
     // Sàn theo phút và trần 35% tổng trước VAT mâu thuẫn nhau ở hóa đơn nhỏ:
     // mốc 30 phút (300.000đ) chỉ nằm dưới trần khi tổng trước VAT ≥ 857.143đ, và
     // mốc 50 phút (500.000đ) cần ≥ 1.428.572đ. Trong khoảng dưới các ngưỡng đó
@@ -5700,7 +5932,7 @@
       };
     }
 
-    const hourlyRate = 600000;
+    const hourlyRate = Math.max(1000, Math.round(Number(scan?.hourlyRate) || DEFAULT_HOURLY_RATE));
     const durationMinutes = Math.max(1, Math.round(hour / hourlyRate * 60));
     const hourFromTime = websiteHourAmountForMinutes(durationMinutes, hourlyRate);
     const hourAdjustment = hour - hourFromTime;
@@ -5874,8 +6106,10 @@
         reason: `Rule bắt buộc ${unavailableRequired.code || unavailableRequired.webCode} cần ${Number(unavailableRequired.minQty || 1)} nhưng tồn kho không đủ.`
       };
     }
+    // Phiếu mới: đơn giá phụ thuộc PHÒNG sẽ lập (Nhơn có 400k/600k/800k), do
+    // chooseNewInvoiceRoomPlan truyền vào. Phiếu đã có sẵn vẫn suy từ form.
     const hourPricing = scan.newInvoicePlanning
-      ? { hourlyRate: 600000, hourStep: 6000 }
+      ? hourPricingForRate(scan.hourlyRate || DEFAULT_HOURLY_RATE)
       : inferHourPricing(scan);
     // preTaxTarget chỉ phụ thuộc targetGrand và taxRate (currentHour chỉ đổi
     // goodsTarget), nên lấy trước để kẹp sàn Tiền giờ rồi mới chốt goodsTarget.
@@ -6129,7 +6363,7 @@
     return NEW_INVOICE_CHECKIN_START_MINUTES + slot * NEW_INVOICE_CHECKIN_STEP_MINUTES;
   }
 
-  function newInvoicePlanningScan(transactionDate, slotIndex) {
+  function newInvoicePlanningScan(transactionDate, slotIndex, hourlyRate = DEFAULT_HOURLY_RATE) {
     const match = String(transactionDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
     // Dựng bằng Date để không tạo ra chuỗi giờ không hợp lệ kiểu "24:30".
     // newInvoiceCheckInMinutes đã kẹp trần nên giờ vào luôn nằm trong ngày.
@@ -6140,6 +6374,8 @@
     return {
       ready: true,
       newInvoicePlanning: true,
+      // Đơn giá giờ của phòng sẽ lập phiếu; quyết định bước giá và sàn phút.
+      hourlyRate: Math.max(1000, Math.round(Number(hourlyRate) || DEFAULT_HOURLY_RATE)),
       invoiceNo: "",
       invoiceDateKey: String(transactionDate || ""),
       currentGoods: 0,
@@ -6154,8 +6390,10 @@
     };
   }
 
-  function calculateNewInvoiceBatchPlan(transaction, inventoryState, productUsage, slotIndex, overrideGrand) {
-    const planningScan = newInvoicePlanningScan(transaction.transactionDate, slotIndex);
+  function calculateNewInvoiceBatchPlan(transaction, inventoryState, productUsage, slotIndex, overrideGrand, hourlyRate = DEFAULT_HOURLY_RATE) {
+    const rate = Math.max(1000, Math.round(Number(hourlyRate) || DEFAULT_HOURLY_RATE));
+    const hourStep = Math.round(rate / 100);
+    const planningScan = newInvoicePlanningScan(transaction.transactionDate, slotIndex, rate);
     const plan = calculateBatchPlan(planningScan, transaction, inventoryState, productUsage, overrideGrand);
     if (plan.status !== "ready") return plan;
     const checkInDate = parseUiDateTime(planningScan.checkIn);
@@ -6165,7 +6403,7 @@
     const nominalMinimumMinutes = plan.specialRule === "under-500k-two-beers"
       ? 1
       : (Number(transaction.credit) > 1000000 ? 50 : 30);
-    const planMinutes = Math.max(1, Math.floor(Number(plan.hour) / 600000 * 60));
+    const planMinutes = Math.max(1, Math.floor(Number(plan.hour) / rate * 60));
     const minimumMinutes = Math.min(nominalMinimumMinutes, planMinutes);
     const remainingMinutesInDay = checkInDate
       ? Math.max(minimumMinutes, 24 * 60 - (checkInDate.getHours() * 60 + checkInDate.getMinutes()) - 1)
@@ -6174,12 +6412,12 @@
       plan.hour,
       minimumMinutes,
       remainingMinutesInDay,
-      600000
+      rate
     );
-    if (!reachableHour || reachableHour.difference > 6000) {
+    if (!reachableHour || reachableHour.difference > hourStep) {
       return {
         status: "error",
-        reason: "Không tìm được khoảng giờ vào/ra theo phút có thể biểu diễn tiền giờ của phương án trong sai số 6.000đ."
+        reason: `Không tìm được khoảng giờ vào/ra theo phút có thể biểu diễn tiền giờ của phương án trong sai số ${formatMoney(hourStep)}đ (phòng ${formatMoney(rate)}đ/giờ).`
       };
     }
     const checkOutDate = checkInDate
@@ -6193,7 +6431,46 @@
       proposedCheckOut: formatUiDateTime(checkOutDate),
       durationMinutes: reachableHour.minutes,
       hourFromTime: reachableHour.amount,
-      hourAdjustment: Math.round(Number(plan.hour) || 0) - reachableHour.amount
+      hourAdjustment: Math.round(Number(plan.hour) || 0) - reachableHour.amount,
+      // Đơn giá đã dùng; bước mở form chỉ chọn phòng có đúng đơn giá này.
+      hourlyRate: rate
+    };
+  }
+
+  // Nhơn có 3 mức đơn giá giờ nên "phương án" và "phòng" không còn độc lập:
+  // cùng một số tiền, phòng 400k và 800k cho thời lượng và bước giá khác hẳn.
+  // Thử lần lượt từng mức rồi chọn phương án tốt nhất, và ghi lại đơn giá để
+  // bước mở form chỉ chọn phòng khớp. Tiêu chí chọn, theo thứ tự:
+  //   1. Phần bù vào Tiền giờ nhỏ nhất (phương án tự nhiên nhất).
+  //   2. Thời lượng gần 90 phút nhất (một ca hát thực tế).
+  //   3. Đơn giá thấp hơn (phòng rẻ dễ còn trống hơn).
+  function chooseNewInvoiceRoomPlan(transaction, inventoryState, productUsage, slotIndex, overrideGrand) {
+    const rates = tenantHourlyRates();
+    let best = null;
+    let firstError = null;
+    for (const rate of rates) {
+      const plan = calculateNewInvoiceBatchPlan(transaction, inventoryState, productUsage, slotIndex, overrideGrand, rate);
+      if (plan.status !== "ready") {
+        if (!firstError) firstError = plan;
+        continue;
+      }
+      const score = [
+        Math.abs(Math.round(Number(plan.hourAdjustment) || 0)),
+        Math.abs(Math.round(Number(plan.durationMinutes) || 0) - 90),
+        rate
+      ];
+      const better = !best || score.some((value, index) =>
+        score.slice(0, index).every((earlier, i) => earlier === best.score[i]) && value < best.score[index]
+      );
+      if (better) best = { plan, score };
+    }
+    if (best) return best.plan;
+    // Không mức nào ra phương án: trả lỗi của mức đầu tiên, kèm các mức đã thử.
+    if (!firstError) return { status: "error", reason: "Không có mức đơn giá giờ nào để lập phương án." };
+    if (rates.length <= 1) return firstError;
+    return {
+      ...firstError,
+      reason: `${firstError.reason} Đã thử các mức đơn giá giờ ${rates.map(rate => formatMoney(rate)).join(", ")}đ.`
     };
   }
 
@@ -6504,7 +6781,7 @@
             });
           } else {
             const slotIndex = takeNewInvoiceSlot(transaction.transactionDate);
-            const plan = calculateNewInvoiceBatchPlan(
+            const plan = chooseNewInvoiceRoomPlan(
               transaction, workingInventory, productUsage, slotIndex, transaction.acceptedGrandOverride
             );
             noteBlockedTransaction(transaction, plan);

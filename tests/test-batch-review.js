@@ -29,6 +29,12 @@ function extractConst(name) {
 // calculateBatchPlan phụ thuộc các hằng số/hàm quy mô và cơ cấu nhóm; gom lại
 // một chỗ để ba sandbox bên dưới dùng chung.
 const batchPlanDeps = [
+  extractConst("DEFAULT_HOURLY_RATE"),
+  extractConst("PARIS_NHON_ROOM_HOURLY_RATES"),
+  extractFunction("normalizeRoomText"),
+  extractFunction("roomHourlyRate"),
+  extractFunction("tenantHourlyRates"),
+  extractFunction("hourPricingForRate"),
   extractConst("MAX_HOUR_TO_GOODS_RATIO"),
   extractConst("MAX_HOUR_BASE_ADJUSTMENT_RATIO"),
   extractConst("MAX_HOUR_PRETAX_RATIO"),
@@ -150,7 +156,8 @@ if (!reservedByPlanOnly.includes("HD0126060165") || !reservedByPlanOnly.includes
 }
 vm.runInContext(
   `${extractConst("CALCULATION_VERSION")}; ${extractConst("SMALL_INVOICE_BEER_QTY")}; ` +
-  `${extractConst("MAX_HOUR_PRETAX_RATIO")}; const formatMoney = value => String(value); ` +
+  `${extractConst("MAX_HOUR_PRETAX_RATIO")}; ${extractConst("DEFAULT_HOURLY_RATE")}; ` +
+  `const formatMoney = value => String(value); ` +
   `${extractFunction("newInvoicePlanValidationError")}; ` +
   "this.newInvoicePlanValidationError = newInvoicePlanValidationError;",
   sandbox
@@ -252,6 +259,7 @@ if (nhonExistingBounds.baseHour !== 500000) {
 const hourSlotSandbox = {};
 vm.createContext(hourSlotSandbox);
 vm.runInContext(
+  extractConst("DEFAULT_HOURLY_RATE") + "; " +
   `${extractFunction("websiteHourAmountForMinutes")}; ${extractFunction("closestReachableHourSlot")}; ` +
   "this.websiteHourAmountForMinutes = websiteHourAmountForMinutes; this.closestReachableHourSlot = closestReachableHourSlot;",
   hourSlotSandbox
@@ -1089,6 +1097,24 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
     rebaseInvoiceSession: sandbox.rebaseInvoiceSession,
     selectBatchReviewTransactions: sandbox.selectBatchReviewTransactions,
     calculateBatchPlan: scan => ({ status: "ready", invoiceNo: scan.invoiceNo, items: [], targetGrand: 1500000 }),
+    // Nhơn có 3 mức đơn giá giờ nên Batch Review gọi chooseNewInvoiceRoomPlan
+    // (thử từng mức rồi chốt phòng) thay vì gọi thẳng calculateNewInvoiceBatchPlan.
+    chooseNewInvoiceRoomPlan: transaction => ({
+      status: "ready",
+      invoiceNo: "",
+      invoiceDateKey: transaction.transactionDate,
+      targetGrand: transaction.credit,
+      goods: 900000,
+      hour: 463636,
+      tax: 136364,
+      taxRate: 10,
+      difference: 0,
+      requiresNewInvoice: true,
+      hourlyRate: 600000,
+      checkIn: "20/07/2026 15:00",
+      checkOut: "20/07/2026 15:46",
+      items: [{ code: "A", qty: 1, price: 900000, maxQty: 1 }]
+    }),
     calculateNewInvoiceBatchPlan: transaction => ({
       status: "ready",
       invoiceNo: "",
@@ -1481,7 +1507,15 @@ vm.runInContext(
   `${batchPlanDeps}; ${extractConst("PARIS_NHON_LARGE_INVOICE_THRESHOLD")}; ` +
   `${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
   `${extractFunction("candidateFromStock")}; ${extractFunction("buildBatchCandidates")}; ` +
-  `${extractFunction("newInvoicePlanValidationError")}; this.newInvoicePlanValidationError = newInvoicePlanValidationError;`,
+  `${extractFunction("newInvoicePlanValidationError")}; ` +
+  `${extractConst("NEW_INVOICE_CHECKIN_START_MINUTES")} ${extractConst("NEW_INVOICE_CHECKIN_STEP_MINUTES")} ` +
+  `${extractConst("NEW_INVOICE_CHECKIN_LAST_MINUTES")} const NEW_INVOICE_CHECKIN_SLOT_COUNT = Math.floor((NEW_INVOICE_CHECKIN_LAST_MINUTES - NEW_INVOICE_CHECKIN_START_MINUTES) / NEW_INVOICE_CHECKIN_STEP_MINUTES) + 1; ` +
+  `${extractFunction("newInvoiceCheckInMinutes")}; ${extractFunction("newInvoicePlanningScan")}; ` +
+  `${extractFunction("calculateNewInvoiceBatchPlan")}; ${extractFunction("chooseNewInvoiceRoomPlan")}; ` +
+  `${extractFunction("closestReachableHourSlot")}; ${extractFunction("formatUiDateTime")}; ` +
+  "this.newInvoicePlanValidationError = newInvoicePlanValidationError; " +
+  "this.chooseNewInvoiceRoomPlan = chooseNewInvoiceRoomPlan; " +
+  "this.tenantHourlyRates = tenantHourlyRates; this.hourPricingForRate = hourPricingForRate;",
   realStockBox
 );
 const countByRule = (plan, matcher) => (plan.items || [])
@@ -1692,6 +1726,43 @@ const openPosSource = extractFunction("openPosForNewInvoice");
 if (!openPosSource.includes("Phương án đã bị hủy và Batch Review đã tính lại") ||
     openPosSource.indexOf("Phương án đã bị hủy và Batch Review đã tính lại") < openPosSource.indexOf("opened: false,")) {
   throw new Error("Phương án bị hủy lúc mở tab worker phải trả lý do thật cho Lưu API, không phải thông báo chung.");
+}
+
+// --- Đơn giá giờ theo phòng: chọn phòng hợp với số tiền -------------------------
+//
+// Khảo sát Nhơn 17/09/2026: phòng đuôi 3 = 800.000đ/giờ, đuôi 6 = 400.000đ/giờ,
+// còn lại 600.000đ/giờ. Đơn giá quyết định bước giá Tiền giờ (1% đơn giá) nên
+// phương án phải biết trước mình lập trên hạng phòng nào; chooseNewInvoiceRoomPlan
+// thử cả ba mức rồi chốt mức cho phương án đẹp nhất.
+if (realStockBox.tenantHourlyRates("parisnhon").join(",") !== "400000,600000,800000") {
+  throw new Error("Nhơn phải có đủ ba mức đơn giá giờ.");
+}
+if (realStockBox.tenantHourlyRates("pariskimgiang").join(",") !== "600000") {
+  throw new Error("Cơ sở chưa khảo sát giữ nguyên một mức 600.000đ.");
+}
+if (realStockBox.hourPricingForRate(400000).hourStep !== 4000 ||
+    realStockBox.hourPricingForRate(800000).hourStep !== 8000 ||
+    realStockBox.hourPricingForRate(600000).hourStep !== 6000) {
+  throw new Error("Bước giá Tiền giờ phải là 1% đơn giá của phòng.");
+}
+const rateSweep = [541200, 1004000, 1500000, 2200000, 3000000, 7457000];
+for (const credit of rateSweep) {
+  const transaction = { id: `rate-${credit}`, transactionDate: "2026-07-05", credit };
+  const plan = realStockBox.chooseNewInvoiceRoomPlan(transaction, nhonFruitInventory, new Map(), 0);
+  if (plan.status !== "ready") throw new Error(`${credit}đ phải lập được phương án: ${plan.reason}`);
+  if (![400000, 600000, 800000].includes(plan.hourlyRate)) {
+    throw new Error(`${credit}đ phải ghi lại đơn giá phòng đã dùng, nhận ${plan.hourlyRate}`);
+  }
+  // Tiền giờ theo giờ vào/ra phải đúng bội số bước giá của chính đơn giá đó.
+  if (plan.hourFromTime % Math.round(plan.hourlyRate / 100) !== 0) {
+    throw new Error(`${credit}đ: Tiền giờ ${plan.hourFromTime} không đúng bước giá của phòng ${plan.hourlyRate}đ/giờ`);
+  }
+  if (plan.goods + plan.hour + plan.tax !== credit) {
+    throw new Error(`${credit}đ phải khớp tuyệt đối tổng sao kê.`);
+  }
+  // Phương án phải qua được kiểm tra lúc mở form với đúng bước giá của phòng.
+  const validation = realStockBox.newInvoicePlanValidationError(plan, transaction);
+  if (validation) throw new Error(`${credit}đ (phòng ${plan.hourlyRate}đ/giờ) bị chặn lúc mở form: ${validation}`);
 }
 
 // Mã bán theo suất và mã có trần cứng khai báo riêng không được nhân.
