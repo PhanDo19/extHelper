@@ -438,7 +438,18 @@
       const hourExcess = hourForBounds == null || !maxHourAmount
         ? 0
         : Math.max(0, hourForBounds - maxHourAmount);
-      const hourRangeViolation = hourShortfall + hourExcess;
+      // Hóa đơn BẮT BUỘC có Tiền giờ. Tiền giờ chốt cuối = preTax − tiền hàng
+      // (reconcileHourAmount), nên tổ hợp ăn hết phần trước VAT cho Tiền giờ = 0
+      // và sẽ bị chốt chặn cuối loại với "Phương án không có Tiền giờ".
+      //
+      // Trước đây tổ hợp đó lại THẮNG khi bước giá Tiền giờ không phải bội của
+      // bước giá hàng (5.000đ): mọi tổ hợp khác đều bị làm tròn LÊN nên lệch > 0,
+      // riêng nó lệch đúng 0. Ca thật: phiếu có sẵn ở Nhơn với đơn giá suy ra
+      // 233.000đ/giờ (bước 2.330đ) làm sao kê 577.500đ báo lỗi, trong khi phiếu
+      // 143.000đ nhỏ hơn vẫn lập được. Phạt nặng như vỡ sàn để nó chỉ được chọn
+      // khi thực sự không còn lựa chọn nào khác.
+      const leavesNoHour = hourStep > 0 && preTaxTarget > 0 && requiredHour <= 0;
+      const hourRangeViolation = hourShortfall + hourExcess + (leavesNoHour ? preTaxTarget : 0);
       // Vượt maxGoodsAmount vẫn hợp lệ nhưng bị xếp sau: đây là sàn mềm giữ cho
       // tỷ lệ tiền giờ/tiền hàng gần với hóa đơn thật.
       const goodsExcess = maxGoodsAmount > 0 ? Math.max(0, actual - maxGoodsAmount) : 0;
@@ -511,6 +522,12 @@
       hourExcess: best.hourExcess,
       hourRangeViolation: best.hourRangeViolation,
       goodsShortfall: best.goodsShortfall,
+      // Số đơn vị còn THIẾU của các nhóm bắt buộc (3 bia, 2 khăn ướt). Món bắt
+      // buộc được xếp ưu tiên cao nhất khi chọn phương án, nhưng nếu KHÔNG tổ
+      // hợp nào đủ (mã bắt buộc quá đắt so với tiền hàng cho phép) thì phương
+      // án tốt nhất vẫn thiếu. Phải trả ra để bên gọi chặn, nếu không phiếu ra
+      // "Sẵn sàng" với 2 bia thay vì 3 mà không ai biết.
+      missingRequired: best.missingRequired,
       groupImbalance: best.imbalance,
       hourDiscount: best.hourDiscount,
       preTaxDifference: best.preTaxDifference,

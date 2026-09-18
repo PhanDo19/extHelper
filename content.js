@@ -88,6 +88,11 @@
   let statementSubtab = "statement";
   let showEInvoicesOutsideStatement = false;
 
+  // Một tháng ở Nhơn có tới 435 dòng số tiền, nên lô phải chạy được cả tháng.
+  // Lô dài không làm website quá tải nhờ tự tải lại trang sau mỗi 15 phiếu
+  // (xem scheduleAutoReloadResume).
+  const MAX_BATCH_TRANSACTIONS = 500;
+
   const RUNTIME_REFRESH_MESSAGE =
     "Extension vừa được cập nhật. Hãy nhấn F5 tải lại trang website, sau đó mở lại nút Σ.";
 
@@ -282,7 +287,7 @@
       eInvoiceFromDate: uiSession?.eInvoiceFromDate || "",
       eInvoiceToDate: uiSession?.eInvoiceToDate || "",
       panelOpen: panel ? !panel.hidden : Boolean(uiSession?.panelOpen),
-      batchLimit: Math.max(1, Math.min(50, limit)),
+      batchLimit: Math.max(1, Math.min(MAX_BATCH_TRANSACTIONS, limit)),
       batchFromDate: fromDate,
       batchToDate: toDate,
       batchPlans: serializeBatchPlans(batchPlans),
@@ -566,7 +571,7 @@
     const tax = Math.round(Number(plan.tax || 0));
     if (plan.specialRule === "under-500k-two-beers" &&
         (plan.items.length !== 1 || Math.round(Number(plan.items[0]?.qty) || 0) !== SMALL_INVOICE_BEER_QTY)) {
-      return "Phương án dưới 500.000đ phải có đúng một mã bia với số lượng 2 chai.";
+      return `Phương án dưới ${formatMoney(SMALL_INVOICE_BEER_LIMIT)}đ phải có đúng một mã với số lượng ${SMALL_INVOICE_BEER_QTY}.`;
     }
     // Sàn phút danh nghĩa phải kẹp theo trần 35% tổng trước VAT giống lúc lập
     // phương án. Nếu giữ nguyên mốc 30/50 phút ở đây thì phương án hợp lệ vừa
@@ -1054,7 +1059,7 @@
     batchPlans = hydrateBatchPlans(stored.batchPlans, statementDataset.transactions || []);
     showBatchReviewMode(true, Boolean(stored.panelOpen));
     const limitInput = document.getElementById("it-batch-limit");
-    if (limitInput) limitInput.value = String(Math.max(1, Math.min(50, Number(stored.batchLimit) || 10)));
+    if (limitInput) limitInput.value = String(Math.max(1, Math.min(MAX_BATCH_TRANSACTIONS, Number(stored.batchLimit) || 10)));
     const fromDateInput = document.getElementById("it-batch-from-date");
     const toDateInput = document.getElementById("it-batch-to-date");
     if (fromDateInput) fromDateInput.value = stored.batchFromDate || "";
@@ -3297,12 +3302,12 @@
     const doneCount = (statementDataset.transactions || []).filter(item => item.status === "done").length;
     const batchFromDate = uiSession?.batchFromDate || "";
     const batchToDate = uiSession?.batchToDate || "";
-    const batchLimit = Math.max(1, Math.min(50, Number(uiSession?.batchLimit) || 10));
+    const batchLimit = Math.max(1, Math.min(MAX_BATCH_TRANSACTIONS, Number(uiSession?.batchLimit) || 10));
     node.innerHTML = `<div class="it-batch-toolbar">
       <div><b>Batch Review</b><br><small>${openCount} giao dịch chưa hoàn tất · ${doneCount} đã xử lý. Hệ thống chỉ lập kế hoạch, chưa sửa hoặc lưu hóa đơn.</small></div>
       <label>Từ ngày<input id="it-batch-from-date" type="date" value="${escapeHtml(batchFromDate)}"></label>
       <label>Đến ngày<input id="it-batch-to-date" type="date" value="${escapeHtml(batchToDate)}"></label>
-      <label>Số giao dịch tối đa<input id="it-batch-limit" type="number" min="1" max="50" value="${batchLimit}"></label>
+      <label>Số giao dịch tối đa<input id="it-batch-limit" type="number" min="1" max="${MAX_BATCH_TRANSACTIONS}" value="${batchLimit}"></label>
       <button id="it-build-batch" type="button" class="primary">Tạo Batch Review</button>
     </div>
     <div class="it-api-capture-bar">
@@ -5571,8 +5576,15 @@
   const CALCULATION_VERSION = "website-inclusive-vat-2";
   const MAX_SESSION_CANDIDATE_PROBES = 3;
   const SESSION_CANDIDATE_PROBE_TIMEOUT_MS = 5000;
-  const SMALL_INVOICE_BEER_LIMIT = 500000;
-  const SMALL_INVOICE_BEER_QTY = 2;
+  // Phiếu nhỏ: tổng dưới mức này đi luật riêng — đúng MỘT món giá thấp, toàn
+  // bộ phần trước VAT còn lại là Tiền giờ. Kế toán chốt 17/09/2026: hạ ngưỡng
+  // từ 500.000đ xuống 300.000đ và đổi từ "2 chai bia" sang "1 món ≤ 50.000đ",
+  // vì phiếu vài trăm nghìn mà có hai chai bia thì tiền hàng lấn hết tiền giờ.
+  // Phiếu 300.000đ–500.000đ nay đi nhánh thường (nhiều dòng hàng như bình thường).
+  const SMALL_INVOICE_BEER_LIMIT = 300000;
+  const SMALL_INVOICE_BEER_QTY = 1;
+  // Trần giá của món duy nhất trên phiếu nhỏ.
+  const SMALL_INVOICE_ITEM_MAX_PRICE = 50000;
   // Nhơn has many mapped web items in the 25.000–90.000đ range. For a new
   // invoice from 5 million onward, a 1.500.000đ singing floor keeps the plan
   // from spreading into an excessive number of low-priced lines. This is
@@ -5679,16 +5691,32 @@
     const nominalBaseHour = isNewInvoice || currentHour <= 0
       ? Math.max(minuteBaseHour, tenantMinimumHour)
       : currentHour;
-    const baseHour = preTaxCap > 0 ? Math.min(nominalBaseHour, preTaxCap) : nominalBaseHour;
+    // Sàn thời lượng là LUẬT NGHIỆP VỤ, trần 35% chỉ là quy ước cơ cấu, nên khi
+    // hai thứ mâu thuẫn thì sàn thắng và trần được nới vừa đủ.
+    //
+    // Kế toán chốt 18/09/2026: mọi hóa đơn phải có tối thiểu 30 phút hát. Với
+    // phiếu nhỏ, 30 phút chiếm tới 37-51% tổng trước VAT nên luôn vượt trần 35%
+    // (sao kê 486.200đ từng ra đúng 1 phút hát). Từ khoảng 628.000đ trở lên thì
+    // 35% đã đủ cho 30 phút nên trần giữ nguyên như cũ.
+    //
+    // Phần trước VAT quá nhỏ để đủ 30 phút (ví dụ 143.000đ) thì lấy tối đa có
+    // thể: chừa đúng một món rẻ rồi dồn hết phần còn lại vào Tiền giờ.
+    // Chỗ tối thiểu phải chừa cho tiền hàng. Phiếu thường còn phải chứa món
+    // bắt buộc (3 bia + 2 khăn rẻ nhất), nếu không sàn sẽ ép tiền hàng xuống
+    // dưới mức đó và phương án bị loại vì thiếu món — trong khi đúng nguyên tắc
+    // "lấy tối đa có thể" là giữ món bắt buộc và chấp nhận dưới 30 phút.
+    const mandatoryGoodsRoom = Math.max(0, Math.round(Number(scan?.mandatoryGoodsFloor) || 0));
+    const minimumGoodsRoom = preTax > 0
+      ? Math.max(mandatoryGoodsRoom, Math.min(SMALL_INVOICE_ITEM_MAX_PRICE, Math.floor(preTax * 0.1)))
+      : mandatoryGoodsRoom;
+    const affordableHour = preTax > 0 ? Math.max(0, preTax - minimumGoodsRoom) : 0;
+    const requiredFloor = preTax > 0 ? Math.min(nominalBaseHour, affordableHour) : nominalBaseHour;
+    // Trần phải chứa được sàn; nới vừa đủ chứ không bỏ hẳn.
+    const effectiveCap = preTaxCap > 0 ? Math.max(preTaxCap, requiredFloor) : 0;
+    const baseHour = effectiveCap > 0 ? Math.min(nominalBaseHour, effectiveCap) : nominalBaseHour;
     const adjustmentLimit = Math.max(step, Math.round(baseHour * MAX_HOUR_BASE_ADJUSTMENT_RATIO));
-    // Mốc phút bị kẹp xuống ĐÚNG bằng trần 35% tổng trước VAT: sàn và trần trùng
-    // nhau nên Tiền giờ chỉ còn một giá trị hợp lệ duy nhất, và tiền hàng phải
-    // khớp chính xác giá trị đó theo bước giá. Thực tế hầu như không ghép được:
-    // sao kê 541.200đ (trước VAT 492.000đ) có sàn = trần = 172.200đ, tổ hợp gần
-    // nhất lệch 200đ và phiếu bị loại. Trần là ràng buộc cơ cấu nên phải giữ;
-    // sàn chỉ là mốc thời lượng gợi ý nên bỏ hẳn ở đúng trường hợp này, để phần
-    // dư dồn vào Tiền giờ như phiếu nhỏ dưới 500.000đ.
-    const floorClampedToCap = preTaxCap > 0 && nominalBaseHour >= preTaxCap;
+    // Chỉ hạ sàn khi phần trước VAT thật sự không đủ cho mốc phút.
+    const floorClampedToCap = preTax > 0 && nominalBaseHour > affordableHour;
     return {
       baseHour,
       adjustmentLimit,
@@ -5697,14 +5725,15 @@
       nominalBaseHour,
       baseHourClamped: baseHour < nominalBaseHour,
       floorClampedToCap,
-      // A new invoice uses 30 or 50 minutes as the minimum singing baseline,
-      // depending on the bank-statement total.
-      minHourAmount: floorClampedToCap
-        ? 0
-        : (isNewInvoice || currentHour <= 0
-          ? baseHour
-          : Math.max(step, baseHour - adjustmentLimit)),
-      maxHourAmount: baseHour + adjustmentLimit
+      // Trần đã nới để chứa sàn thời lượng (nếu có), giữ lại để đối soát.
+      preTaxCap,
+      effectiveCap,
+      // Sàn Tiền giờ: mốc 30/50 phút, hạ xuống mức tối đa kham được khi phần
+      // trước VAT quá nhỏ.
+      minHourAmount: isNewInvoice || currentHour <= 0
+        ? Math.max(step, Math.min(baseHour, requiredFloor))
+        : Math.max(step, Math.min(baseHour, requiredFloor) - adjustmentLimit),
+      maxHourAmount: Math.max(baseHour + adjustmentLimit, requiredFloor)
     };
   }
   // Đơn thật quan sát được có tiền giờ ≈ 0,87–1,64 lần tiền hàng. Chỉ chặn trần
@@ -5727,7 +5756,7 @@
     return Math.max(minimumGoods, Math.max(0, preTax - minHour));
   }
 
-  function candidateFromStock(stock, minQty, selectionPenalty, ruleMaxQty, quantityScale = 1) {
+  function candidateFromStock(stock, minQty, selectionPenalty, ruleMaxQty, quantityScale = 1, targetGrand = 0) {
     const stockQty = Math.max(0, Math.floor(Number(stock.availableQty) || 0));
     const baseInvoiceLimit = InvoiceTargetSolver.recommendInvoiceLimit(stock);
     // Hóa đơn rất lớn ở cơ sở toàn mã giá thấp không đạt được tiền hàng tối
@@ -5757,9 +5786,9 @@
       selectionPenalty: Math.max(0, Number(selectionPenalty) || 0),
       // Nhóm bắt buộc suy ra từ tên hàng nên gắn ở đây, nhưng không được ghi đè
       // constraintGroup có sẵn của kho (ví dụ nhóm hoa quả giới hạn 1 đĩa/hóa đơn).
-      constraintGroup: stock.constraintGroup || mandatoryGroupFor(stock)?.group,
+      constraintGroup: stock.constraintGroup || mandatoryGroupFor(stock, targetGrand)?.group,
       constraintGroupMax: stock.constraintGroupMax,
-      constraintGroupMin: stock.constraintGroup ? 0 : (mandatoryGroupFor(stock)?.minQty || 0),
+      constraintGroupMin: stock.constraintGroup ? 0 : (mandatoryGroupFor(stock, targetGrand)?.minQty || 0),
       // Nhóm hàng của website, dùng để cân đối cơ cấu hóa đơn cho giống đơn thật.
       productGroup: String(stock.webGroup || "")
     };
@@ -5827,15 +5856,47 @@
   // theo từng mã: "3 bia" là 3 chai bất kỳ mã bia nào, nên 2 Tiger + 1 Hà Nội
   // vẫn hợp lệ. Ép theo từng mã sẽ dồn hết lên một mã và cạn tồn mã đó.
   //
-  // Hóa đơn dưới 500.000đ KHÔNG áp luật này: nhánh đó có quy tắc riêng đúng 2
-  // chai bia, xem calculateSmallInvoiceBeerPlan.
+  // Hóa đơn dưới 300.000đ KHÔNG áp luật này: nhánh đó có quy tắc riêng đúng 1
+  // món ≤ 50.000đ, xem calculateSmallInvoiceBeerPlan.
   const MANDATORY_GROUPS = Object.freeze([
     { group: "beer", label: "bia", minQty: 3, matches: isBeerStock },
     { group: "wet_towel", label: "khăn ướt", minQty: 2, matches: isWetTowelStock }
   ]);
 
-  function mandatoryGroupFor(stock) {
-    return MANDATORY_GROUPS.find(rule => rule.matches(stock)) || null;
+  // Mức bắt buộc rút gọn cho hóa đơn nhỏ ở Nhơn (xem RELAXED_MANDATORY_* bên
+  // dưới). Vẫn phải có hàng, nhưng chỉ 1 bia + 1 khăn.
+  const RELAXED_MANDATORY_GROUPS = Object.freeze([
+    { group: "beer", label: "bia", minQty: 1, matches: isBeerStock },
+    { group: "wet_towel", label: "khăn ướt", minQty: 1, matches: isWetTowelStock }
+  ]);
+
+  // Kế toán chốt 18/09/2026: ở Paris Nhơn, hóa đơn dưới 500.000đ chỉ cần tối
+  // thiểu 1 bia + 1 khăn ướt.
+  //
+  // Lý do: mức 3 bia + 2 khăn của kho Nhơn rẻ nhất cũng đã ~410.000đ. Với sao
+  // kê 486.200đ (trước VAT 442.000đ) thì món bắt buộc ăn gần hết phần trước
+  // VAT, `hourPlanningBounds` chỉ còn 32.000đ cho Tiền giờ và phải hạ sàn 30
+  // phút xuống còn 3 phút — phiếu 3 phút hát mà uống 3 bia thì vô lý. Hạ mức
+  // bắt buộc trả lại đủ chỗ cho sàn 30 phút (1 bia + 1 khăn ~60-120.000đ, còn
+  // >300.000đ cho Tiền giờ).
+  //
+  // Chỉ áp cho Nhơn: Kim Giang và Linh Đàm giữ nguyên 3 bia + 2 khăn.
+  const RELAXED_MANDATORY_TENANT = "parisnhon";
+  const RELAXED_MANDATORY_GRAND_LIMIT = 500000;
+
+  // Nhóm bắt buộc áp dụng cho MỘT hóa đơn cụ thể. targetGrand là tổng đã gồm
+  // VAT (tiền sao kê), cùng mốc so sánh với SMALL_INVOICE_BEER_LIMIT.
+  function mandatoryGroupsFor(targetGrand) {
+    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
+    const grand = Math.max(0, Math.round(Number(targetGrand) || 0));
+    return currentTenantSlug === RELAXED_MANDATORY_TENANT && grand > 0 &&
+      grand < RELAXED_MANDATORY_GRAND_LIMIT
+      ? RELAXED_MANDATORY_GROUPS
+      : MANDATORY_GROUPS;
+  }
+
+  function mandatoryGroupFor(stock, targetGrand) {
+    return mandatoryGroupsFor(targetGrand).find(rule => rule.matches(stock)) || null;
   }
 
   // Tồn khả dụng của cả nhóm. Phải chạy trên workingInventory (bản đã trừ đặt
@@ -5857,19 +5918,31 @@
 
   // Kiểm tra trước khi giải: thiếu tồn thì báo rõ thay vì để solver trả về
   // phương án thiếu hàng trong im lặng.
-  function unmetMandatoryGroup(inventoryState) {
-    for (const rule of MANDATORY_GROUPS) {
+  function unmetMandatoryGroup(inventoryState, targetGrand) {
+    for (const rule of mandatoryGroupsFor(targetGrand)) {
       const available = mandatoryGroupAvailability(inventoryState, rule);
       if (available < rule.minQty) return { rule, available };
     }
     return null;
   }
 
+  // Món cho phiếu nhỏ: bia hoặc đồ uống giá thấp (≤ 50.000đ). Không lấy đồ khô
+  // hay hàng theo suất — phiếu một món nên phải là thứ bán lẻ tự nhiên nhất.
+  function isSmallInvoiceDrink(stock) {
+    if (isBeerStock(stock)) return true;
+    const group = normalizedProductName(stock?.webGroup).replace(/\s+/g, "");
+    const unit = normalizedProductName(stock?.webUnit);
+    // Nhóm "BIA - RƯỢU" của Nhơn gộp cả nước ngọt; lọc theo giá bên dưới nên
+    // không sợ lấy nhầm rượu đắt.
+    return group.includes("BIA") || /^(LON|CHAI)$/.test(unit);
+  }
+
   function selectSmallInvoiceBeer(inventoryState, transaction, productUsage, preTaxTarget) {
     const eligible = (inventoryState || []).filter(stock => {
-      if (!isAutoSellableStock(stock) || !isBeerStock(stock)) return false;
+      if (!isAutoSellableStock(stock) || !isSmallInvoiceDrink(stock)) return false;
       if (Math.floor(Number(stock.availableQty) || 0) < SMALL_INVOICE_BEER_QTY) return false;
-      if (Math.round(Number(stock.webPrice) || 0) <= 0) return false;
+      const price = Math.round(Number(stock.webPrice) || 0);
+      if (price <= 0 || price > SMALL_INVOICE_ITEM_MAX_PRICE) return false;
       return InvoiceTargetSolver.recommendInvoiceLimit(stock) >= SMALL_INVOICE_BEER_QTY;
     });
     if (!eligible.length) return null;
@@ -5919,7 +5992,7 @@
     if (!beer) {
       return {
         status: "error",
-        reason: "Hóa đơn dưới 500.000đ cần đúng 2 chai bia, nhưng không có mã bia nào còn đủ tồn và giới hạn 2 chai/hóa đơn."
+        reason: `Hóa đơn dưới ${formatMoney(SMALL_INVOICE_BEER_LIMIT)}đ cần đúng một món bia/nước giá tối đa ${formatMoney(SMALL_INVOICE_ITEM_MAX_PRICE)}đ, nhưng không có mã nào còn tồn.`
       };
     }
     const price = Math.round(Number(beer.webPrice) || 0);
@@ -5928,11 +6001,21 @@
     if (hour <= 0) {
       return {
         status: "error",
-        reason: `Hóa đơn dưới 500.000đ cần 2 chai ${beer.webName || "bia"} (${formatMoney(goods)}đ), nhưng tổng trước VAT chỉ có ${formatMoney(targets.preTaxTarget)}đ.`
+        reason: `Hóa đơn dưới ${formatMoney(SMALL_INVOICE_BEER_LIMIT)}đ cần một ${beer.webName || "món"} (${formatMoney(goods)}đ), nhưng tổng trước VAT chỉ có ${formatMoney(targets.preTaxTarget)}đ.`
       };
     }
 
-    const hourlyRate = Math.max(1000, Math.round(Number(scan?.hourlyRate) || DEFAULT_HOURLY_RATE));
+    // Đơn giá: phiếu mới lấy theo phòng sẽ lập; phiếu có sẵn suy từ chính form
+    // đang mở, vì giờ vào/ra của nó quyết định Tiền giờ website sẽ tính.
+    const scanPricing = scan?.newInvoicePlanning ? null : inferHourPricing(scan);
+    const hourlyRate = Math.max(1000, Math.round(
+      Number(scan?.hourlyRate) || Number(scanPricing?.hourlyRate) || DEFAULT_HOURLY_RATE
+    ));
+    // Thời lượng phải KHỚP Tiền giờ. Trước đây nhánh này giữ nguyên giờ vào/ra
+    // của phiếu cũ nhưng vẫn đặt Tiền giờ bằng phần còn lại, nên phiếu ghi
+    // 18:06→19:33 (87 phút, đáng lẽ 870.000đ) mà chỉ tính 30.000đ — vô lý với
+    // kế toán và lệch hẳn cách website tự tính. Nay giờ ra luôn được đề xuất
+    // lại theo đúng Tiền giờ, và durationMinutes được trả về để hiển thị đúng.
     const durationMinutes = Math.max(1, Math.round(hour / hourlyRate * 60));
     const hourFromTime = websiteHourAmountForMinutes(durationMinutes, hourlyRate);
     const hourAdjustment = hour - hourFromTime;
@@ -5962,9 +6045,10 @@
       taxRate: 10,
       difference: predictedGrand - targetGrand,
       checkIn: scan.checkIn || "",
-      checkOut: scan.sessionRebased
-        ? (recommendCheckOut(scan, hourFromTime, hourlyRate) || scan.checkOut || "")
-        : (scan.checkOut || ""),
+      // Giờ ra luôn theo Tiền giờ của phương án, không giữ giờ cũ của phiếu.
+      checkOut: recommendCheckOut(scan, hourFromTime, hourlyRate) || scan.checkOut || "",
+      durationMinutes,
+      hourlyRate,
       sessionRebased: Boolean(scan.sessionRebased),
       originalCheckIn: scan.originalCheckIn || "",
       originalCheckOut: scan.originalCheckOut || "",
@@ -6035,7 +6119,8 @@
         minQty,
         priorUseCount * priorUseCount * 100 + rotation + rejectionCountFor(code) * 500,
         maxQty,
-        quantityScale
+        quantityScale,
+        target
       );
       if (requireFruitPlatter && candidate.constraintGroup === "fruit_platter") {
         candidate.constraintGroupMin = Math.max(Number(candidate.constraintGroupMin) || 0, fruitGroupRule.minQty);
@@ -6114,7 +6199,21 @@
     // preTaxTarget chỉ phụ thuộc targetGrand và taxRate (currentHour chỉ đổi
     // goodsTarget), nên lấy trước để kẹp sàn Tiền giờ rồi mới chốt goodsTarget.
     const preTaxProbe = InvoiceTargetSolver.deriveInvoiceTargets(targetGrand, 0, scan.taxRate);
-    const hourBounds = hourPlanningBounds(scan, hourPricing, targetGrand, preTaxProbe.preTaxTarget);
+    // Giá trị món bắt buộc rẻ nhất: sàn Tiền giờ không được ép tiền hàng xuống
+    // dưới mức này, nếu không phương án sẽ thiếu món bắt buộc.
+    const mandatoryGoodsFloor = mandatoryGroupsFor(targetGrand).reduce((sum, rule) => {
+      const cheapest = (inventoryState || [])
+        .filter(stock => isAutoSellableStock(stock) && rule.matches(stock) &&
+          Math.round(Number(stock.webPrice) || 0) > 0)
+        .reduce((low, stock) => Math.min(low, Math.round(Number(stock.webPrice))), Number.POSITIVE_INFINITY);
+      return sum + (Number.isFinite(cheapest) ? cheapest * rule.minQty : 0);
+    }, 0);
+    const hourBounds = hourPlanningBounds(
+      { ...scan, mandatoryGoodsFloor },
+      hourPricing,
+      targetGrand,
+      preTaxProbe.preTaxTarget
+    );
     const targets = InvoiceTargetSolver.deriveInvoiceTargets(targetGrand, hourBounds.baseHour, scan.taxRate);
     if (!targets.grandReachable) {
       return {
@@ -6126,7 +6225,13 @@
     }
     // Hóa đơn không được phép không có Tiền giờ. Phiếu mới dùng sàn 30 phút,
     // hoặc 50 phút khi sao kê trên 1 triệu, để solver chừa chỗ cho tiền giờ.
-    const hourPreTaxCap = Math.max(0, Math.floor(targets.preTaxTarget * MAX_HOUR_PRETAX_RATIO));
+    // Trần 35% đã được hourPlanningBounds nới vừa đủ để chứa sàn 30 phút của
+    // phiếu nhỏ; dùng đúng trần đã nới, nếu không cổng kiểm tra cuối sẽ loại
+    // chính phương án mà sàn thời lượng vừa bắt buộc phải có.
+    const hourPreTaxCap = Math.max(
+      Math.max(0, Math.floor(targets.preTaxTarget * MAX_HOUR_PRETAX_RATIO)),
+      Math.round(Number(hourBounds.effectiveCap) || 0)
+    );
     // Valid upper range is the union of: baseline +/- 20%, or a final
     // singing charge no higher than 35% of the pre-VAT total.
     hourBounds.maxHourAmount = Math.max(hourBounds.maxHourAmount, hourPreTaxCap);
@@ -6148,7 +6253,7 @@
     // nếu chỉ xét tồn gốc thì giao dịch cuối ngày vẫn bị ép đủ số lượng và sinh
     // phương án âm kho.
     if (targets.goodsTarget > 0) {
-      const unmetGroup = unmetMandatoryGroup(inventoryState);
+      const unmetGroup = unmetMandatoryGroup(inventoryState, targetGrand);
       if (unmetGroup) {
         return {
           status: "error",
@@ -6208,7 +6313,27 @@
     };
     let solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, solverOptions);
     let rotatingPriorityRelaxed = false;
-    if (!solution.items) {
+    // Rule luân phiên là SỞ THÍCH, không phải luật kế toán, nên phải nới khi nó
+    // làm phương án bất khả thi. Hai dấu hiệu đều phải xét:
+    //   1. solver không tìm được tổ hợp nào;
+    //   2. tổ hợp tìm được ăn hết phần trước VAT, không còn chỗ cho Tiền giờ.
+    // Trước đây chỉ xét (1), nên ca thật ở Nhơn bị loại oan: rule ép một đĩa
+    // hoa quả 250.000đ cho mọi phiếu trên 400.000đ, cộng món bắt buộc 160.000đ
+    // thành 410.000đ, vượt phần trước VAT 400.000đ của sao kê 440.000đ. Solver
+    // vẫn trả về tổ hợp đó nên nhánh nới không chạy, và phiếu báo "không có
+    // Tiền giờ" dù chỉ cần bỏ đĩa hoa quả là lập được.
+    //
+    // Mốc so sánh là maxGoodsAmount (trần tiền hàng đã chừa sàn Tiền giờ), KHÔNG
+    // phải preTaxTarget. Dùng preTaxTarget chỉ bắt được trường hợp cực đoan "ăn
+    // sạch phần trước VAT"; tổ hợp vượt trần nhưng chưa ăn hết vẫn phá sàn Tiền
+    // giờ mà nhánh nới không chạy. Rõ nhất từ 18/09/2026, khi món bắt buộc ở
+    // Nhơn hạ xuống 1 bia + 1 khăn: sàn Tiền giờ trở lại đủ 30 phút nên trần
+    // tiền hàng của sao kê 440.000đ siết từ 160.000đ xuống 100.000đ, và đĩa hoa
+    // quả 250.000đ đẩy tiền hàng lên 305.000đ — vượt trần, chưa vượt 400.000đ.
+    const maxGoodsAllowed = Math.round(Number(solverOptions.maxGoodsAmount) || 0);
+    const leavesNoRoomForHour = solution.items &&
+      Math.round(Number(solution.actual) || 0) > maxGoodsAllowed;
+    if (!solution.items || leavesNoRoomForHour) {
       const requiredOnlyCandidates = buildBatchCandidates(
         inventoryState,
         targetGrand,
@@ -6221,7 +6346,12 @@
         targets.goodsTarget,
         solverOptions
       );
-      if (requiredOnlySolution.items) {
+      // Khi nới vì lý do (2), chỉ nhận kết quả mới nếu nó THỰC SỰ chừa được
+      // Tiền giờ; nếu không thì giữ phương án cũ để thông báo lỗi vẫn nêu đúng
+      // tình trạng kho.
+      const relaxedLeavesRoom = requiredOnlySolution.items &&
+        Math.round(Number(requiredOnlySolution.actual) || 0) <= maxGoodsAllowed;
+      if (requiredOnlySolution.items && (!solution.items || relaxedLeavesRoom)) {
         candidates = requiredOnlyCandidates;
         solution = requiredOnlySolution;
         rotatingPriorityRelaxed = true;
@@ -6260,23 +6390,87 @@
     if (difference !== 0) {
       return { status: "error", reason: `Phương án chưa khớp tuyệt đối; lệch ${formatMoney(difference)}.` };
     }
+    // Chốt chặn cuối: món hàng bắt buộc là luật kế toán, không phải tiêu chí
+    // cho điểm. Solver xếp nó ưu tiên cao nhất, nhưng khi KHÔNG tổ hợp nào đủ
+    // (mã bia/khăn quá đắt so với tiền hàng cho phép) thì phương án tốt nhất
+    // vẫn thiếu và trước đây lọt ra "Sẵn sàng" với 2 bia thay vì 3.
+    if (Number(solution.missingRequired) > 0) {
+      const shortages = mandatoryGroupsFor(targetGrand).map(rule => {
+        const actual = selected
+          .filter(item => rule.matches({ webName: item.name }))
+          .reduce((sum, item) => sum + Math.round(Number(item.newQty) || 0), 0);
+        return actual < rule.minQty ? `${rule.label} ${actual}/${rule.minQty}` : "";
+      }).filter(Boolean);
+      const cheapest = mandatoryGroupsFor(targetGrand).reduce((sum, rule) => {
+        const low = (inventoryState || [])
+          .filter(stock => isAutoSellableStock(stock) && rule.matches(stock) &&
+            Math.round(Number(stock.webPrice) || 0) > 0)
+          .reduce((best, stock) => Math.min(best, Math.round(Number(stock.webPrice))), Number.POSITIVE_INFINITY);
+        return sum + (Number.isFinite(low) ? low * rule.minQty : 0);
+      }, 0);
+      return {
+        status: "error",
+        reason: `Phương án thiếu món bắt buộc (${shortages.join(", ")}). ` +
+          `Các món bắt buộc rẻ nhất cần ${formatMoney(cheapest)}đ, trong khi tiền hàng cho phép tối đa ` +
+          `${formatMoney(solverOptions.maxGoodsAmount)}đ (tổng trước VAT ${formatMoney(targets.preTaxTarget)}đ). ` +
+          "Hãy ánh xạ thêm mã bia/khăn ướt giá thấp hơn rồi tính lại."
+      };
+    }
     // Chốt chặn cuối: dù solver có ép sàn tiền giờ, vẫn không để lọt phương án
     // Tiền giờ = 0 ra trạng thái Sẵn sàng.
     if (finalHourAmount <= 0) {
+      // Lỗi này có nhiều nguyên nhân rất khác nhau và chỉ phân biệt được bằng
+      // số liệu tại chỗ, nên nêu thẳng các con số quyết định thay vì đổ chung
+      // cho "tồn kho/rule". Thứ tự: giá sàn của món bắt buộc, bước giá lẻ,
+      // rồi mới tới nguyên nhân chung.
+      const mandatoryFloor = mandatoryGroupsFor(targetGrand).reduce((sum, rule) => {
+        const cheapest = (inventoryState || [])
+          .filter(stock => isAutoSellableStock(stock) && rule.matches(stock) &&
+            Math.round(Number(stock.webPrice) || 0) > 0)
+          .reduce((low, stock) => Math.min(low, Math.round(Number(stock.webPrice))), Number.POSITIVE_INFINITY);
+        return sum + (Number.isFinite(cheapest) ? cheapest * rule.minQty : 0);
+      }, 0);
+      const oddStep = hourPricing.hourStep > 0 && hourPricing.hourStep % 1000 !== 0;
+      let cause;
+      if (mandatoryFloor > 0 && mandatoryFloor >= targets.preTaxTarget) {
+        cause = ` Riêng các món bắt buộc (${mandatoryGroupsFor(targetGrand).map(rule => `${rule.minQty} ${rule.label}`).join(" + ")}) ` +
+          `rẻ nhất đã là ${formatMoney(mandatoryFloor)}đ, bằng hoặc vượt tổng trước VAT ${formatMoney(targets.preTaxTarget)}đ ` +
+          "nên không còn chỗ cho Tiền giờ. Hãy ánh xạ thêm mã bia/khăn giá thấp.";
+      } else if (oddStep) {
+        cause = ` Đơn giá giờ đọc từ phiếu là ${formatMoney(hourPricing.hourlyRate)}đ/giờ ` +
+          `(bước ${formatMoney(hourPricing.hourStep)}đ), không phải mức giá tròn; ` +
+          "hãy kiểm tra Giờ vào/Giờ ra và Tiền giờ trên phiếu.";
+      } else {
+        cause = ` Tổng trước VAT ${formatMoney(targets.preTaxTarget)}đ, tiền hàng ${formatMoney(solution.actual)}đ` +
+          `${mandatoryFloor > 0 ? `, món bắt buộc rẻ nhất ${formatMoney(mandatoryFloor)}đ` : ""}. ` +
+          "Hãy ánh xạ thêm mặt hàng giá thấp hoặc chỉnh rule rồi tính lại.";
+      }
       return {
         status: "error",
-        reason: "Phương án không có Tiền giờ; chưa được tạo hóa đơn thiếu Tiền giờ. Hãy chỉnh tồn kho/rule rồi tính lại."
+        reason: `Phương án không có Tiền giờ; chưa được tạo hóa đơn thiếu Tiền giờ.${cause}`
       };
     }
-    // Phiếu mới: sàn Tiền giờ là luật cứng, newInvoicePlanValidationError sẽ
-    // chặn ở bước mở tab worker. Chặn ngay tại đây với lý do rõ ràng thay vì
-    // báo "Sẵn sàng" rồi vỡ lúc chạy Lưu API và làm cả lô dừng.
-    if (scan.newInvoicePlanning && minHourAmount > 0 && finalHourAmount < minHourAmount) {
+    // Sàn Tiền giờ (30 phút) là mục tiêu, không phải điều kiện loại phiếu.
+    // Kế toán chốt 18/09/2026: phiếu không đủ tiền cho 30 phút thì LẤY TỐI ĐA
+    // CÓ THỂ chứ không bỏ. hourPlanningBounds đã hạ sàn xuống mức kham được
+    // (chừa đúng một món rẻ), nên tới đây chỉ chặn khi phương án còn thấp hơn
+    // cả mức đã hạ đó — tức kho không ghép nổi tổ hợp tiền hàng đủ nhỏ.
+    const floorLowered = Boolean(hourBounds.floorClampedToCap);
+    if (scan.newInvoicePlanning && !floorLowered && minHourAmount > 0 &&
+        finalHourAmount < minHourAmount) {
       return {
         status: "error",
-        reason: `Tiền giờ ${formatMoney(finalHourAmount)}đ thấp hơn sàn ${formatMoney(minHourAmount)}đ: kho không ghép được tổ hợp tiền hàng ≤ ${formatMoney(targets.preTaxTarget - minHourAmount)}đ. Hãy kiểm tra ánh xạ/giới hạn số lượng rồi tính lại.`
+        reason: `Tiền giờ ${formatMoney(finalHourAmount)}đ thấp hơn sàn ${formatMoney(minHourAmount)}đ: kho không ghép được tổ hợp tiền hàng ≤ ${formatMoney(targets.preTaxTarget - minHourAmount)}đ. Hãy ánh xạ thêm mặt hàng giá thấp rồi tính lại.`
       };
     }
+    // Giờ ra và thời lượng suy từ chính Tiền giờ của phương án, dùng cho cả
+    // checkOut lẫn hiển thị. Tính một lần ở đây để hai chỗ không lệch nhau.
+    const proposedCheckOut = recommendCheckOut(scan, hourFromTime, hourPricing.hourlyRate);
+    const proposedCheckOutDate = parseUiDateTime(proposedCheckOut);
+    const planCheckInDate = parseUiDateTime(scan.checkIn);
+    const proposedMinutes = proposedCheckOutDate && planCheckInDate
+      ? Math.max(0, Math.round((proposedCheckOutDate.getTime() - planCheckInDate.getTime()) / 60000))
+      : 0;
     const hourAdjustmentSmall = Math.abs(hourBaseAdjustment) <= hourBounds.adjustmentLimit;
     const hourWithinPreTaxCap = finalHourAmount <= hourPreTaxCap;
     if (!hourAdjustmentSmall && !hourWithinPreTaxCap) {
@@ -6285,7 +6479,20 @@
         reason: `Phần bù vào Tiền giờ ${formatMoney(hourBaseAdjustment)} vượt 20% tiền giờ nền (${formatMoney(hourBounds.adjustmentLimit)}), đồng thời Tiền giờ ${formatMoney(finalHourAmount)} vượt trần 35% tổng trước VAT (${formatMoney(hourPreTaxCap)}); cần tính lại tổ hợp hàng.`
       };
     }
-    if (solution.actual <= 0 || finalHourAmount > solution.actual * maxHourToGoodsRatio) {
+    // Tỷ lệ Tiền giờ/tiền hàng tối đa 2 lần là quy ước cơ cấu, cùng hạng với
+    // trần 35%: nó phải nhường SÀN THỜI LƯỢNG. Phiếu nhỏ giữ 30 phút thì tỷ lệ
+    // lên tới 3 lần (sao kê 440.000đ: giờ 300.000đ, hàng 100.000đ) mà vẫn đúng
+    // luật kế toán. Chỉ chặn khi Tiền giờ vượt tỷ lệ mà KHÔNG phải do sàn.
+    // Chỉ miễn khi chính SÀN là thứ đẩy tỷ lệ lên: tức ngay cả khi Tiền giờ
+    // đúng bằng sàn thì tỷ lệ vẫn vượt. Nếu ở mức sàn tỷ lệ vẫn hợp lệ thì
+    // Tiền giờ cao là do tổ hợp hàng, và phải chặn như trước.
+    const hourRequiredByFloor = Math.max(0, Math.round(Number(hourBounds.minHourAmount) || 0));
+    const goodsAtFloor = targets.preTaxTarget - hourRequiredByFloor;
+    const floorItselfExceedsRatio = hourRequiredByFloor > 0 &&
+      (goodsAtFloor <= 0 || hourRequiredByFloor > goodsAtFloor * maxHourToGoodsRatio);
+    const ratioExceeded = solution.actual <= 0 ||
+      finalHourAmount > solution.actual * maxHourToGoodsRatio;
+    if (ratioExceeded && !floorItselfExceedsRatio) {
       return {
         status: "error",
         reason: `Tiền giờ ${formatMoney(finalHourAmount)} vượt ${maxHourToGoodsRatio} lần tiền hàng ${formatMoney(solution.actual)}; tồn kho/rule hiện tại chưa tạo được phương án thực tế.`
@@ -6323,13 +6530,21 @@
       taxRate: 10,
       difference,
       checkIn: scan.checkIn || "",
-      checkOut: scan.sessionRebased
-        ? (recommendCheckOut(scan, hourFromTime, hourPricing.hourlyRate) || scan.checkOut || "")
-        : (scan.checkOut || ""),
+      // Giờ ra phải KHỚP Tiền giờ của phương án, không giữ giờ cũ của phiếu.
+      //
+      // Trước đây chỉ tính lại khi phiên bị rebase, nên phiếu có sẵn giữ nguyên
+      // giờ cũ trong khi Tiền giờ đã đổi: ca thật ở Nhơn 01/07/2026 có phiếu
+      // 19:40→21:02 (82 phút) mà Tiền giờ chỉ 140.000đ, tức 102.439đ/giờ —
+      // không mức giá nào như vậy. Website tính Tiền giờ TỪ giờ vào/ra nên khi
+      // lưu sẽ ra số khác phương án và phiếu lệch tổng.
+      checkOut: proposedCheckOut || scan.checkOut || "",
+      // Thời lượng tương ứng, để Batch Review không hiển thị "0 phút".
+      durationMinutes: proposedMinutes,
+      hourlyRate: hourPricing.hourlyRate || DEFAULT_HOURLY_RATE,
       sessionRebased: Boolean(scan.sessionRebased),
       originalCheckIn: scan.originalCheckIn || "",
       originalCheckOut: scan.originalCheckOut || "",
-      proposedCheckOut: recommendCheckOut(scan, hourFromTime, hourPricing.hourlyRate),
+      proposedCheckOut,
       items: selected.map(item => ({
         code: String(item.code),
         name: item.name,
@@ -6532,7 +6747,7 @@
   function selectBatchReviewTransactions(transactions, options) {
     const fromDate = String(options?.fromDate || "");
     const toDate = String(options?.toDate || "");
-    const limit = Math.max(1, Math.min(50, Number(options?.limit) || 10));
+    const limit = Math.max(1, Math.min(MAX_BATCH_TRANSACTIONS, Number(options?.limit) || 10));
     // "review" CỐ TÌNH không có trong danh sách này. Đó là trạng thái của giao
     // dịch đang chờ người rà bằng mắt: dòng Credit không rõ là chuyển khoản, và
     // giao dịch từ 20 triệu trở lên vốn có thể là nạp tiền/chuyển nội bộ chứ
@@ -6581,7 +6796,7 @@
       assertRuntimeContext();
       const current = await request("scan");
       if (current?.ready) throw new Error("Hãy bấm Thoát để đóng phiếu đang mở trước khi tạo Batch Review.");
-      const limit = Math.max(1, Math.min(50, Number(document.getElementById("it-batch-limit")?.value) || 10));
+      const limit = Math.max(1, Math.min(MAX_BATCH_TRANSACTIONS, Number(document.getElementById("it-batch-limit")?.value) || 10));
       const fromDate = document.getElementById("it-batch-from-date")?.value || "";
       const toDate = document.getElementById("it-batch-to-date")?.value || "";
       if (fromDate && toDate && fromDate > toDate) throw new Error("Từ ngày không được lớn hơn Đến ngày.");
@@ -8063,13 +8278,39 @@
     return `${part(value.getDate())}/${part(value.getMonth() + 1)}/${value.getFullYear()} ${part(value.getHours())}:${part(value.getMinutes())}`;
   }
 
+  // Đơn giá giờ của phiếu ĐANG MỞ, suy từ Tiền giờ và thời lượng trên form.
+  //
+  // Phép chia ngược cho ra số lẻ khi phiếu cũ có phần bù vào Tiền giờ hoặc khi
+  // thời lượng không tròn: Tiền giờ 700.000đ / 3 giờ = 233.000đ/giờ, bước giá
+  // thành 2.330đ. Bước đó không phải bội của bước giá hàng (5.000đ) nên với một
+  // tổng trước VAT cố định, KHÔNG tổ hợp tiền hàng nào để lại Tiền giờ hợp lệ,
+  // và phiếu bị loại với "Phương án không có Tiền giờ" — dù phiếu nhỏ hơn vẫn
+  // lập được. Ca thật: sao kê 577.500đ ở Nhơn ngày 01/07/2026.
+  //
+  // Đơn giá thật luôn là một mức tròn trong bảng giá (400k/600k/800k ở Nhơn,
+  // 600k ở các cơ sở khác). Vì vậy làm tròn về mức gần nhất trong bảng thay vì
+  // tin vào phép chia; chỉ khi lệch quá xa mọi mức đã biết mới giữ số suy ra,
+  // để cơ sở có bảng giá khác không bị ép sai.
   function inferHourPricing(scan) {
     const duration = Number(scan.durationMinutes || 0);
     const currentHour = Number(scan.currentHour || 0);
     const billedHours = Math.round((duration / 60) * 100) / 100;
     if (duration <= 0 || currentHour <= 0 || billedHours <= 0) return { hourlyRate: 0, hourStep: 0 };
-    const hourlyRate = Math.max(1000, Math.round((currentHour / billedHours) / 1000) * 1000);
-    return { hourlyRate, hourStep: Math.round(hourlyRate / 100) };
+    // LUÔN dùng một mức trong bảng giá, không dùng số từ phép chia.
+    //
+    // Phiếu cũ thường có Tiền giờ đã giảm giá, đã bù, hoặc thời lượng không
+    // tương ứng, nên phép chia ra những con số không tồn tại: 21.000đ/giờ (ca
+    // thật ở Nhơn: phiếu 300 phút, Tiền giờ 105.000đ), 133.000đ, 233.000đ.
+    // Đơn giá lẻ kéo theo bước giá lẻ, và bước giá lẻ làm hai việc sai:
+    //   - không tổ hợp tiền hàng nào chừa được Tiền giờ hợp lệ, phiếu bị loại;
+    //   - giờ ra đề xuất ra thời lượng phi lý (300 phút cho 105.000đ).
+    // Đơn giá thật chỉ có vài mức cố định trong bảng của cơ sở, nên chọn mức
+    // gần nhất là luôn đúng hơn tin vào phép chia.
+    const rawRate = currentHour / billedHours;
+    const knownRates = tenantHourlyRates();
+    const closest = knownRates.reduce((best, rate) =>
+      Math.abs(rate - rawRate) < Math.abs(best - rawRate) ? rate : best, knownRates[0]);
+    return hourPricingForRate(closest || DEFAULT_HOURLY_RATE);
   }
 
   function recommendCheckOut(scan, hourTarget, hourlyRate) {
@@ -8077,14 +8318,24 @@
     const currentDuration = Number(scan.durationMinutes || 0);
     if (!checkIn || currentDuration <= 0 || hourlyRate <= 0 || hourTarget < 0) return "";
     const estimatedMinutes = Math.max(0, Math.round((hourTarget / hourlyRate) * 60));
-    const maxMinutes = Math.max(1440, estimatedMinutes + 180);
+    // Chỉ dò quanh thời lượng đúng của Tiền giờ. Trần cũ 1440 phút (cả ngày)
+    // cho phép những mốc xa vô lý lọt vào.
+    const maxMinutes = Math.max(60, estimatedMinutes + 180);
     let best = null;
     for (let minutes = 0; minutes <= maxMinutes; minutes += 1) {
       const billedHours = Math.round((minutes / 60) * 100) / 100;
       const amount = Math.round(billedHours * hourlyRate);
       const difference = Math.abs(amount - hourTarget);
-      const distance = Math.abs(minutes - currentDuration);
-      if (!best || difference < best.difference || (difference === best.difference && distance < best.distance)) best = { minutes, difference, distance };
+      // Nhiều mốc phút cho cùng một số tiền (website làm tròn 0,01 giờ). Khi hòa
+      // phải lấy mốc NGẮN NHẤT, tức thời lượng đúng với số tiền.
+      //
+      // Trước đây lấy mốc gần thời lượng CŨ của phiếu nhất, nên phiếu cũ 300
+      // phút giữ nguyên 300 phút cho Tiền giờ 105.000đ — hiển thị "300 phút ·
+      // theo giờ 105.000đ", tức 21.000đ/giờ, không mức giá nào như vậy.
+      if (!best || difference < best.difference ||
+          (difference === best.difference && minutes < best.minutes)) {
+        best = { minutes, difference };
+      }
     }
     return formatUiDateTime(new Date(checkIn.getTime() + best.minutes * 60000));
   }

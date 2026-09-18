@@ -42,7 +42,8 @@ Phương thức thanh toán là thuộc tính đơn của phiếu, không phải
 
 | # | Quyết định |
 |---|---|
-| 1 | Chỉ áp luật **2 chai bia**. KHÔNG áp luật ≥3 bia + ≥2 khăn ướt |
+| 1 | Phiếu dưới **300.000đ**: đúng **một món** bia/nước giá tối đa **50.000đ**, phần còn lại vào Tiền giờ. KHÔNG áp luật ≥3 bia + ≥2 khăn ướt. Từ 300.000đ trở lên đi nhánh thường (chốt 17/09/2026) |
+| 1b | **Paris Nhơn**, phiếu dưới **500.000đ**: món bắt buộc hạ xuống **≥1 bia + ≥1 khăn ướt** (chốt 18/09/2026). Mức đầy đủ 3 bia + 2 khăn ở kho Nhơn rẻ nhất đã ~410.000đ, ăn gần hết phần trước VAT nên sàn 30 phút bị kẹp xuống còn 3 phút. Kim Giang và Linh Đàm giữ nguyên mức đầy đủ |
 | 2 | Phiếu quá nhỏ → **chỉ hát** (không dòng hàng, toàn bộ là tiền giờ) |
 | 3 | Tổng không biểu diễn được theo VAT 10% → **không tự tạo**, đưa vào danh sách cần xác nhận |
 | 4 | Phiếu TM **có** áp luật tiền giờ, nhưng **linh động dưới 200.000đ** |
@@ -99,7 +100,7 @@ nhận; sau khi kế toán chọn số làm tròn mới được phép Accept v�
 | Nguồn ngày | `Transaction date` đầy đủ | Chỉ ngày trong tháng (cột B) |
 | Chống trùng | `Số bút toán` | file + dòng nguồn (giữ được hai dòng trùng tiền) |
 | Phương thức TT | Luôn `TM/CK` | Theo cột có số: CK hoặc TM |
-| Món hàng bắt buộc | ≥3 bia + ≥2 khăn | Chỉ 2 bia |
+| Món hàng bắt buộc | ≥3 bia + ≥2 khăn (Nhơn dưới 500.000đ: ≥1 bia + ≥1 khăn) | Một món ≤ 50.000đ |
 | Rà tay >20 triệu | Có | Không áp dụng |
 | Điều phối phát hành | Có | Không |
 

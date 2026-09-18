@@ -461,3 +461,36 @@ const stepExact = solver.solveQuantities([
 assert(stepExact.items && (492000 - stepExact.actual) % 6000 === 0 && 492000 - stepExact.actual >= 174000,
   "requireHourStepExact vẫn phải giữ Tiền giờ đúng bước và không dưới sàn");
 console.log("solver exact hour floor: OK");
+
+// --- Bước giá Tiền giờ lẻ không được làm phiếu mất Tiền giờ --------------------
+//
+// Ca thật Nhơn 01/07/2026: sao kê 577.500đ (trước VAT 525.000đ) báo "Phương án
+// không có Tiền giờ", trong khi 143.000đ nhỏ hơn vẫn Sẵn sàng.
+//
+// Nguyên nhân: phiếu có sẵn cho đơn giá suy ra 233.000đ/giờ nên bước giá Tiền
+// giờ là 2.330đ, không phải bội của bước giá hàng 5.000đ. Solver làm tròn LÊN
+// Tiền giờ theo bước, nên mọi tổ hợp đều lệch > 0, riêng tổ hợp ăn hết phần
+// trước VAT lệch đúng 0 và thắng — rồi bị chốt chặn cuối loại vì Tiền giờ = 0.
+const oddStepPlan = solver.solveQuantities([
+  { code: "A", name: "Mã 5.000đ", price: 5000, qty: 0, maxQty: 120 },
+  { code: "B", name: "Mã 50.000đ", price: 50000, qty: 0, maxQty: 12 }
+], 341250, {
+  maxQty: 120, tolerance: 0, preTaxTarget: 525000, currentHour: 183750, hourStep: 2330,
+  minHourAmount: 0, maxHourAmount: 220500, enforceHourRange: true, requireHourStepExact: false
+});
+assert(oddStepPlan.items, "Bước giá lẻ vẫn phải giải được");
+assert(525000 - oddStepPlan.actual > 0,
+  `Tiền giờ chốt chính xác phải > 0, nhận ${525000 - oddStepPlan.actual} (tiền hàng ${oddStepPlan.actual})`);
+assert(525000 - oddStepPlan.actual <= 220500, "Tiền giờ không được vượt trần");
+
+// Bước giá tròn vẫn giữ nguyên hành vi cũ.
+const evenStepPlan = solver.solveQuantities([
+  { code: "A", name: "Mã 5.000đ", price: 5000, qty: 0, maxQty: 120 }
+], 341250, {
+  maxQty: 120, tolerance: 0, preTaxTarget: 525000, currentHour: 183750, hourStep: 6000,
+  minHourAmount: 0, maxHourAmount: 220500, enforceHourRange: true, requireHourStepExact: false
+});
+assert(evenStepPlan.items && 525000 - evenStepPlan.actual > 0,
+  "Bước giá tròn cũng phải chừa Tiền giờ");
+
+console.log("solver odd hour step: OK");
