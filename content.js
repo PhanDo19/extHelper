@@ -5592,6 +5592,38 @@
   const SMALL_INVOICE_BEER_QTY = 1;
   // Trần giá của món duy nhất trên phiếu nhỏ.
   const SMALL_INVOICE_ITEM_MAX_PRICE = 50000;
+  // Sàn giờ hát ở Paris Nhơn. Kế toán chốt 23/09/2026: hạ từ 30 xuống 15 phút.
+  // Mốc 50 phút của sao kê trên 1 triệu giữ nguyên — phiếu lớn mà hát 15 phút
+  // thì vô lý. Kim Giang và Linh Đàm chưa đổi nên vẫn dùng 30 phút.
+  const PARIS_NHON_TENANT_SLUG = "parisnhon";
+  const PARIS_NHON_MIN_SINGING_MINUTES = 15;
+  const DEFAULT_MIN_SINGING_MINUTES = 30;
+  const LARGE_STATEMENT_MIN_SINGING_MINUTES = 50;
+  const LARGE_STATEMENT_THRESHOLD = 1000000;
+
+  // Sàn phút của MỘT giao dịch. bankGrand là tổng đã gồm VAT (tiền sao kê).
+  function minimumSingingMinutes(bankGrand) {
+    if (Math.max(0, Math.round(Number(bankGrand) || 0)) > LARGE_STATEMENT_THRESHOLD) {
+      return LARGE_STATEMENT_MIN_SINGING_MINUTES;
+    }
+    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
+    return currentTenantSlug === PARIS_NHON_TENANT_SLUG
+      ? PARIS_NHON_MIN_SINGING_MINUTES
+      : DEFAULT_MIN_SINGING_MINUTES;
+  }
+
+  // Ngưỡng "phiếu quá nhỏ": phần trước VAT không đủ cho sàn 15 phút CỘNG một
+  // món rẻ nhất. Dưới mức đó thì đúng 1 bia, toàn bộ phần còn lại là Tiền giờ.
+  //
+  // Ngưỡng phải tính theo ĐƠN GIÁ PHÒNG chứ không cố định: 15 phút ở phòng 400k
+  // là 100.000đ nhưng ở phòng 800k là 200.000đ, nên một mốc cứng sẽ hoặc chặn
+  // oan phòng rẻ hoặc bỏ lọt phòng đắt.
+  function smallInvoiceGrandLimit(hourlyRate, itemPrice = SMALL_INVOICE_ITEM_MAX_PRICE) {
+    const rate = Math.max(1000, Math.round(Number(hourlyRate) || DEFAULT_HOURLY_RATE));
+    const floorHour = Math.round(rate * PARIS_NHON_MIN_SINGING_MINUTES / 60);
+    const preTax = floorHour + Math.max(0, Math.round(Number(itemPrice) || 0));
+    return Math.round(preTax * 1.1);
+  }
   // Nhơn has many mapped web items in the 25.000–90.000đ range. For a new
   // invoice from 5 million onward, a 1.500.000đ singing floor keeps the plan
   // from spreading into an excessive number of low-priced lines. This is
@@ -5668,9 +5700,9 @@
     const step = Math.max(1, Math.round(Number(hourPricing?.hourStep) || 1));
     const isNewInvoice = Boolean(scan?.newInvoicePlanning);
     const bankGrand = Math.max(0, Math.round(Number(statementGrand) || Number(scan?.statementGrand) || 0));
-    // Kế toán quy định giao dịch sao kê trên 1 triệu phải có tối thiểu 55 phút.
-    // Các giao dịch còn lại dùng mốc tối thiểu 30 phút.
-    const minimumMinutes = bankGrand > 1000000 ? 50 : 30;
+    // Sàn phút: 50 phút cho sao kê trên 1 triệu; còn lại theo cơ sở (Nhơn 15
+    // phút từ 23/09/2026, các cơ sở khác 30 phút). Xem minimumSingingMinutes.
+    const minimumMinutes = minimumSingingMinutes(bankGrand);
     const minuteBaseHour = Math.max(step, Math.round(Number(hourPricing?.hourlyRate || DEFAULT_HOURLY_RATE) * minimumMinutes / 60));
     // Sàn theo phút và trần 35% tổng trước VAT mâu thuẫn nhau ở hóa đơn nhỏ:
     // mốc 30 phút (300.000đ) chỉ nằm dưới trần khi tổng trước VAT ≥ 857.143đ, và
@@ -5944,7 +5976,7 @@
     return group.includes("BIA") || /^(LON|CHAI)$/.test(unit);
   }
 
-  function selectSmallInvoiceBeer(inventoryState, transaction, productUsage, preTaxTarget) {
+  function selectSmallInvoiceBeer(inventoryState, transaction, productUsage, preTaxTarget, hourlyRate = DEFAULT_HOURLY_RATE) {
     const eligible = (inventoryState || []).filter(stock => {
       if (!isAutoSellableStock(stock) || !isSmallInvoiceDrink(stock)) return false;
       if (Math.floor(Number(stock.availableQty) || 0) < SMALL_INVOICE_BEER_QTY) return false;
@@ -5966,13 +5998,19 @@
     const rulePosition = stock => rulePriority.has(String(stock.webCode))
       ? rulePriority.get(String(stock.webCode))
       : Number.POSITIVE_INFINITY;
-    // Bia "vừa" là bia mà hai chai vẫn để lại ít nhất 30.000đ (3 phút) cho Tiền
-    // giờ. Trong số đó LUÂN PHIÊN theo số lần đã dùng trong lô rồi theo hash ổn
-    // định, không theo giá: chọn bia rẻ nhất mọi lúc làm mọi phiếu nhỏ giống
-    // hệt nhau (luôn Tiger x2) dù kho có ba loại bia. Không bia nào vừa thì mới
-    // rơi về rẻ nhất để còn Tiền giờ (143.000đ chỉ vừa hai chai 50.000đ).
+    // Bia "vừa" là bia mà sau khi trừ tiền món vẫn còn đủ cho SÀN THỜI LƯỢNG.
+    // Trong số đó LUÂN PHIÊN theo số lần đã dùng trong lô rồi theo hash ổn định,
+    // không theo giá: chọn bia rẻ nhất mọi lúc làm mọi phiếu nhỏ giống hệt nhau
+    // (luôn Tiger) dù kho có ba loại bia. Không bia nào vừa thì mới rơi về rẻ
+    // nhất để còn được nhiều Tiền giờ nhất có thể.
+    //
+    // Mốc phải là sàn THẬT theo đơn giá phòng, không phải hằng số 30.000đ (3
+    // phút) của luật cũ: với sàn 15 phút ở Nhơn, sao kê 143.000đ chọn nhầm món
+    // 50.000đ sẽ chỉ còn 80.000đ Tiền giờ = 12 phút, dưới sàn, trong khi món
+    // 25.000đ để lại 105.000đ = 16 phút.
     const preTax = Math.max(0, Math.round(Number(preTaxTarget) || 0));
-    const minHourLeft = 30000;
+    const rate = Math.max(1000, Math.round(Number(hourlyRate) || DEFAULT_HOURLY_RATE));
+    const minHourLeft = Math.round(rate * minimumSingingMinutes(0) / 60);
     const fitting = preTax > 0
       ? eligible.filter(stock => price(stock) * SMALL_INVOICE_BEER_QTY <= preTax - minHourLeft)
       : [];
@@ -5995,7 +6033,12 @@
   }
 
   function calculateSmallInvoiceBeerPlan(scan, transaction, inventoryState, productUsage, targets, targetGrand, statementGrand, grandDifference) {
-    const beer = selectSmallInvoiceBeer(inventoryState, transaction, productUsage, targets.preTaxTarget);
+    const beer = selectSmallInvoiceBeer(
+      inventoryState, transaction, productUsage, targets.preTaxTarget,
+      scan?.newInvoicePlanning
+        ? (Number(scan?.hourlyRate) || DEFAULT_HOURLY_RATE)
+        : (inferHourPricing(scan)?.hourlyRate || DEFAULT_HOURLY_RATE)
+    );
     if (!beer) {
       return {
         status: "error",
@@ -6160,7 +6203,27 @@
     const requestedGrand = Math.round(Number(overrideGrand) || 0);
     const targetGrand = requestedGrand > 0 ? requestedGrand : statementGrand;
     const grandDifference = targetGrand - statementGrand;
-    if (targetGrand < SMALL_INVOICE_BEER_LIMIT) {
+    // Ngưỡng "phiếu quá nhỏ". Ở Nhơn nó tính theo ĐƠN GIÁ PHÒNG: phần trước VAT
+    // không đủ cho sàn 15 phút cộng một món rẻ nhất thì đi nhánh riêng — đúng 1
+    // bia, toàn bộ phần còn lại là Tiền giờ (kế toán chốt 23/09/2026). Phòng
+    // 400k ra ~165.000đ, 600k ~220.000đ, 800k ~275.000đ. Các cơ sở khác giữ mốc
+    // cố định 300.000đ như cũ.
+    const isParisNhon = (typeof pageTenantSlug === "string" ? pageTenantSlug : "") === PARIS_NHON_TENANT_SLUG;
+    const smallInvoiceLimit = isParisNhon
+      ? smallInvoiceGrandLimit(
+          scan?.newInvoicePlanning
+            ? (Number(scan?.hourlyRate) || DEFAULT_HOURLY_RATE)
+            : (inferHourPricing(scan)?.hourlyRate || DEFAULT_HOURLY_RATE)
+        )
+      : SMALL_INVOICE_BEER_LIMIT;
+    // Ngưỡng của Nhơn là ĐIỂM HÒA VỐN suy ra từ sàn 15 phút cộng một món, nên
+    // tổng bằng đúng ngưỡng vẫn chỉ vừa đủ: đi nhánh thường sẽ ghép 2-3 dòng
+    // hàng và đẩy Tiền giờ xuống dưới sàn (165.000đ @400k từng ra 14 phút).
+    // Mốc 300.000đ của các cơ sở khác là con số kế toán chốt tay nên giữ "<".
+    const withinSmallInvoice = isParisNhon
+      ? targetGrand <= smallInvoiceLimit
+      : targetGrand < smallInvoiceLimit;
+    if (withinSmallInvoice) {
       const smallTargets = InvoiceTargetSolver.deriveInvoiceTargets(targetGrand, 0, scan.taxRate);
       if (!smallTargets.grandReachable) {
         return {
@@ -6663,9 +6726,16 @@
   // cùng một số tiền, phòng 400k và 800k cho thời lượng và bước giá khác hẳn.
   // Thử lần lượt từng mức rồi chọn phương án tốt nhất, và ghi lại đơn giá để
   // bước mở form chỉ chọn phòng khớp. Tiêu chí chọn, theo thứ tự:
+  //   0. ĐẠT SÀN THỜI LƯỢNG trước đã.
   //   1. Phần bù vào Tiền giờ nhỏ nhất (phương án tự nhiên nhất).
   //   2. Thời lượng gần 90 phút nhất (một ca hát thực tế).
   //   3. Đơn giá thấp hơn (phòng rẻ dễ còn trống hơn).
+  //
+  // Tiêu chí 0 là bắt buộc vì ở nhánh phiếu nhỏ, Tiền giờ đã cố định bằng phần
+  // trước VAT trừ một món, nên phòng CÀNG RẺ càng ra nhiều phút. Nếu chỉ xếp
+  // theo phần bù (bằng 0 ở mọi mức) thì hòa ngay từ tiêu chí 1 rồi tiêu chí 2
+  // kéo về phòng ĐẮT — sao kê 143.000đ từng chọn phòng 800k và ra 8 phút, trong
+  // khi phòng 400k cho đúng 16 phút, đạt sàn 15.
   function chooseNewInvoiceRoomPlan(transaction, inventoryState, productUsage, slotIndex, overrideGrand) {
     const rates = tenantHourlyRates();
     let best = null;
@@ -6676,7 +6746,11 @@
         if (!firstError) firstError = plan;
         continue;
       }
+      const floorMinutes = minimumSingingMinutes(
+        Math.round(Number(overrideGrand) || Number(transaction?.credit) || 0)
+      );
       const score = [
+        Math.round(Number(plan.durationMinutes) || 0) >= floorMinutes ? 0 : 1,
         Math.abs(Math.round(Number(plan.hourAdjustment) || 0)),
         Math.abs(Math.round(Number(plan.durationMinutes) || 0) - 90),
         rate
