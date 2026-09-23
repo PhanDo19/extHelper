@@ -1065,9 +1065,22 @@
   async function applyInvoicePlan(detail) {
     await closeTransientQuantityDialogs(500);
     try {
-      if (detail?.sessionRebased && detail.checkIn && detail.checkOut) {
-        applyInvoiceTimes(detail.checkIn, detail.checkOut, false);
-        await wait(500);
+      // Gio ra PHAI duoc ghi moi khi phuong an de xuat gio khac gio dang co tren
+      // form. Truoc day chi ghi khi sessionRebased, nen phieu da ton tai giu
+      // nguyen gio cu trong khi Tien gio da doi: ca that o Nhon 01/07/2026,
+      // phieu HD0126070003 giu 18:06 -> 19:33 (87 phut) du phuong an la 16 phut
+      // / 108.000d. Website tinh Tien gio TU gio vao/ra nen khi luu no tinh lai
+      // theo 87 phut va phieu lech tong. Phan tinh toan da duoc sua tu truoc
+      // (plan.checkOut luon khop Tien gio), nhung phan GHI van bi khoa lai day.
+      //
+      // Phieu da ton tai: keepCheckIn = true, gio vao la du lieu that cua khach
+      // nen khong duoc sua; chi phieu moi (sessionRebased) moi duoc dat ca hai.
+      if (detail?.checkOut) {
+        const currentCheckOut = findInvoiceTimes()?.checkOut || "";
+        if (String(detail.checkOut).trim() !== String(currentCheckOut).trim()) {
+          applyInvoiceTimes(detail.checkIn, detail.checkOut, !detail.sessionRebased);
+          await wait(500);
+        }
       }
       const preservedFormState = captureInvoiceFormState();
       const replaced = await replaceInvoiceItems(detail.items || []);
@@ -1138,8 +1151,18 @@
         currentTax: settled.tax,
         taxRate: valueOf("numTILETHUE"),
         currentGrand: settled.grand,
-        checkIn: detail.checkIn || "",
-        checkOut: detail.checkOut || ""
+        // Tra ve gio THAT dang co tren form, khong phai gio cua phuong an vua
+        // gui xuong. Echo lai detail se noi doi khi viec ghi gio bi bo qua hoac
+        // website tu sua lai, va buoc doi soat sau do se so gio cua phuong an
+        // voi chinh no nen luon thay khop — dung con duong da che mat loi
+        // "luu xong gio khong doi".
+        ...(() => {
+          const times = findInvoiceTimes();
+          return {
+            checkIn: times.checkIn || detail.checkIn || "",
+            checkOut: times.checkOut || detail.checkOut || ""
+          };
+        })()
       };
     } catch (error) {
       await closeTransientQuantityDialogs();

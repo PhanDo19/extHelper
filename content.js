@@ -257,10 +257,17 @@
       invoiceDateKey: transaction?.transactionDate || invoiceSnapshot?.invoiceDateKey || plan?.invoiceDateKey || "",
       // Ngày hóa đơn và khoảng thời gian sử dụng phòng là hai dữ liệu độc lập.
       // Ví dụ phiếu thuộc danh sách 01/06 có thể mang Giờ vào/Ra 24/04.
-      // Luôn chốt giờ từ snapshot thật của website để payload API và bước
-      // đối soát sau lưu không làm mất ca hát gốc.
+      //
+      // GIỜ VÀO lấy từ snapshot thật của website: đó là dữ liệu gốc của khách,
+      // phương án không được sửa.
+      //
+      // GIỜ RA phải lấy từ PHƯƠNG ÁN. Trước đây lấy từ snapshot, và đó là nửa
+      // sau của lỗi "lưu xong giờ không đổi": bridge bỏ qua việc ghi giờ ra,
+      // rồi bước đối soát lại lấy chính giờ cũ trên form làm mốc so sánh nên
+      // luôn thấy khớp — sai lệch bị che hoàn toàn. Website tính Tiền giờ TỪ
+      // giờ vào/ra, nên giờ ra sai nghĩa là phiếu lưu xong sẽ lệch tổng.
       checkIn: invoiceSnapshot?.checkIn || plan?.checkIn || "",
-      checkOut: invoiceSnapshot?.checkOut || plan?.checkOut || "",
+      checkOut: plan?.checkOut || invoiceSnapshot?.checkOut || "",
       grand: Math.round(Number(plan?.targetGrand ?? plan?.grand ?? transaction?.credit) || 0),
       items: (plan?.items || []).map(item => ({
         ...structuredClone(item),
@@ -8473,7 +8480,7 @@
       try {
         button.disabled = true;
         button.textContent = "Đang áp dụng…";
-        showProgress("Bước 1/3: đang thay danh sách hàng…");
+        showProgress("Bước 1/2: đang thay danh sách hàng…");
         setStatus("Đang thay danh sách hàng trên model hóa đơn của website…", "warn");
         const applied = await request("applyInvoicePlan", {
           items: selected.map(item => ({
@@ -8483,17 +8490,12 @@
           targetGrand,
           targetGoods: solution.actual,
           checkIn: latestScan?.checkIn || "",
-          checkOut: latestScan?.checkOut || ""
+          // Phải gửi giờ ra CỦA PHƯƠNG ÁN, không phải giờ đang có trên form:
+          // bridge so hai giá trị này để quyết định có ghi lại giờ hay không,
+          // nên gửi giờ cũ thì nó luôn thấy "không đổi" và bỏ qua.
+          checkOut: proposedCheckOut || latestScan?.checkOut || ""
         });
-        showProgress("Bước 2/3: đang cập nhật giờ ra…");
-        const normalizedCurrentCheckOut = String(latestScan?.checkOut || "").trim();
-        const shouldApplyCheckOut = false && proposedCheckOut &&
-          String(proposedCheckOut).trim() !== normalizedCurrentCheckOut;
-        if (shouldApplyCheckOut) {
-          await request("applyCheckOut", { value: proposedCheckOut });
-          await new Promise(resolve => setTimeout(resolve, 700));
-        }
-        showProgress("Bước 3/3: đang kiểm tra tổng tiền…");
+        showProgress("Bước 2/2: đang kiểm tra tổng tiền…");
         await new Promise(resolve => setTimeout(resolve, 500));
         latestScan = { ...latestScan, ...applied };
         const actualGrand = Number(applied?.currentGrand || 0);

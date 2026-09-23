@@ -125,6 +125,7 @@ vm.runInContext(
   sandbox
 );
 
+
 // Batch API mở lại phiếu theo số đã Accept. Số phiếu chỉ được ghi vào
 // `transaction.invoiceNo` SAU khi lưu thành công, nên trước đó nó chỉ nằm ở
 // `plan.invoiceNo`. Nếu danh sách "đã dùng" chỉ loại theo `transaction.id` thì
@@ -357,6 +358,101 @@ if (normalizedAcceptedPlan.grand !== 1360000 ||
     normalizedAcceptedPlan.items[0].code !== "1000007" ||
     normalizedAcceptedPlan.items[0].qty !== 3) {
   throw new Error("Phương án Batch đã Accept phải được chuẩn hóa để đối soát sau lưu.");
+}
+
+// --- Giờ ra để đối soát phải là giờ CỦA PHƯƠNG ÁN ----------------------------
+//
+// Ca thật Nhơn 01/07/2026, phiếu HD0126070003: phương án 16 phút (18:06→18:22,
+// Tiền giờ 108.000đ) nhưng form giữ nguyên 18:06→19:33 (87 phút) sau khi lưu.
+//
+// Nửa sau của lỗi nằm ở đây: pendingPlanFromApproved lấy checkOut TỪ SNAPSHOT
+// (giờ cũ trên form), nên verifySnapshotAgainstPlan so giờ cũ với chính nó và
+// luôn thấy khớp — sai lệch bị che hoàn toàn, phiếu vẫn ra "Đã xử lý".
+//
+// Giờ VÀO thì ngược lại: là dữ liệu thật của khách, phải giữ theo snapshot.
+{
+  const plan = sandbox.pendingPlanFromApproved({
+    invoiceNo: "HD0126070003",
+    invoiceDateKey: "2026-07-01",
+    targetGrand: 143000,
+    goods: 25000,
+    hour: 105000,
+    tax: 13000,
+    taxRate: 10,
+    checkIn: "01/07/2026 18:06",
+    checkOut: "01/07/2026 18:22",
+    items: [{ code: 1000031, qty: 5, price: 5000 }]
+  }, { invoiceNo: "HD0126070003", transactionDate: "2026-07-01", credit: 143000 }, {
+    invoiceNo: "HD0126070003",
+    invoiceDateKey: "2026-07-01",
+    checkIn: "01/07/2026 18:06",
+    // Giờ ra CŨ còn trên form — đúng thứ đã che mất sai lệch.
+    checkOut: "01/07/2026 19:33"
+  });
+  if (plan.checkOut !== "01/07/2026 18:22") {
+    throw new Error(`Giờ ra đối soát phải lấy từ phương án (18:22), đang là ${plan.checkOut}.`);
+  }
+  if (plan.checkIn !== "01/07/2026 18:06") {
+    throw new Error(`Giờ vào phải giữ theo snapshot thật của khách, đang là ${plan.checkIn}.`);
+  }
+  // Cổng đối soát phải thực sự so giờ ra; nếu bỏ so thì sai lệch lại lọt.
+  const verifySource = extractFunction("verifySnapshotAgainstPlan");
+  if (!/compareUsageTime\("Sai giờ ra", snapshot\?\.checkOut, plan\?\.checkOut\)/.test(verifySource)) {
+    throw new Error("verifySnapshotAgainstPlan phải so giờ ra của form với giờ ra của phương án.");
+  }
+}
+
+// --- Bridge phải ghi giờ ra cho MỌI phiếu, không chỉ phiên bị rebase ----------
+//
+// Nửa đầu của cùng lỗi: applyInvoicePlan trong bridge.js chỉ ghi giờ khi
+// detail.sessionRebased, mà phiếu đã tồn tại thì cờ đó là false, nên giờ ra của
+// phương án không bao giờ được ghi xuống form. Website tính Tiền giờ TỪ giờ
+// vào/ra nên phiếu lưu xong lệch tổng.
+{
+  const bridgeSource = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
+  const applyPlanBody = bridgeSource.slice(
+    bridgeSource.indexOf("async function applyInvoicePlan"),
+    bridgeSource.indexOf("const preservedFormState = captureInvoiceFormState();")
+  );
+  if (!applyPlanBody) throw new Error("Không tìm thấy applyInvoicePlan trong bridge.js.");
+  if (/if\s*\(\s*detail\?\.sessionRebased\s*&&/.test(applyPlanBody)) {
+    throw new Error("Bridge không được khóa việc ghi giờ ra sau cờ sessionRebased.");
+  }
+  if (!/detail\?\.checkOut/.test(applyPlanBody)) {
+    throw new Error("Bridge phải ghi giờ ra dựa trên checkOut của phương án.");
+  }
+  // Phiếu đã tồn tại: giờ vào là dữ liệu thật của khách, phải keepCheckIn.
+  if (!/applyInvoiceTimes\([^)]*!detail\.sessionRebased\)/.test(applyPlanBody)) {
+    throw new Error("Phiếu đã tồn tại phải giữ nguyên giờ vào (keepCheckIn).");
+  }
+  // applyInvoicePlan phải trả về giờ THẬT trên form. Echo lại detail.checkOut
+  // sẽ nói dối khi việc ghi giờ bị bỏ qua, và bước đối soát sau đó so giờ của
+  // phương án với chính nó nên luôn thấy khớp.
+  const returnBlock = bridgeSource.slice(
+    bridgeSource.indexOf('mode: "kendo-atomic"'),
+    bridgeSource.indexOf("function findInvoiceDate")
+  );
+  if (/checkOut:\s*detail\.checkOut\s*\|\|\s*""/.test(returnBlock)) {
+    throw new Error("applyInvoicePlan không được echo lại giờ ra của phương án làm kết quả.");
+  }
+  if (!/findInvoiceTimes\(\)/.test(returnBlock)) {
+    throw new Error("applyInvoicePlan phải đọc lại giờ thật trên form để trả về.");
+  }
+}
+
+// --- Panel thủ công phải gửi giờ ra CỦA PHƯƠNG ÁN ----------------------------
+//
+// Bridge so checkOut nhận được với giờ đang có trên form để quyết định ghi hay
+// bỏ qua. Panel thủ công trước đây gửi chính giờ cũ của form nên bridge luôn
+// thấy "không đổi"; nhánh ghi bù thì đã bị vô hiệu bằng `false &&`.
+{
+  const applySource = source;
+  if (/false\s*&&\s*proposedCheckOut/.test(applySource)) {
+    throw new Error("Nhánh ghi giờ ra của panel thủ công không được để chết bằng `false &&`.");
+  }
+  if (!/checkOut:\s*proposedCheckOut/.test(applySource)) {
+    throw new Error("Panel thủ công phải gửi proposedCheckOut cho applyInvoicePlan.");
+  }
 }
 
 const originalTransaction = { id: "persist-1", status: "pending", credit: 2500000 };
