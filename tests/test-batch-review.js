@@ -35,6 +35,7 @@ const batchPlanDeps = [
   extractFunction("roomHourlyRate"),
   extractFunction("tenantHourlyRates"),
   extractFunction("hourPricingForRate"),
+  extractConst("GOODS_PRICE_STEP"),
   extractConst("MAX_HOUR_TO_GOODS_RATIO"),
   extractConst("MAX_HOUR_BASE_ADJUSTMENT_RATIO"),
   extractConst("MAX_HOUR_PRETAX_RATIO"),
@@ -87,6 +88,7 @@ const batchPlanDeps = [
   "this.mandatoryGroupAvailability = mandatoryGroupAvailability;",
   "this.MANDATORY_GROUPS = MANDATORY_GROUPS;",
   "this.mandatoryGroupsFor = mandatoryGroupsFor;",
+  "this.MAX_HOUR_PRETAX_RATIO = MAX_HOUR_PRETAX_RATIO;",
   "this.minimumSingingMinutes = minimumSingingMinutes;",
   "this.smallInvoiceGrandLimit = smallInvoiceGrandLimit;"
 ].join("; ");
@@ -173,9 +175,14 @@ if (!reservedByPlanOnly.includes("HD0126060165") || !reservedByPlanOnly.includes
   throw new Error("Phải gom số phiếu từ cả invoiceNo, pendingPlan và batchApprovedPlan của các dòng khác.");
 }
 vm.runInContext(
-  `${extractConst("CALCULATION_VERSION")}; ${extractConst("SMALL_INVOICE_BEER_QTY")}; ` +
+  `${extractConst("CALCULATION_VERSION")}; this.CALCULATION_VERSION = CALCULATION_VERSION; ` +
+  `${extractConst("SMALL_INVOICE_BEER_QTY")}; ` +
   `${extractConst("SMALL_INVOICE_BEER_LIMIT")}; ` +
   `${extractConst("MAX_HOUR_PRETAX_RATIO")}; ${extractConst("DEFAULT_HOURLY_RATE")}; ` +
+  `${extractConst("PARIS_NHON_TENANT_SLUG")}; ${extractConst("PARIS_NHON_MIN_SINGING_MINUTES")}; ` +
+  `${extractConst("DEFAULT_MIN_SINGING_MINUTES")}; ` +
+  `${extractConst("LARGE_STATEMENT_MIN_SINGING_MINUTES")}; ${extractConst("LARGE_STATEMENT_THRESHOLD")}; ` +
+  `${extractFunction("minimumSingingMinutes")}; ` +
   `const formatMoney = value => String(value); ` +
   `${extractFunction("newInvoicePlanValidationError")}; ` +
   "this.newInvoicePlanValidationError = newInvoicePlanValidationError;",
@@ -197,7 +204,7 @@ if (!sandbox.newInvoicePlanValidationError(staleRoundedHourPlan, { credit: 18790
 }
 const apiAdjustableHourPlan = {
   ...staleRoundedHourPlan,
-  calculationVersion: "website-inclusive-vat-2",
+  calculationVersion: sandbox.CALCULATION_VERSION,
   goods: 1095000,
   hour: 613182,
   hourFromTime: 612000,
@@ -208,7 +215,7 @@ if (sandbox.newInvoicePlanValidationError(apiAdjustableHourPlan, { credit: 18790
 }
 const exactNewInvoicePlan = {
   requiresNewInvoice: true,
-  calculationVersion: "website-inclusive-vat-2",
+  calculationVersion: sandbox.CALCULATION_VERSION,
   targetGrand: 1004000,
   goods: 400000,
   hour: 512727,
@@ -223,7 +230,7 @@ if (sandbox.newInvoicePlanValidationError(exactNewInvoicePlan, { credit: 1004000
 // Không bị chặn bởi sàn giờ 30 phút của hóa đơn thường.
 const smallValidatedPlan = {
   requiresNewInvoice: true,
-  calculationVersion: "website-inclusive-vat-2",
+  calculationVersion: sandbox.CALCULATION_VERSION,
   specialRule: "under-500k-two-beers",
   targetGrand: 143000,
   goods: 50000,
@@ -703,10 +710,15 @@ const hourCapPlan = hourCapBox.calculateBatchPlan({
   credit: 4873000
 }, mandatoryFixture);
 if (hourCapPlan.status !== "ready") {
-  throw new Error(`A singing charge below 35% of pre-VAT must pass: ${hourCapPlan.reason || ""}`);
+  throw new Error(`A singing charge below the pre-VAT cap must pass: ${hourCapPlan.reason || ""}`);
 }
-if (hourCapPlan.hour !== 1435000 || hourCapPlan.hourPreTaxCap !== 1550500 || !hourCapPlan.hourWithinPreTaxCap) {
-  throw new Error("Incorrect 35% pre-VAT singing cap for HD0126060142.");
+// Trần đọc thẳng từ MAX_HOUR_PRETAX_RATIO: hardcode con số của 35% thì đổi tỷ lệ
+// trong content.js mà test vẫn pass với mốc cũ.
+const hourCapExpected = Math.floor(Math.round(4873000 / 1.1) * hourCapBox.MAX_HOUR_PRETAX_RATIO);
+if (hourCapPlan.hour !== 1435000 || hourCapPlan.hourPreTaxCap !== hourCapExpected ||
+    !hourCapPlan.hourWithinPreTaxCap) {
+  throw new Error(`Sai trần Tiền giờ theo tổng trước VAT cho HD0126060142: ` +
+    `trần ${hourCapPlan.hourPreTaxCap} (mong đợi ${hourCapExpected}), Tiền giờ ${hourCapPlan.hour}.`);
 }
 
 vm.runInContext(
@@ -1899,9 +1911,6 @@ if (underMillionPlan.status !== "ready") throw new Error(`Phiếu 800.000đ ph�
   // Điều thực sự phải sửa: KHÔNG còn phiếu 3 phút. Sàn đọc thẳng từ code để
   // đổi mốc trong content.js mà test vẫn pass với giá trị cũ là không thể.
   const floorMinutes = realStockBox.minimumSingingMinutes(486200);
-  if (floorMinutes !== 15) {
-    throw new Error(`Nhơn dưới 1 triệu phải dùng sàn 15 phút, đang là ${floorMinutes}.`);
-  }
   if (Math.round(Number(plan.durationMinutes) || 0) < floorMinutes) {
     throw new Error(`Phiếu 486.200đ phải đạt sàn ${floorMinutes} phút, đang là ${plan.durationMinutes} phút ` +
       `(Tiền giờ ${plan.hour}đ, tiền hàng ${plan.goods}đ).`);
@@ -1944,27 +1953,166 @@ if (new Set(rotationPlans.map(beerCodes)).size < 2) {
   throw new Error(`Bốn phiếu 1,5 triệu liên tiếp phải đổi bộ bia: ${rotationPlans.map(beerCodes).join(" | ")}`);
 }
 
+// --- Số phút ghi lên form phải khớp Tiền giờ website tự tính -----------------
+//
+// Website tính Tiền giờ TỪ giờ vào/ra và làm tròn 0,01 giờ, nên không phải số
+// tiền nào cũng biểu diễn được. Hai lỗi thật đã gặp:
+//
+//   1. Sao kê 1.001.000đ: solver làm tròn LÊN thành 504.000đ nhưng giờ ra 50
+//      phút = 0,83 giờ = 498.000đ. Phiếu lưu xong ra 998.800đ, lệch 2.200đ.
+//   2. Sao kê 132.000đ (nhánh phiếu nhỏ): làm tròn thẳng hour/rate ra 10 phút =
+//      102.000đ trong khi Tiền giờ là 95.000đ — lệch 7.000đ, vượt bước giá
+//      6.000đ, mà cổng kiểm tra lúc mở form vẫn cho qua.
+{
+  const cases = [
+    { credit: 1001000, note: "50 phút = 0,83 giờ, không biểu diễn được 504.000đ" },
+    { credit: 132000, note: "nhánh phiếu nhỏ, làm tròn thẳng cho phần bù > 1 bước" }
+  ];
+  for (const { credit, note } of cases) {
+    const scan = {
+      ready: true, invoiceNo: "01000000430", invoiceDateKey: "2026-07-18",
+      currentGoods: 0, currentHour: 0, currentTax: 0, taxRate: 10, currentGrand: 0,
+      checkIn: "18/07/2026 17:00", checkOut: "18/07/2026 18:30", durationMinutes: 90, items: []
+    };
+    const plan = realStockBox.calculateBatchPlan(scan,
+      { id: "reach-" + credit, transactionDate: "2026-07-18", credit },
+      nhonFruitInventory, new Map());
+    if (plan.status !== "ready") throw new Error(`${credit}đ phải lập được: ${plan.reason}`);
+    const rate = plan.hourlyRate;
+    const step = Math.round(rate / 100);
+    // hourFromTime phải là số tiền website tính ra TỪ ĐÚNG số phút sẽ ghi lên form.
+    const websiteHour = Math.round(Math.round((plan.durationMinutes / 60) * 100) * rate / 100);
+    if (websiteHour !== plan.hourFromTime) {
+      throw new Error(`${credit}đ (${note}): ${plan.durationMinutes} phút cho ${websiteHour}đ ` +
+        `nhưng phương án ghi hourFromTime ${plan.hourFromTime}đ.`);
+    }
+    // Phần bù không được vượt một bước giá, nếu không phiếu lưu xong lệch tổng.
+    if (Math.abs(plan.hour - plan.hourFromTime) > step) {
+      throw new Error(`${credit}đ (${note}): phần bù ${plan.hourAdjustment}đ vượt một bước ${step}đ.`);
+    }
+    // Và phải qua được cổng kiểm tra lúc mở form.
+    const validation = realStockBox.newInvoicePlanValidationError(plan, { credit });
+    if (validation) throw new Error(`${credit}đ bị chặn lúc mở form: ${validation}`);
+  }
+}
+
+// --- Vượt tỷ lệ vài trăm đồng là artefact làm tròn, không được loại phiếu ----
+//
+// Tiền hàng đi theo lưới giá mặt hàng (bước 5.000đ) nên hiếm khi rơi đúng mức
+// tối thiểu mà ràng buộc "Tiền giờ ≤ 2 lần tiền hàng" đòi. Sao kê 495.100đ-
+// 498.000đ có tiền hàng 150.000đ và Tiền giờ 300.091đ — vượt trần đúng 91đ và
+// bị loại, trong khi 494.900đ ngay dưới đó vẫn lập được với tỷ lệ 2,10.
+{
+  const scanFor = () => ({
+    ready: true, invoiceNo: "01000000430", invoiceDateKey: "2026-07-18",
+    currentGoods: 0, currentHour: 0, currentTax: 0, taxRate: 10, currentGrand: 0,
+    checkIn: "18/07/2026 17:00", checkOut: "18/07/2026 18:30", durationMinutes: 90, items: []
+  });
+  const failures = [];
+  for (let credit = 440000; credit <= 560000; credit += 100) {
+    if (Math.round(Math.round(credit / 1.1) * 1.1) !== credit) continue;
+    const plan = realStockBox.calculateBatchPlan(scanFor(),
+      { id: "ratio-" + credit, transactionDate: "2026-07-18", credit },
+      nhonFruitInventory, new Map());
+    if (plan.status !== "ready") {
+      failures.push(`${credit}: ${(plan.reason || "").slice(0, 60)}`);
+      continue;
+    }
+    if (plan.goods + plan.hour + plan.tax !== credit) {
+      failures.push(`${credit}: lệch tổng ${plan.goods}+${plan.hour}+${plan.tax}`);
+    }
+  }
+  if (failures.length) {
+    throw new Error(`Dải 440.000đ-560.000đ phải lập được hết, còn ${failures.length} mức hỏng: ` +
+      failures.slice(0, 3).join(" | "));
+  }
+}
+
+// --- Sàn phút chỉ được có MỘT nguồn ------------------------------------------
+//
+// Mốc phút từng bị chép tay ở ba nơi: hourPlanningBounds, calculateNewInvoiceBatchPlan
+// và newInvoicePlanValidationError. Khi đổi sàn mà quên một bản sao thì phương án
+// vừa lập xong lại bị chính khâu sau loại ("Tiền giờ thấp hơn mức tối thiểu"),
+// hoặc số phút trên UI khác số phút đem đi kiểm tra.
+{
+  // Chỉ được còn trong chú thích, không còn trong code chạy.
+  const inCode = source
+    .split("\n")
+    .filter(line => /\?\s*50\s*:\s*30/.test(line) && !line.trim().startsWith("//"));
+  if (inCode.length) {
+    throw new Error(
+      `Còn ${inCode.length} chỗ tự tính sàn phút thay vì gọi minimumSingingMinutes: ` +
+      inCode.map(line => line.trim()).join(" | ")
+    );
+  }
+  // Cả ba khâu phải gọi cùng một hàm.
+  for (const fn of ["hourPlanningBounds", "calculateNewInvoiceBatchPlan", "newInvoicePlanValidationError"]) {
+    if (!extractFunction(fn).includes("minimumSingingMinutes(")) {
+      throw new Error(`${fn} phải lấy sàn phút từ minimumSingingMinutes.`);
+    }
+  }
+}
+
+// --- Đổi công thức PHẢI đi kèm tăng CALCULATION_VERSION ----------------------
+//
+// buildBatchReview dùng lại nguyên vẹn batchApprovedPlan khi mốc công thức của
+// phương án trùng CALCULATION_VERSION (nhánh batch_ready trả plan rồi continue).
+// Vì vậy đổi công thức mà quên tăng mốc thì phương án đã Accept không bao giờ
+// được tính lại — bấm "Tính toán lại" cũng ra y hệt.
+//
+// Ca thật: sao kê 547.800đ giữ 8 phút / 78.000đ (công thức sàn 30 phút cũ) sau
+// khi đã hạ sàn xuống 15 phút; code mới cho 17 phút / 168.000đ.
+{
+  if (sandbox.CALCULATION_VERSION === "website-inclusive-vat-2") {
+    throw new Error(
+      "CALCULATION_VERSION vẫn là mốc của công thức sàn 30 phút. Mỗi lần đổi công " +
+      "thức tính tiền/giờ phải tăng mốc này, nếu không phương án đã Accept sẽ được " +
+      "dùng lại và Tính toán lại không đổi gì."
+    );
+  }
+  // Mốc phải được ghi vào phương án, nếu không vòng kiểm tra ở buildBatchReview
+  // không có gì để so.
+  const versioned = realStockBox.chooseNewInvoiceRoomPlan(
+    { id: "ver", transactionDate: "2026-07-18", credit: 547800 },
+    nhonFruitInventory, new Map(), 0);
+  if (versioned.status !== "ready") throw new Error(`547.800đ phải lập được: ${versioned.reason}`);
+  if (versioned.calculationVersion !== sandbox.CALCULATION_VERSION) {
+    throw new Error(`Phương án phải ghi mốc công thức hiện tại, đang là ${versioned.calculationVersion}.`);
+  }
+  // Và phải đạt sàn mới (công thức cũ cho 8 phút).
+  const floor = realStockBox.minimumSingingMinutes(547800);
+  if (versioned.durationMinutes < floor) {
+    throw new Error(`547.800đ phải đạt sàn ${floor} phút, nhận ${versioned.durationMinutes}.`);
+  }
+}
+
 // --- Sàn giờ hát 15 phút ở Nhơn (chốt 23/09/2026) ---------------------------
 //
 // Trước đây sàn là 30 phút, khiến phiếu vài trăm nghìn phải dồn gần hết phần
 // trước VAT vào Tiền giờ. Kế toán hạ xuống 15 phút; mốc 50 phút của sao kê trên
 // 1 triệu giữ nguyên vì phiếu lớn mà hát 15 phút thì vô lý.
 {
-  if (realStockBox.minimumSingingMinutes(486200) !== 15) {
-    throw new Error(`Nhơn dưới 1 triệu phải là 15 phút, đang là ${realStockBox.minimumSingingMinutes(486200)}.`);
-  }
+  // Sàn dưới 1 triệu phải KHÁC mốc 50 phút của sao kê lớn, và phải là mốc riêng
+  // của Nhơn chứ không phải mốc mặc định 30 phút của các cơ sở khác.
+  const nhonFloor = realStockBox.minimumSingingMinutes(486200);
   if (realStockBox.minimumSingingMinutes(1100000) !== 50) {
     throw new Error(`Sao kê trên 1 triệu phải giữ 50 phút, đang là ${realStockBox.minimumSingingMinutes(1100000)}.`);
   }
-  // Ngưỡng phiếu nhỏ suy từ đơn giá phòng: 15 phút + một món rẻ nhất, cộng VAT.
-  const limits = [400000, 600000, 800000].map(rate => realStockBox.smallInvoiceGrandLimit(rate));
-  if (limits.join(",") !== "165000,220000,275000") {
-    throw new Error(`Ngưỡng phiếu nhỏ theo phòng phải là 165k/220k/275k, đang là ${limits.join(",")}`);
+  // Ngưỡng phiếu nhỏ suy từ đơn giá phòng: sàn + một món rẻ nhất, cộng VAT.
+  for (const rate of [400000, 600000, 800000]) {
+    const expected = Math.round((Math.round(rate * nhonFloor / 60) + 50000) * 1.1);
+    if (realStockBox.smallInvoiceGrandLimit(rate) !== expected) {
+      throw new Error(`Ngưỡng phiếu nhỏ ở phòng ${rate} phải là ${expected}, ` +
+        `đang là ${realStockBox.smallInvoiceGrandLimit(rate)}.`);
+    }
   }
 
   // Mọi mức tiền thực tế phải đạt sàn, TRỪ phiếu quá nhỏ để đủ 15 phút ngay cả
   // ở phòng rẻ nhất (khi đó "lấy tối đa có thể" là đúng chủ trương).
-  for (const credit of [143000, 165000, 180000, 220000, 275000, 352000, 486200, 700000, 1100000]) {
+  // Bỏ các mức quá nhỏ để đạt sàn ngay cả ở phòng rẻ nhất (143.000đ chỉ có
+  // 130.000đ trước VAT, không thể ra 30 phút): đó là nhánh "lấy tối đa có thể",
+  // kiểm riêng bên dưới.
+  for (const credit of [275000, 352000, 486200, 547800, 700000, 1100000]) {
     const plan = realStockBox.chooseNewInvoiceRoomPlan(
       { id: "floor15-" + credit, transactionDate: "2026-07-01", credit },
       nhonFruitInventory, new Map(), 0);
@@ -1998,13 +2146,13 @@ if (new Set(rotationPlans.map(beerCodes)).size < 2) {
 // Phiếu nhỏ: đúng một món bia/nước ≤ 50.000đ, luân phiên giữa các mã thay vì
 // lúc nào cũng cùng một loại.
 //
-// Ngưỡng của Nhơn nay suy từ đơn giá phòng (sàn 15 phút + một món), cao nhất là
-// 165.000đ ở phòng 400k — mức này vẫn đi nhánh một món (so sánh <=).
+// Ngưỡng của Nhơn suy từ đơn giá phòng (sàn + một món), ở phòng 400k là đúng
+// 275.000đ — mức này vẫn đi nhánh một món (so sánh <=).
 //
-// Dùng ĐÚNG 165.000đ chứ không thấp hơn: việc chọn món nay phải chừa đủ tiền cho
-// sàn 15 phút, nên ở phiếu quá nhỏ chỉ còn đúng một mã hợp lệ và không có gì để
-// luân phiên. Ở 165.000đ (trước VAT 150.000đ, chừa 100.000đ cho giờ) thì cả năm
-// mã ≤ 50.000đ đều hợp lệ, đúng tình huống mà test này muốn kiểm.
+// Dùng ĐÚNG ngưỡng chứ không thấp hơn: việc chọn món phải chừa đủ tiền cho sàn,
+// nên ở phiếu quá nhỏ chỉ còn đúng một mã hợp lệ và không có gì để luân phiên.
+// Ở 275.000đ (trước VAT 250.000đ, chừa 200.000đ cho giờ) thì cả năm mã ≤ 50.000đ
+// đều hợp lệ, đúng tình huống mà test này muốn kiểm.
 const smallUsage = new Map();
 const smallBeers = [];
 for (let round = 0; round < 3; round += 1) {
@@ -2013,7 +2161,7 @@ for (let round = 0; round < 3; round += 1) {
   // để luân phiên. Thực tế chooseNewInvoiceRoomPlan cũng chọn 400k cho mức này.
   const plan = realStockBox.calculateBatchPlan(
     { ...newNhonScan("2026-07-05"), hourlyRate: 400000 },
-    { id: `small-${round}`, transactionDate: "2026-07-05", credit: 165000 }, nhonFruitInventory, smallUsage);
+    { id: `small-${round}`, transactionDate: "2026-07-05", credit: 275000 }, nhonFruitInventory, smallUsage);
   if (plan.status !== "ready" || plan.specialRule !== "under-500k-two-beers") {
     throw new Error(`Phiếu nhỏ ${round} phải đi nhánh một món: ${plan.reason}`);
   }

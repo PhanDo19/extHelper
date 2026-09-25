@@ -44,8 +44,8 @@ Phương thức thanh toán là thuộc tính đơn của phiếu, không phải
 |---|---|
 | 1 | Phiếu dưới **300.000đ**: đúng **một món** bia/nước giá tối đa **50.000đ**, phần còn lại vào Tiền giờ. KHÔNG áp luật ≥3 bia + ≥2 khăn ướt. Từ 300.000đ trở lên đi nhánh thường (chốt 17/09/2026) |
 | 1b | **Paris Nhơn**, phiếu dưới **500.000đ**: món bắt buộc hạ xuống **≥1 bia + ≥1 khăn ướt** (chốt 18/09/2026). Mức đầy đủ 3 bia + 2 khăn ở kho Nhơn rẻ nhất đã ~410.000đ, ăn gần hết phần trước VAT nên sàn 30 phút bị kẹp xuống còn 3 phút. Kim Giang và Linh Đàm giữ nguyên mức đầy đủ |
-| 1c | **Paris Nhơn**: sàn giờ hát **15 phút** (chốt 23/09/2026, trước là 30). Sao kê trên 1 triệu vẫn giữ **50 phút**. Kim Giang và Linh Đàm vẫn 30 phút |
-| 1d | **Paris Nhơn**, phiếu không đủ tiền cho 15 phút + một món: đúng **1 bia**, toàn bộ phần trước VAT còn lại là Tiền giờ. Ngưỡng suy theo đơn giá phòng — 400k → 165.000đ, 600k → 220.000đ, 800k → 275.000đ (tính cả VAT) |
+| 1c | Trần Tiền giờ nâng từ 35% lên **45%** tổng trước VAT (chốt 23/09/2026), để sàn 30 phút không bị kẹp. Sàn giữ **30 phút**; sao kê trên 1 triệu vẫn **50 phút** |
+| 1d | **Paris Nhơn**, phiếu không đủ tiền cho sàn + một món: đúng **1 bia**, toàn bộ phần trước VAT còn lại là Tiền giờ. Ngưỡng suy theo đơn giá phòng — 400k → 275.000đ, 600k → 385.000đ, 800k → 495.000đ (tính cả VAT) |
 | 2 | Phiếu quá nhỏ → **chỉ hát** (không dòng hàng, toàn bộ là tiền giờ) |
 | 3 | Tổng không biểu diễn được theo VAT 10% → **không tự tạo**, đưa vào danh sách cần xác nhận |
 | 4 | Phiếu TM **có** áp luật tiền giờ, nhưng **linh động dưới 200.000đ** |

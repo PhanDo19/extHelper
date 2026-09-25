@@ -593,10 +593,15 @@
     // cũ không ghi hourlyRate thì giữ 600k như trước.
     const planHourlyRate = Math.max(1000, Math.round(Number(plan.hourlyRate) || DEFAULT_HOURLY_RATE));
     const planHourStep = Math.round(planHourlyRate / 100);
-    // Sàn theo PHÚT (30 hoặc 50 phút) phải quy ra tiền theo đơn giá của chính
-    // phòng đã lập: 50 phút ở phòng 400.000đ/giờ là 333.333đ chứ không phải
-    // 500.000đ. Dùng mốc cố định sẽ chặn oan mọi phiếu lập trên phòng rẻ.
-    const nominalMinimumMinutes = grand > 1000000 ? 50 : 30;
+    // Sàn theo PHÚT phải quy ra tiền theo đơn giá của chính phòng đã lập: 50
+    // phút ở phòng 400.000đ/giờ là 333.333đ chứ không phải 500.000đ. Dùng mốc
+    // cố định sẽ chặn oan mọi phiếu lập trên phòng rẻ.
+    //
+    // Mốc phút phải lấy từ CÙNG nguồn với lúc lập phương án (minimumSingingMinutes),
+    // nếu không hai bên lệch nhau và phương án vừa tính xong lại bị chính hàm
+    // này loại: sau khi Nhơn hạ sàn xuống 15 phút, chỗ này vẫn giữ 30 nên sao kê
+    // 541.200đ ở phòng 400k bị chặn với "Tiền giờ thấp hơn mức tối thiểu".
+    const nominalMinimumMinutes = minimumSingingMinutes(grand);
     const nominalMinimumHour = Math.round(planHourlyRate * nominalMinimumMinutes / 60);
     // Paris Nhơn groups large new invoices into a longer room session so the
     // item portion does not need an unnecessarily large number of low-priced
@@ -5575,12 +5580,29 @@
   // Keep the singing charge close to its time-based baseline. A larger
   // residual is allowed only while the final singing charge remains at most
   // 35% of the invoice total before VAT.
+  // Bước giá thấp nhất của lưới giá mặt hàng. Tiền hàng luôn là tổng các mức giá
+  // này nên hiếm khi rơi đúng vào mức tối thiểu mà một ràng buộc tỷ lệ đòi hỏi;
+  // dùng làm dung sai cho các phép so tỷ lệ ở cổng kiểm tra cuối.
+  const GOODS_PRICE_STEP = 5000;
   const MAX_HOUR_BASE_ADJUSTMENT_RATIO = 0.20;
-  const MAX_HOUR_PRETAX_RATIO = 0.35;
-  // Keep the general calculation version stable so previously Accepted
-  // normal invoices are not invalidated; the small-invoice branch is tagged
-  // separately through specialRule.
-  const CALCULATION_VERSION = "website-inclusive-vat-2";
+  // Trần cơ cấu: Tiền giờ không vượt tỷ lệ này của tổng trước VAT.
+  //
+  // Kế toán chốt 23/09/2026: nâng 35% -> 45%. Trần 35% mới là thứ THẬT SỰ chặn
+  // số phút, không phải sàn: sao kê 547.800đ (trước VAT 498.000đ) có trần
+  // 174.300đ, tức tối đa 17 phút ở phòng 600k, nên mọi lần "Tính toán lại" đều
+  // ra đúng 17 phút dù tổ hợp mặt hàng đổi. Ở 45% trần thành 224.100đ = 22 phút.
+  const MAX_HOUR_PRETAX_RATIO = 0.45;
+  // Mốc công thức của phương án đã lưu. buildBatchReview so mốc này với mốc ghi
+  // trong phương án; khác nhau thì phương án cũ bị hủy và tính lại.
+  //
+  // PHẢI tăng mỗi khi đổi công thức tính tiền/giờ, nếu không phương án đã Accept
+  // sẽ được dùng lại nguyên vẹn và bấm "Tính toán lại" cũng không đổi gì — nhánh
+  // batch_ready ở buildBatchReview trả thẳng batchApprovedPlan rồi continue.
+  //
+  // v3 (23/09/2026): sàn giờ hát Nhơn 30 -> 15 phút; ngưỡng phiếu nhỏ suy theo
+  // đơn giá phòng thay vì cố định 300.000đ; chọn món phải chừa đủ cho sàn; chọn
+  // phòng ưu tiên đạt sàn. Mọi phương án lập trước đó đều theo công thức cũ.
+  const CALCULATION_VERSION = "website-inclusive-vat-3";
   const MAX_SESSION_CANDIDATE_PROBES = 3;
   const SESSION_CANDIDATE_PROBE_TIMEOUT_MS = 5000;
   // Phiếu nhỏ: tổng dưới mức này đi luật riêng — đúng MỘT món giá thấp, toàn
@@ -5592,11 +5614,18 @@
   const SMALL_INVOICE_BEER_QTY = 1;
   // Trần giá của món duy nhất trên phiếu nhỏ.
   const SMALL_INVOICE_ITEM_MAX_PRICE = 50000;
-  // Sàn giờ hát ở Paris Nhơn. Kế toán chốt 23/09/2026: hạ từ 30 xuống 15 phút.
-  // Mốc 50 phút của sao kê trên 1 triệu giữ nguyên — phiếu lớn mà hát 15 phút
-  // thì vô lý. Kim Giang và Linh Đàm chưa đổi nên vẫn dùng 30 phút.
+  // Sàn giờ hát ở Paris Nhơn.
+  //
+  // Sàn cũng chính là NEO của solver: solver phạt độ lệch giữa Tiền giờ và
+  // baseHour (= sàn quy ra tiền), nên kết quả luôn bám quanh sàn chứ không bám
+  // trần. Vì vậy muốn phiếu có nhiều phút hơn thì phải nâng SÀN, nâng trần chỉ
+  // nới khoảng hợp lệ mà không kéo số phút lên.
+  //
+  // Kế toán chốt 23/09/2026: giữ 30 phút, đi kèm trần 45% (xem
+  // MAX_HOUR_PRETAX_RATIO) để sàn không bị kẹp xuống như khi trần còn 35%.
+  // Mốc 50 phút của sao kê trên 1 triệu giữ nguyên.
   const PARIS_NHON_TENANT_SLUG = "parisnhon";
-  const PARIS_NHON_MIN_SINGING_MINUTES = 15;
+  const PARIS_NHON_MIN_SINGING_MINUTES = 30;
   const DEFAULT_MIN_SINGING_MINUTES = 30;
   const LARGE_STATEMENT_MIN_SINGING_MINUTES = 50;
   const LARGE_STATEMENT_THRESHOLD = 1000000;
@@ -6066,7 +6095,19 @@
     // 18:06→19:33 (87 phút, đáng lẽ 870.000đ) mà chỉ tính 30.000đ — vô lý với
     // kế toán và lệch hẳn cách website tự tính. Nay giờ ra luôn được đề xuất
     // lại theo đúng Tiền giờ, và durationMinutes được trả về để hiển thị đúng.
-    const durationMinutes = Math.max(1, Math.round(hour / hourlyRate * 60));
+    //
+    // Chọn số phút bằng closestReachableHourSlot chứ không làm tròn thẳng
+    // hour/rate: website làm tròn 0,01 giờ nên mốc phút gần nhất theo phép chia
+    // chưa chắc cho số tiền gần nhất. Sao kê 132.000đ (Tiền giờ 95.000đ) làm
+    // tròn ra 10 phút = 102.000đ, lệch 7.000đ — vượt một bước giá 6.000đ, tức
+    // quá ngưỡng an toàn mà cổng kiểm tra lúc mở form vẫn cho qua.
+    const reachableSlot = closestReachableHourSlot(
+      hour,
+      1,
+      Math.max(1, Math.round(hour / hourlyRate * 60) + 60),
+      hourlyRate
+    );
+    const durationMinutes = Math.max(1, Math.round(Number(reachableSlot?.minutes) || 1));
     const hourFromTime = websiteHourAmountForMinutes(durationMinutes, hourlyRate);
     const hourAdjustment = hour - hourFromTime;
     const predictedGrand = goods + hour + targets.vatTarget;
@@ -6541,6 +6582,15 @@
     const proposedMinutes = proposedCheckOutDate && planCheckInDate
       ? Math.max(0, Math.round((proposedCheckOutDate.getTime() - planCheckInDate.getTime()) / 60000))
       : 0;
+    // hourFromTime PHẢI là số tiền mà website tính ra từ ĐÚNG số phút sẽ ghi lên
+    // form, không phải mức làm tròn theo bước giá của solver. Hai thứ này lệch
+    // nhau khi số phút không biểu diễn được chính xác: 50 phút = 0,83 giờ =
+    // 498.000đ ở phòng 600k, trong khi solver làm tròn lên 504.000đ. Giữ số cũ
+    // thì phần bù bị tính sai và phiếu lưu xong lệch tổng (sao kê 1.001.000đ ra
+    // 998.800đ).
+    const reachableHourFromTime = proposedMinutes > 0
+      ? websiteHourAmountForMinutes(proposedMinutes, hourPricing.hourlyRate)
+      : hourFromTime;
     const hourAdjustmentSmall = Math.abs(hourBaseAdjustment) <= hourBounds.adjustmentLimit;
     const hourWithinPreTaxCap = finalHourAmount <= hourPreTaxCap;
     if (!hourAdjustmentSmall && !hourWithinPreTaxCap) {
@@ -6558,10 +6608,24 @@
     // Tiền giờ cao là do tổ hợp hàng, và phải chặn như trước.
     const hourRequiredByFloor = Math.max(0, Math.round(Number(hourBounds.minHourAmount) || 0));
     const goodsAtFloor = targets.preTaxTarget - hourRequiredByFloor;
+    // So bằng >= chứ không >: ở đúng điểm hòa (sàn = 2 lần tiền hàng) thì tỷ lệ
+    // chỉ "vừa đủ" khi tiền hàng rơi CHÍNH XÁC vào mức tối thiểu — điều mà lưới
+    // giá mặt hàng thường không làm được. Dùng > khiến cả một dải ngay trên điểm
+    // hòa bị loại oan: sao kê 495.100đ-498.000đ (preTax ~450.100-452.700) báo
+    // "Tiền giờ vượt 2 lần tiền hàng" dù 494.900đ ngay dưới đó vẫn lập được với
+    // tỷ lệ 2,10. Trong dải này chính SÀN mới là thứ ép tỷ lệ lên, nên phải miễn.
     const floorItselfExceedsRatio = hourRequiredByFloor > 0 &&
-      (goodsAtFloor <= 0 || hourRequiredByFloor > goodsAtFloor * maxHourToGoodsRatio);
-    const ratioExceeded = solution.actual <= 0 ||
-      finalHourAmount > solution.actual * maxHourToGoodsRatio;
+      (goodsAtFloor <= 0 || hourRequiredByFloor >= goodsAtFloor * maxHourToGoodsRatio);
+    // Vượt tỷ lệ vài trăm đồng là ARTEFACT LÀM TRÒN, không phải hóa đơn lệch cơ
+    // cấu: tiền hàng đi theo lưới giá mặt hàng (bước 5.000đ) nên hiếm khi rơi
+    // đúng mức tối thiểu mà tỷ lệ đòi. Sao kê 495.100đ-498.000đ có tiền hàng
+    // 150.000đ và Tiền giờ 300.091đ — vượt trần đúng 91đ và bị loại, dù 494.900đ
+    // ngay dưới đó vẫn lập được với tỷ lệ 2,10. Bỏ qua phần vượt nhỏ hơn một
+    // bước giá tiền hàng; vượt thật (do tổ hợp) vẫn bị chặn như cũ.
+    const ratioOvershoot = solution.actual > 0
+      ? finalHourAmount - solution.actual * maxHourToGoodsRatio
+      : Number.POSITIVE_INFINITY;
+    const ratioExceeded = solution.actual <= 0 || ratioOvershoot > GOODS_PRICE_STEP;
     if (ratioExceeded && !floorItselfExceedsRatio) {
       return {
         status: "error",
@@ -6594,8 +6658,10 @@
       // Bội số trần số lượng/HĐ đã dùng (1 = trần mặc định). Ghi lại để kế
       // toán thấy phiếu lớn được lập với trần nào.
       quantityScale,
-      hourFromTime,
-      hourAdjustment,
+      // Số tiền website THỰC SỰ tính ra từ giờ vào/ra sẽ ghi lên form, và phần
+      // bù tương ứng. Xem reachableHourFromTime ở trên.
+      hourFromTime: reachableHourFromTime,
+      hourAdjustment: finalHourAmount - reachableHourFromTime,
       tax: targets.vatTarget,
       taxRate: 10,
       difference,
@@ -6682,12 +6748,17 @@
     const plan = calculateBatchPlan(planningScan, transaction, inventoryState, productUsage, overrideGrand);
     if (plan.status !== "ready") return plan;
     const checkInDate = parseUiDateTime(planningScan.checkIn);
-    // Sàn phút phải đi cùng sàn Tiền giờ đã bị kẹp theo trần 35%: nếu vẫn giữ
-    // mốc 30/50 phút trong khi phương án chỉ còn ~23 phút thì không có khoảng
+    // Sàn phút phải đi cùng sàn Tiền giờ đã bị kẹp theo trần cơ cấu: nếu vẫn giữ
+    // mốc danh nghĩa trong khi phương án chỉ còn ~23 phút thì không có khoảng
     // giờ vào/ra nào biểu diễn được và phiếu bị loại oan.
+    //
+    // Mốc lấy từ minimumSingingMinutes — CÙNG nguồn với hourPlanningBounds và
+    // newInvoicePlanValidationError. Đây là chỗ thứ ba từng tự tính lại
+    // `credit > 1000000 ? 50 : 30`; ba bản sao lệch nhau là cách chắc chắn nhất
+    // để phương án vừa lập xong lại bị chính khâu sau loại.
     const nominalMinimumMinutes = plan.specialRule === "under-500k-two-beers"
       ? 1
-      : (Number(transaction.credit) > 1000000 ? 50 : 30);
+      : minimumSingingMinutes(Number(transaction.credit));
     const planMinutes = Math.max(1, Math.floor(Number(plan.hour) / rate * 60));
     const minimumMinutes = Math.min(nominalMinimumMinutes, planMinutes);
     const remainingMinutesInDay = checkInDate
@@ -6749,10 +6820,16 @@
       const floorMinutes = minimumSingingMinutes(
         Math.round(Number(overrideGrand) || Number(transaction?.credit) || 0)
       );
+      const planMinutes = Math.round(Number(plan.durationMinutes) || 0);
+      const meetsFloor = planMinutes >= floorMinutes;
+      // Khi KHÔNG mức nào đạt sàn (phiếu quá nhỏ), tiêu chí "gần 90 phút nhất"
+      // lại kéo về phòng ĐẮT vì phòng đắt cho ít phút hơn và... vẫn xa 90 như
+      // nhau. Ở tình huống đó phải lấy NHIỀU PHÚT NHẤT, tức phòng rẻ nhất:
+      // 143.000đ ra 16 phút ở phòng 400k thay vì 8 phút ở phòng 800k.
       const score = [
-        Math.round(Number(plan.durationMinutes) || 0) >= floorMinutes ? 0 : 1,
-        Math.abs(Math.round(Number(plan.hourAdjustment) || 0)),
-        Math.abs(Math.round(Number(plan.durationMinutes) || 0) - 90),
+        meetsFloor ? 0 : 1,
+        meetsFloor ? Math.abs(Math.round(Number(plan.hourAdjustment) || 0)) : -planMinutes,
+        meetsFloor ? Math.abs(planMinutes - 90) : Math.abs(Math.round(Number(plan.hourAdjustment) || 0)),
         rate
       ];
       const better = !best || score.some((value, index) =>
