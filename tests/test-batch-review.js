@@ -2063,6 +2063,44 @@ if (new Set(rotationPlans.map(beerCodes)).size < 2) {
   }
 }
 
+// --- Phiếu ĐÃ CÓ SẴN cũng phải đạt sàn thời lượng --------------------------
+//
+// hourPlanningBounds lấy Tiền giờ đang trên form làm nền cho phiếu đã tồn tại.
+// Nền đó là số của HÓA ĐƠN CŨ, không phải luật, nên khi nó nhỏ thì sàn tụt theo
+// và sàn 30 phút mất tác dụng với đúng nhóm phiếu chiếm phần lớn lô.
+//
+// Ca thật Nhơn 21/07/2026, phiếu HD0126070083 (sao kê 502.700đ): form đang có
+// Tiền giờ 52.000đ → nền 52.000đ → sàn tụt còn ~41.600đ (nền trừ 20%), nên tổ
+// hợp hàng 405.000đ vẫn "hợp lệ" và phiếu ra 8 phút hát.
+{
+  const stock = [
+    { webCode: "0000045", webName: "Bia Tiger lon", webUnit: "lon", webPrice: 50000,
+      availableQty: 9212, stockCodes: ["0000045"], webGroup: "BIA - RƯỢU" },
+    { webCode: "0000014", webName: "Khăn ướt", webUnit: "cái", webPrice: 5000,
+      availableQty: 99616, stockCodes: ["0000014"], webGroup: "KHÁC" },
+    { webCode: "0000096", webName: "Snack Oishi", webUnit: "gói", webPrice: 40000,
+      availableQty: 830, stockCodes: ["0000096"], webGroup: "ĐỒ KHÔ" },
+    { webCode: "0000097", webName: "Nước ion kiềm", webUnit: "chai", webPrice: 25000,
+      availableQty: 4824, stockCodes: ["0000097"], webGroup: "NƯỚC" }
+  ];
+  for (const [credit, formGoods, formHour] of [[502700, 405000, 52000], [500500, 425000, 30000]]) {
+    const plan = realStockBox.calculateBatchPlan({
+      ready: true, invoiceNo: "HD0126070083", invoiceDateKey: "2026-07-21",
+      currentGoods: formGoods, currentHour: formHour,
+      currentTax: Math.round((formGoods + formHour) * 0.1),
+      taxRate: 10, currentGrand: credit,
+      checkIn: "21/07/2026 20:36", checkOut: "21/07/2026 20:44", durationMinutes: 8, items: []
+    }, { id: "exist-" + credit, transactionDate: "2026-07-21", credit }, stock, new Map());
+    if (plan.status !== "ready") throw new Error(`${credit}đ phải lập được: ${plan.reason}`);
+    const floor = realStockBox.minimumSingingMinutes(credit);
+    if (plan.durationMinutes < floor) {
+      throw new Error(`Phiếu đã có sẵn ${credit}đ phải đạt sàn ${floor} phút, nhận ` +
+        `${plan.durationMinutes} phút (Tiền giờ ${plan.hour}đ, tiền hàng ${plan.goods}đ). ` +
+        "Nền Tiền giờ của hóa đơn cũ không được kéo sàn xuống.");
+    }
+  }
+}
+
 // --- Sàn phút chỉ được có MỘT nguồn ------------------------------------------
 //
 // Mốc phút từng bị chép tay ở ba nơi: hourPlanningBounds, calculateNewInvoiceBatchPlan

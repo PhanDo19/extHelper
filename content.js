@@ -3009,7 +3009,20 @@
     const subtitle = document.getElementById("it-screen-subtitle");
     const help = document.getElementById("it-screen-help");
     if (title) title.textContent = screen?.title || "Điều chỉnh một phiếu";
-    if (subtitle) subtitle.textContent = `${pageTenantLabel}${extensionVersion ? ` · v${extensionVersion}` : ""}`;
+    // Dấu vân tay bản dựng: đọc THẲNG từ các hằng số đang chạy, không phải từ
+    // manifest. Số manifest chỉ nói file manifest là bản nào; vân tay này nói
+    // chính content.js đang chạy là bản nào — hai thứ có thể lệch khi Chrome
+    // giữ cache một file mà không giữ file kia.
+    // Các hằng số này khai báo phía dưới trong cùng IIFE. Hàm chỉ chạy sau khi
+    // module nạp xong nên bình thường luôn đọc được, nhưng bọc try để một thay
+    // đổi thứ tự về sau không làm hỏng cả panel chỉ vì dòng chẩn đoán này.
+    let buildFingerprint = "";
+    try {
+      buildFingerprint = ` · sàn ${PARIS_NHON_MIN_SINGING_MINUTES}p · trần ${Math.round(MAX_HOUR_PRETAX_RATIO * 100)}% · ${String(CALCULATION_VERSION).replace("website-inclusive-", "")}`;
+    } catch (_) { buildFingerprint = ""; }
+    if (subtitle) {
+      subtitle.textContent = `${pageTenantLabel}${extensionVersion ? ` · v${extensionVersion}` : ""}${buildFingerprint}`;
+    }
     // Ở màn hình chính không cần câu hướng dẫn của bước; chỗ đó đã có thẻ chào
     // mừng và thanh Việc tiếp theo nói rõ hơn.
     if (help) {
@@ -5769,9 +5782,17 @@
       bankGrand >= PARIS_NHON_LARGE_INVOICE_THRESHOLD
       ? PARIS_NHON_LARGE_INVOICE_MIN_HOUR
       : 0;
+    // Phiếu đã có sẵn lấy Tiền giờ đang trên form làm NỀN, nhưng nền đó không
+    // được thấp hơn sàn thời lượng: nó là số của hóa đơn cũ, không phải luật.
+    //
+    // Đây là lý do sàn 30 phút không có tác dụng với phiếu đã tồn tại. Ca thật
+    // Nhơn 21/07/2026, phiếu HD0126070083: form đang có Tiền giờ 52.000đ nên
+    // nền = 52.000đ, minHourAmount tụt xuống ~41.600đ (nền trừ 20%), và mọi tổ
+    // hợp hàng tới 415.000đ đều "hợp lệ" — phiếu ra 4 phút hát. Sàn 30 phút chỉ
+    // áp cho phiếu mới, trong khi phần lớn lô là phiếu có sẵn.
     const nominalBaseHour = isNewInvoice || currentHour <= 0
       ? Math.max(minuteBaseHour, tenantMinimumHour)
-      : currentHour;
+      : Math.max(currentHour, minuteBaseHour);
     // Sàn thời lượng là LUẬT NGHIỆP VỤ, trần 35% chỉ là quy ước cơ cấu, nên khi
     // hai thứ mâu thuẫn thì sàn thắng và trần được nới vừa đủ.
     //
@@ -5811,9 +5832,26 @@
       effectiveCap,
       // Sàn Tiền giờ: mốc 30/50 phút, hạ xuống mức tối đa kham được khi phần
       // trước VAT quá nhỏ.
+      // Phiếu đã có sẵn được nới 20% quanh nền để solver có chỗ xoay, nhưng phần
+      // nới KHÔNG được kéo sàn xuống dưới mốc phút: nới 20% của 297.000đ là
+      // 237.600đ = 24 phút, vẫn dưới sàn 30 phút. Kẹp lại theo requiredFloor —
+      // chính requiredFloor đã tự hạ xuống ở phiếu quá nhỏ nên nhánh "lấy tối đa
+      // có thể" không bị ảnh hưởng.
+      // Phiếu đã có sẵn vẫn được nới 20% quanh nền để solver có chỗ xoay (nền là
+      // Tiền giờ của hóa đơn cũ, thường không khớp sẵn tổng mới), NHƯNG phần nới
+      // không được kéo sàn xuống dưới MỐC PHÚT. Trước đây không có chặn dưới:
+      // phiếu có Tiền giờ 52.000đ trên form cho sàn ~41.600đ, nên mọi tổ hợp
+      // hàng tới 415.000đ đều hợp lệ và phiếu ra 4 phút hát.
+      //
+      // Chặn dưới là minuteBaseHour đã kẹp theo những gì phiếu kham được
+      // (requiredFloor), nên phiếu quá nhỏ vẫn đi nhánh "lấy tối đa có thể".
       minHourAmount: isNewInvoice || currentHour <= 0
         ? Math.max(step, Math.min(baseHour, requiredFloor))
-        : Math.max(step, Math.min(baseHour, requiredFloor) - adjustmentLimit),
+        : Math.max(
+            step,
+            Math.min(baseHour, requiredFloor, Math.min(minuteBaseHour, affordableHour)),
+            Math.min(baseHour, requiredFloor) - adjustmentLimit
+          ),
       maxHourAmount: Math.max(baseHour + adjustmentLimit, requiredFloor)
     };
   }
@@ -6540,8 +6578,35 @@
           "Hãy ánh xạ thêm mã bia/khăn ướt giá thấp hơn rồi tính lại."
       };
     }
-    // Chốt chặn cuối: dù solver có ép sàn tiền giờ, vẫn không để lọt phương án
-    // Tiền giờ = 0 ra trạng thái Sẵn sàng.
+    // Chốt chặn cuối: Tiền giờ phải ĐẠT SÀN THỜI LƯỢNG, không chỉ lớn hơn 0.
+    //
+    // minHourAmount vốn chỉ là tham số MỀM của solver (một khoản phạt trong hàm
+    // điểm), nên tổ hợp vỡ sàn vẫn thắng khi phần thưởng số lượng (unitWeight
+    // 5.000đ/đơn vị) lớn hơn. Ca thật Nhơn 21/07/2026, sao kê 502.700đ: solver
+    // chọn tiền hàng 405.000đ (4 bia + 3 thuốc lá + 3 khăn + bánh) trong khi
+    // trần tiền hàng chỉ 157.000đ, còn lại 52.000đ Tiền giờ = 5 phút. Không cổng
+    // nào chặn vì tỷ lệ giờ/hàng 0,13 vẫn dưới 2 và tổng vẫn khớp tuyệt đối.
+    //
+    // Chỉ chặn khi sàn THỰC SỰ đạt được: phiếu quá nhỏ vẫn theo nhánh "lấy tối
+    // đa có thể" như cũ (hourBounds.minHourAmount đã tự hạ xuống ở đó).
+    //
+    // So theo SỐ PHÚT chứ không theo số tiền tuyệt đối: tiền hàng đi theo lưới
+    // giá mặt hàng nên Tiền giờ hiếm khi rơi đúng mốc sàn, và lệch vài nghìn
+    // đồng vẫn ra cùng số phút. Ca thật: 605.909đ so với sàn 612.000đ đều là 61
+    // phút — chặn ở đây là chặn oan.
+    const hourFloorRequired = Math.max(0, Math.round(Number(hourBounds.minHourAmount) || 0));
+    const floorMinutesRequired = Math.floor(hourFloorRequired / hourPricing.hourlyRate * 60);
+    const planMinutesActual = Math.floor(finalHourAmount / hourPricing.hourlyRate * 60);
+    if (finalHourAmount > 0 && hourFloorRequired > 0 && planMinutesActual < floorMinutesRequired) {
+      return {
+        status: "error",
+        reason: `Tiền giờ ${formatMoney(finalHourAmount)}đ (${planMinutesActual} phút) thấp hơn sàn ` +
+          `${formatMoney(hourFloorRequired)}đ (${floorMinutesRequired} phút): tổ hợp hàng ${formatMoney(solution.actual)}đ ` +
+          `vượt trần tiền hàng ${formatMoney(targets.preTaxTarget - hourFloorRequired)}đ. ` +
+          "Hãy ánh xạ thêm mặt hàng giá thấp hoặc bỏ bớt rule rồi tính lại."
+      };
+    }
+    // Vẫn không để lọt phương án Tiền giờ = 0 ra trạng thái Sẵn sàng.
     if (finalHourAmount <= 0) {
       // Lỗi này có nhiều nguyên nhân rất khác nhau và chỉ phân biệt được bằng
       // số liệu tại chỗ, nên nêu thẳng các con số quyết định thay vì đổ chung
