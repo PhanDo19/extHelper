@@ -488,6 +488,41 @@ const hydratedPlans = sandbox.hydrateBatchPlans(serializedPlans, [refreshedTrans
 if (hydratedPlans.length !== 1 || hydratedPlans[0].transaction.status !== "review") {
   throw new Error("Phiên UI phải liên kết lại với transaction mới nhất sau khi chuyển trang.");
 }
+// --- Phương án "Sẵn sàng" lập bằng công thức cũ phải bị bỏ khi nạp lại phiên --
+//
+// Vòng hủy phương án cũ ở buildBatchReview chỉ xét planned/batch_ready, vì đó là
+// hai trạng thái nằm trong sao kê. Phương án "Sẵn sàng" chỉ nằm trong PHIÊN UI
+// nên không có gì đụng tới, và nó sống mãi qua mọi lần đổi công thức: ca thật
+// 21/07/2026 vẫn hiện "3 phút · theo giờ 30.000đ" sau khi sàn đã nâng lên 30
+// phút. Kiểm mốc công thức ngay lúc hydrate mới chặn được.
+{
+  const staleReady = {
+    transactionId: "stale", status: "ready",
+    plan: { calculationVersion: "website-inclusive-vat-2", hour: 30000, durationMinutes: 3 }
+  };
+  const freshReady = {
+    transactionId: "fresh", status: "ready",
+    plan: { calculationVersion: sandbox.CALCULATION_VERSION, hour: 200000, durationMinutes: 30 }
+  };
+  const errorRow = { transactionId: "err", status: "error", reason: "không lập được" };
+  const hydrated = sandbox.hydrateBatchPlans([staleReady, freshReady, errorRow], [
+    { id: "stale", status: "pending" },
+    { id: "fresh", status: "pending" },
+    { id: "err", status: "pending" }
+  ]);
+  const ids = hydrated.map(entry => String(entry.transactionId));
+  if (ids.includes("stale")) {
+    throw new Error("Phương án Sẵn sàng dùng công thức cũ phải bị bỏ khi nạp lại phiên.");
+  }
+  if (!ids.includes("fresh")) {
+    throw new Error("Phương án Sẵn sàng đúng công thức hiện tại phải được giữ.");
+  }
+  // Dòng lỗi không có plan.calculationVersion; không được bỏ nhầm.
+  if (!ids.includes("err")) {
+    throw new Error("Dòng lỗi không có mốc công thức thì không được bỏ.");
+  }
+}
+
 if (!sandbox.isIdleRoomLabel("VIP 301", "VIP 301")) throw new Error("Phòng chỉ có tên phải được nhận diện là rảnh.");
 if (sandbox.isIdleRoomLabel("VIP 301", "VIP 301 1h 05'")) throw new Error("Phòng có thời lượng không được nhận diện là rảnh.");
 if (sandbox.isIdleRoomLabel("BÁN LẺ", "BÁN LẺ")) throw new Error("BÁN LẺ không được dùng cho hóa đơn có tiền giờ.");

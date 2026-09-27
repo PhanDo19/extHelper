@@ -219,13 +219,26 @@
     const byId = new Map((transactions || []).map(transaction => [String(transaction.id), transaction]));
     return structuredClone(plans || []).map(entry => {
       const transaction = byId.get(String(entry.transactionId || ""));
-      return transaction
-        ? {
-            ...entry,
-            status: reconcileBatchPlanStatus(entry.status, transaction.status),
-            transaction
-          }
-        : null;
+      if (!transaction) return null;
+      // Phương án "Sẵn sàng" chỉ nằm trong phiên UI, không nằm trong sao kê, nên
+      // vòng hủy phương án cũ ở buildBatchReview (chỉ xét planned/batch_ready)
+      // không đụng tới. Không kiểm mốc công thức ở đây thì phiếu "Sẵn sàng" lập
+      // bằng luật cũ sống mãi qua các lần đổi công thức: ca thật 21/07/2026 vẫn
+      // hiện 3 phút / 30.000đ sau khi sàn đã nâng lên 30 phút.
+      //
+      // Hạ về "chưa tính" thay vì xóa hẳn: giao dịch vẫn còn trong danh sách để
+      // người dùng thấy và dựng lại Batch Review.
+      // Mọi phương án "Sẵn sàng" đều PHẢI mang mốc công thức (cả ba nhánh lập
+      // phương án đều ghi). Thiếu mốc nghĩa là phiên được lưu từ bản cũ hơn cả
+      // lúc trường này ra đời, nên cũng phải bỏ — không được coi là hợp lệ.
+      if (entry.status === "ready" && entry?.plan?.calculationVersion !== CALCULATION_VERSION) {
+        return null;
+      }
+      return {
+        ...entry,
+        status: reconcileBatchPlanStatus(entry.status, transaction.status),
+        transaction
+      };
     }).filter(Boolean);
   }
 
