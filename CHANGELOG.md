@@ -1,7 +1,8 @@
 # Changelog
 
-## 1.28.1 (2026-09-26)
+## 1.28.4 (2026-09-28)
 
+- **Phiếu ĐÃ CÓ SẴN nay cũng phải đạt sàn 30 phút.** Trước đây nền Tiền giờ của phiếu có sẵn là chính Tiền giờ cũ trên form, nên phiếu đang ghi 52.000đ cho sàn ~41.600đ và mọi tổ hợp hàng tới 415.000đ đều hợp lệ — ca thật Nhơn 21/07/2026 ra 3-14 phút hát (sao kê 500.500đ–607.200đ). Nay nền không thấp hơn mốc phút, phần nới 20% không kéo sàn xuống dưới mốc, và có cổng chặn cuối so theo số phút. Các ca đó nay ra 30-32 phút. Tăng mốc công thức lên `website-inclusive-vat-4` để phương án cũ tự hủy.
 - Chọn phòng cho phiếu mới theo **sơ đồ phòng do website trả về** thay vì chỉ quét thẻ trên trang. Bridge bắt thụ động response sơ đồ (nhận diện theo hình dạng dữ liệu `Tag[].items[]` có `DKHUVUCID`/`trangThai`, không cần biết trước endpoint) khi màn hình Bán hàng tự tải, nhớ luôn request đó để gọi lại bản mới nhất. Mỗi cơ sở tự lấy sơ đồ của mình, không cần cung cấp dữ liệu tay.
 - Phòng hợp lệ: trạng thái 0, không có giờ đang chạy, không phải quầy bán lẻ (theo tên phòng, tên khu hoặc cờ quầy), không trùng giờ với phiếu đã lập trong ngày; phòng chưa dùng trong ngày được ưu tiên. Thẻ chưa render (Nhơn mặc định chỉ hiện BÁN LẺ) thì tự chọn TẤT CẢ rồi bấm đúng thẻ theo tên.
 - Sau khi form mở, đối chiếu `DBANID` trên form với id phòng đã chọn; lệch thì đóng form và báo lỗi, không lập phiếu. Đây là chốt chặn cho tình huống phiếu 01000000260 bị lập lên BAN LE.

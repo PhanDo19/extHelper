@@ -5628,7 +5628,10 @@
   // v3 (23/09/2026): sàn giờ hát Nhơn 30 -> 15 phút; ngưỡng phiếu nhỏ suy theo
   // đơn giá phòng thay vì cố định 300.000đ; chọn món phải chừa đủ cho sàn; chọn
   // phòng ưu tiên đạt sàn. Mọi phương án lập trước đó đều theo công thức cũ.
-  const CALCULATION_VERSION = "website-inclusive-vat-3";
+  // v4 (28/09/2026): phiếu ĐÃ CÓ SẴN nay cũng phải đạt sàn phút (trước đây nền
+  // là Tiền giờ cũ trên form, nên phiếu 52.000đ ra 4-8 phút hát), và có cổng
+  // chặn cuối theo số phút. Phương án v3 của phiếu có sẵn có thể vỡ sàn.
+  const CALCULATION_VERSION = "website-inclusive-vat-4";
   const MAX_SESSION_CANDIDATE_PROBES = 3;
   const SESSION_CANDIDATE_PROBE_TIMEOUT_MS = 5000;
   // Phiếu nhỏ: tổng dưới mức này đi luật riêng — đúng MỘT món giá thấp, toàn

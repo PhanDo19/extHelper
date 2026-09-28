@@ -2136,7 +2136,7 @@ if (new Set(rotationPlans.map(beerCodes)).size < 2) {
 // Ca thật: sao kê 547.800đ giữ 8 phút / 78.000đ (công thức sàn 30 phút cũ) sau
 // khi đã hạ sàn xuống 15 phút; code mới cho 17 phút / 168.000đ.
 {
-  if (sandbox.CALCULATION_VERSION === "website-inclusive-vat-2") {
+  if (["website-inclusive-vat-2", "website-inclusive-vat-3"].includes(sandbox.CALCULATION_VERSION)) {
     throw new Error(
       "CALCULATION_VERSION vẫn là mốc của công thức sàn 30 phút. Mỗi lần đổi công " +
       "thức tính tiền/giờ phải tăng mốc này, nếu không phương án đã Accept sẽ được " +
