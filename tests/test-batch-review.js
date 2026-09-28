@@ -42,7 +42,6 @@ const batchPlanDeps = [
   extractConst("CALCULATION_VERSION"),
   extractConst("SMALL_INVOICE_BEER_LIMIT"),
   extractConst("SMALL_INVOICE_BEER_QTY"),
-  extractConst("NATURAL_MIN_HOUR_TO_GOODS_RATIO"),
   extractConst("MAX_PRODUCT_GROUP_SHARE"),
   extractConst("EXCLUDED_PRODUCT_GROUPS"),
   extractFunction("websiteHourAmountForMinutes"),
@@ -109,11 +108,6 @@ vm.runInContext(
   `${extractFunction("normalizeRoomText")}; ${extractFunction("isIdleRoomLabel")}; ` +
   `${extractFunction("roomCardName")}; ${extractFunction("roomAreaKey")}; ${extractFunction("isRetailRoomName")}; ` +
   "this.isIdleRoomLabel = isIdleRoomLabel; this.roomCardName = roomCardName; this.isRetailRoomName = isRetailRoomName;",
-  sandbox
-);
-vm.runInContext(
-  `${extractFunction("selectClosestInvoiceCandidate")}; ` +
-  "this.selectClosestInvoiceCandidate = selectClosestInvoiceCandidate;",
   sandbox
 );
 vm.runInContext(
@@ -548,16 +542,16 @@ for (const room of ["VIP 21", "VIP 55", "P.301", ""]) {
 }
 
 // Tổng sao kê đã gồm VAT; phần dư nhỏ sau tiền hàng được bù vào Tiền giờ.
-const closest = sandbox.selectClosestInvoiceCandidate([
+const [closest] = sandbox.rankInvoiceCandidates([
   { invoiceNo: "HD003", grandTotal: 3011800 },
   { invoiceNo: "HD001", grandTotal: 2508000 },
   { invoiceNo: "HD002", grandTotal: 2532200 }
-], 2500000);
+], 2500000, "");
 if (closest.invoiceNo !== "HD001") throw new Error("Batch Review must select the invoice closest to the bank amount.");
-const tie = sandbox.selectClosestInvoiceCandidate([
+const [tie] = sandbox.rankInvoiceCandidates([
   { invoiceNo: "HD010", grandTotal: 2490000 },
   { invoiceNo: "HD002", grandTotal: 2510000 }
-], 2500000);
+], 2500000, "");
 if (tie.invoiceNo !== "HD002") throw new Error("Equal distances must use invoice number as a stable tie-breaker.");
 const ranked = sandbox.rankInvoiceCandidates([
   { invoiceNo: "HD010", grandTotal: 3000000 },
@@ -1298,7 +1292,6 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
       }
       return usage;
     },
-    selectClosestInvoiceCandidate: sandbox.selectClosestInvoiceCandidate,
     rankInvoiceCandidates: sandbox.rankInvoiceCandidates,
     invoiceSessionTouchesTransactionDate: sandbox.invoiceSessionTouchesTransactionDate,
     rebaseInvoiceSession: sandbox.rebaseInvoiceSession,
@@ -1537,22 +1530,19 @@ const baseTransaction = {
   if (!source.includes("plan: structuredClone(plan)")) {
     throw new Error("The approved Batch Review plan must be carried into the new Sales tab.");
   }
-  if (!source.includes('await request("applyInvoiceTimes"') || !source.includes('await request("applyInvoicePlan"')) {
-    throw new Error("The new Sales tab must apply the approved times and exact invoice plan.");
-  }
   const applyNewInvoiceSource = extractFunction("applyPendingNewInvoicePlan");
-  if (!applyNewInvoiceSource.includes('await request("saveCurrentInvoiceViaApi"') ||
-      !applyNewInvoiceSource.includes('await request("closeInvoiceDetail")')) {
-    throw new Error("Phiếu mới phải được lưu bằng API chính thức rồi tự đóng form.");
+  if (!applyNewInvoiceSource.includes('await request("createAndPayFreshInvoiceViaApi"') ||
+      !applyNewInvoiceSource.includes('"invoiceTarget.closeCurrentBatchWorkerTab"')) {
+    throw new Error("Phiếu mới phải được lưu bằng API chính thức rồi tự đóng tab worker.");
   }
-  for (const requiredField of ["invoiceDateKey", "checkIn", "checkOut", "requiresFreshDraft"]) {
+  for (const requiredField of ["invoiceDateKey", "checkIn", "checkOut"]) {
     if (!applyNewInvoiceSource.includes(requiredField)) {
       throw new Error(`Lưu phiếu mới phải truyền ${requiredField} vào Batch API.`);
     }
   }
-  const apiSaveCallIndex = applyNewInvoiceSource.indexOf('await request("saveCurrentInvoiceViaApi"');
-  const apiSavedGuardIndex = applyNewInvoiceSource.indexOf('if (!saved?.saved)');
-  const appliedAtIndex = applyNewInvoiceSource.indexOf("pendingNewInvoice.appliedAt = new Date().toISOString()");
+  const apiSaveCallIndex = applyNewInvoiceSource.indexOf('await request("createAndPayFreshInvoiceViaApi"');
+  const apiSavedGuardIndex = applyNewInvoiceSource.indexOf("if (!apiSaved?.saved");
+  const appliedAtIndex = applyNewInvoiceSource.indexOf("pendingNewInvoice.appliedAt = apiCompletedAt");
   if (apiSaveCallIndex < 0 || apiSavedGuardIndex < apiSaveCallIndex || appliedAtIndex < apiSavedGuardIndex) {
     throw new Error("Không được đánh dấu appliedAt trước khi API xác nhận lưu phiếu mới thành công.");
   }

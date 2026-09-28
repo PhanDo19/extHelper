@@ -10,17 +10,17 @@ assert.match(source, /const INVOICE_PAYMENT_METHOD = "TM\/CK";/);
 assert.match(source, /const CREATION_PAYMENT_METHODS = new Set\(\["CK", "TM", INVOICE_PAYMENT_METHOD\]\);/);
 assert.match(source, /function invoiceCreationPaymentMethod\(expected\)/);
 assert.match(source, /const DEFAULT_INVOICE_ADDRESS = "Kh\\u00e1ch kh\\u00f4ng cung c\\u1ea5p th\\u00f4ng tin";/,
-  "Pháº£i khai bÃ¡o Ä‘á»‹a chá»‰ máº·c Ä‘á»‹nh cho hÃ³a Ä‘Æ¡n");
+  "Phải khai báo địa chỉ mặc định cho hóa đơn");
 assert.strictEqual(
   [...source.matchAll(/DIACHIKHACH: String\(expected\?\.buyerAddress \|\| DEFAULT_INVOICE_ADDRESS\)/g)].length,
-  3,
-  "Pháº£i gáº¯n Ä‘á»‹a chá»‰ á»Ÿ cáº£ luá»“ng cáº­p nháº­t, táº¡o phiÃªn vÃ  thanh toÃ¡n phiáº¿u má»›i"
+  2,
+  "Phải gắn địa chỉ ở cả luồng cập nhật và luồng tạo phiếu mới"
 );
 
 // Hằng số phải được khai báo TRƯỚC mọi chỗ dùng (const không được hoisted).
 const declaration = source.indexOf("const INVOICE_PAYMENT_METHOD");
 const uses = [...source.matchAll(/PHUONGTHUCTT: paymentMethod/g)].map(match => match.index);
-assert.strictEqual(uses.length, 3, "Phải đặt PHUONGTHUCTT ở luồng sửa và hai luồng tạo");
+assert.strictEqual(uses.length, 2, "Phải đặt PHUONGTHUCTT ở luồng sửa và luồng tạo phiếu mới");
 for (const use of uses) {
   assert(use > declaration, "INVOICE_PAYMENT_METHOD phải khai báo trước khi dùng");
 }

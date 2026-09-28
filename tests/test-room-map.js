@@ -73,9 +73,9 @@ vm.runInContext(
   /const PARIS_NHON_ROOM_HOURLY_RATES = Object\.freeze\([^;]+\);/.exec(contentSource)[0] + "\n" +
   [
     "normalizeRoomText", "roomAreaKey", "isRetailRoomName", "parseUiDateTime",
-    "roomIsFreeForRange", "roomHourlyRate", "isIdleMapRoom", "rankIdleRoomsFromMap", "chooseIdleRoomFromMap"
+    "roomIsFreeForRange", "roomHourlyRate", "isIdleMapRoom", "rankIdleRoomsFromMap"
   ].map(name => extractFunction(contentSource, name)).join(";\n") +
-  ";\nthis.isIdleMapRoom = isIdleMapRoom; this.rankIdleRoomsFromMap = rankIdleRoomsFromMap; this.chooseIdleRoomFromMap = chooseIdleRoomFromMap; this.roomHourlyRate = roomHourlyRate;",
+  ";\nthis.isIdleMapRoom = isIdleMapRoom; this.rankIdleRoomsFromMap = rankIdleRoomsFromMap; this.roomHourlyRate = roomHourlyRate;",
   contentBox
 );
 const rooms = parsed.rooms;
@@ -90,14 +90,14 @@ assert(!contentBox.isIdleMapRoom({ ...vip21, gio: "0h 25'" }), "Phòng có giờ
 assert(!contentBox.isIdleMapRoom({ ...vip21, counter: 1 }), "Cờ quầy phải bị loại.");
 assert(!contentBox.isIdleMapRoom({ ...vip21, name: "VIP 99", areaName: "BÁN LẺ" }), "Phòng trong khu BÁN LẺ phải bị loại.");
 
-assert.strictEqual(contentBox.chooseIdleRoomFromMap(rooms, noBookings, checkIn, checkOut).name, "VIP 21",
+assert.strictEqual(contentBox.rankIdleRoomsFromMap(rooms, noBookings, checkIn, checkOut)[0].name, "VIP 21",
   "Không có đặt chỗ thì lấy phòng trống đầu tiên theo thứ tự website, bỏ qua BAN LE.");
 assert.strictEqual(contentBox.rankIdleRoomsFromMap(rooms, noBookings, checkIn, checkOut).length, 18);
 
 // VIP 21 đã có phiếu chồng giờ trong ngày → sang VIP 22; phòng đã dùng nhưng
 // giờ rời nhau vẫn hợp lệ nhưng đứng sau phòng chưa dùng.
 const overlap = new Map([["VIP 21", [{ from: Date.parse("2026-07-01T17:00:00"), to: Date.parse("2026-07-01T18:00:00") }]]]);
-assert.strictEqual(contentBox.chooseIdleRoomFromMap(rooms, overlap, checkIn, checkOut).name, "VIP 22");
+assert.strictEqual(contentBox.rankIdleRoomsFromMap(rooms, overlap, checkIn, checkOut)[0].name, "VIP 22");
 const disjoint = new Map([["VIP 21", [{ from: Date.parse("2026-07-01T20:00:00"), to: Date.parse("2026-07-01T21:00:00") }]]]);
 const rankedDisjoint = contentBox.rankIdleRoomsFromMap(rooms, disjoint, checkIn, checkOut);
 assert.strictEqual(rankedDisjoint[0].name, "VIP 22", "Phòng chưa dùng trong ngày đứng trước.");
@@ -105,7 +105,7 @@ assert.strictEqual(rankedDisjoint[rankedDisjoint.length - 1].name, "VIP 21", "Ph
 
 // Mọi VIP đều bận, chỉ còn BAN LE trống → không chọn gì.
 const onlyRetailIdle = rooms.map(room => room.name === "BAN LE" ? room : { ...room, status: 1 });
-assert.strictEqual(contentBox.chooseIdleRoomFromMap(onlyRetailIdle, noBookings, checkIn, checkOut), null,
+assert.strictEqual(contentBox.rankIdleRoomsFromMap(onlyRetailIdle, noBookings, checkIn, checkOut).length, 0,
   "Chỉ còn BAN LE trống thì không được lập phiếu có tiền giờ.");
 
 // --- Đơn giá giờ theo phòng (khảo sát Nhơn 17/09/2026) ---------------------------
