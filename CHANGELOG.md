@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.28.6 (2026-09-29)
+
+- **Danh sách số tiền CK/TM dùng được ở mọi cơ sở** (kế toán chốt 29/09/2026). Nút nhập danh sách số tiền hiện ở cả Kim Giang và Linh Đàm, và bridge không còn chặn phương thức `CK`/`TM` ngoài Paris Nhơn. Giao dịch từ sao kê ngân hàng vẫn ghi `TM/CK` như cũ.
+- **Paris Nhơn tách khỏi điều phối phát hành** vì có dải số hóa đơn điện tử riêng. Nhơn không còn bị nhắc chờ Linh Đàm/Kim Giang, không hiện ô Thứ tự phát hành, không ghi chốt vào bản ghi dùng chung; Linh Đàm/Kim Giang cũng không còn nhận cảnh báo về lô của Nhơn. Dữ liệu Nhơn còn sót trong bản ghi điều phối cũ được tự loại khi đọc.
+- Luật sàn 30 phút (kể cả với phiếu có sẵn) xác nhận áp dụng cho cả ba cơ sở; không đổi code.
+
 ## 1.28.5 (2026-09-28)
 
 - **Chống tạo trùng phiếu mới.** Tab worker ghi dấu `newInvoiceCreateStartedAt` vào sao kê TRƯỚC khi gửi API tạo phiếu. Khi lần gửi trước chưa có kết quả chắc chắn (tab bị đóng hoặc crash giữa chừng, request hết giờ, website trả lỗi sau khi đã nhận request), mọi lần chạy lại đều bị chặn với hướng dẫn: kiểm tra danh sách Bán hàng ngày đó rồi bấm **Đặt lại** giao dịch. Trước đây giao dịch vẫn ở `batch_ready` nên bấm Lưu API lần nữa sẽ tạo thêm một phiếu.

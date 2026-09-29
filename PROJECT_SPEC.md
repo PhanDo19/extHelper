@@ -38,7 +38,7 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 - Xóa/đặt 0 toàn bộ hàng cũ, thêm mã web trong phương án, đọc lại tổng và so sánh mục tiêu.
 - Nếu mã/giá web thay đổi hoặc không thêm được, dừng và hoàn tác.
 - Không tự bấm Lưu HĐ hoặc Hủy HĐ.
-- Payload `DoSave` do extension dựng phải đặt `PHUONGTHUCTT = "TM/CK"` (phiếu bắt nguồn từ giao dịch chuyển khoản), ở cả luồng sửa phiếu có sẵn lẫn tạo phiếu mới. Payload bắt được từ nút Lưu của website giữ nguyên phương thức của website.
+- Payload `DoSave` do extension dựng phải đặt `PHUONGTHUCTT = "TM/CK"` cho giao dịch từ sao kê ngân hàng, ở cả luồng sửa phiếu có sẵn lẫn tạo phiếu mới. Giao dịch từ danh sách số tiền CK/TM của kế toán giữ đúng `CK` hoặc `TM` của dòng đó, ở **mọi cơ sở**. Payload bắt được từ nút Lưu của website giữ nguyên phương thức của website.
 
 ## Phát hành hóa đơn điện tử
 
@@ -60,7 +60,7 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 - `SOHOADON` do máy chủ cấp tăng dần theo đúng thứ tự lời gọi `phatHanhHoaDon`, nên **thứ tự phát hành chính là thứ tự đánh số**. Cả lô chạy **một luồng**, không song song, không phân giai đoạn theo nguồn mặt hàng.
 - Lô được sắp theo ngày rồi tới **giờ giao dịch trong sao kê** (`requestedAt`), không theo `invoiceNo`: phiếu tạo mới luôn nhận số cuối dải nên `invoiceNo` lộn xộn, còn giờ giao dịch thì không. `invoiceNo` chỉ làm chốt phụ khi thiếu giờ.
 - Mỗi lô phát hành chỉ được **đúng một ngày**, ép ở cả khâu tải danh sách (`toDate = fromDate`) lẫn khâu phát hành (chặn cứng). Chuyển ngày bằng nút Ngày trước/Ngày sau.
-- Số hóa đơn là dải dùng chung hai cơ sở. Cờ thứ tự cơ sở, bảng sao kê đối chiếu và chốt tiến độ phát hành lưu ở khóa **dùng chung**, không qua `tenantKey()`; mặc định Linh Đàm phát hành trước.
+- Số hóa đơn là dải dùng chung của **Linh Đàm và Kim Giang**; Paris Nhơn có dải riêng nên không tham gia điều phối (không cảnh báo, không chờ, không ghi chốt). Cờ thứ tự cơ sở, bảng sao kê đối chiếu và chốt tiến độ phát hành lưu ở khóa **dùng chung**, không qua `tenantKey()`; mặc định Linh Đàm phát hành trước.
 - Mọi cảnh báo chéo cơ sở là **chặn mềm**: nêu rõ trong hộp thoại xác nhận rồi để người dùng quyết định. Chặn cứng sẽ kẹt khi một cơ sở không có hóa đơn nào trong ngày.
 - Hai cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: **không thể mở song song hai tab đã đăng nhập**. Quy trình là đăng nhập luân phiên. Mất phiên thường trả HTTP 200 kèm HTML trang login, phải nhận diện và dừng hẳn thay vì để `JSON.parse` thất bại lặng lẽ.
 - Chốt tiến độ chỉ ghi sau khi người dùng đã xác nhận, và ghi cả khi lô lỗi giữa chừng vì phần đã chạy vẫn chiếm số thật trên máy chủ.

@@ -2043,25 +2043,16 @@
     return { changed, snapshot: scan() };
   }
 
-  // Phieu do extension lap deu bat nguon tu giao dich chuyen khoan trong sao ke,
-  // nen phuong thuc thanh toan ghi la TM/CK thay vi TM.
+  // Giao dich tu sao ke ngan hang khong mang phuong thuc rieng nen ghi TM/CK.
+  // Dong trong danh sach so tien cua ke toan mang san CK hoac TM va duoc giu
+  // nguyen, o moi co so (ke toan chot 29/09/2026).
   const INVOICE_PAYMENT_METHOD = "TM/CK";
   const CREATION_PAYMENT_METHODS = new Set(["CK", "TM", INVOICE_PAYMENT_METHOD]);
-  function activeTenantSlug(expected) {
-    const currentPage = String(location.pathname.split("/").filter(Boolean)[0] || "").trim().toLowerCase();
-    if (currentPage) return currentPage;
-    return String(expected?.tenantSlug || "").trim().toLowerCase();
-  }
   function invoiceCreationPaymentMethod(expected) {
     const requested = String(expected?.paymentMethod || "").trim().toUpperCase();
     if (!requested) return INVOICE_PAYMENT_METHOD;
     if (!CREATION_PAYMENT_METHODS.has(requested)) {
       throw new Error(`Phuong thuc thanh toan khi tao phieu khong hop le: ${requested}.`);
-    }
-    // CK/TM is the accountant amount-list rule for Paris Nhon only. Other
-    // branches keep the website/legacy TM/CK creation behavior.
-    if (requested !== INVOICE_PAYMENT_METHOD && activeTenantSlug(expected) !== "parisnhon") {
-      throw new Error("Phuong thuc CK/TM khi tao phieu chi duoc ap dung cho Paris Nhon.");
     }
     return requested;
   }

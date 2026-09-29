@@ -5,10 +5,14 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  // Điều phối phát hành giữa các cơ sở.
+  // Điều phối phát hành giữa các cơ sở DÙNG CHUNG dải số hóa đơn điện tử.
   //
-  // Số hóa đơn điện tử là dải dùng chung của mọi cơ sở, nhưng extension chạy
-  // trong tab của MỘT cơ sở và mọi dữ liệu nghiệp vụ đều tách theo tenantKey().
+  // Kim Giang và Linh Đàm dùng chung một dải số; Paris Nhơn có dải riêng nên
+  // không nằm trong TENANTS — mọi hàm dưới đây coi Nhơn là "không tham gia":
+  // không ghi sổ, không cảnh báo, không bắt chờ ai (kế toán chốt 29/09/2026).
+  //
+  // Extension chạy trong tab của MỘT cơ sở và mọi dữ liệu nghiệp vụ đều tách
+  // theo tenantKey().
   // Module này giữ đúng ba thứ phải dùng chung để các cơ sở không giẫm chân nhau:
   //
   //   1. dãy thứ tự — cơ sở nào phát hành trước trong cùng một ngày;
@@ -19,11 +23,10 @@
 
   const KIND = "invoice-target-issue-coordination";
   const SCHEMA_VERSION = 1;
-  const TENANTS = Object.freeze(["parislinhdam", "pariskimgiang", "parisnhon"]);
-  // Thu tu phat hanh mac dinh. Voi hai co so thi mot co "ai di truoc" la du,
-  // nhung tu ba co so tro len phai la MOT DAY THU TU day du: chi biet ai dau
-  // tien khong noi len co so thu hai va thu ba xep the nao.
-  const DEFAULT_TENANT_ORDER = Object.freeze(["parislinhdam", "pariskimgiang", "parisnhon"]);
+  const TENANTS = Object.freeze(["parislinhdam", "pariskimgiang"]);
+  // Thu tu phat hanh mac dinh. Van giu dang MOT DAY THU TU (khong chi "ai di
+  // truoc") de them co so dung chung dai so ve sau chi can them vao day.
+  const DEFAULT_TENANT_ORDER = Object.freeze(["parislinhdam", "pariskimgiang"]);
 
   const text = value => String(value == null ? "" : value).trim();
   const money = value => Math.max(0, Math.round(Number(value) || 0));
@@ -31,6 +34,12 @@
   function normalizeTenant(value) {
     const slug = text(value).toLowerCase();
     return TENANTS.includes(slug) ? slug : "";
+  }
+
+  // Cơ sở có dùng chung dải số với cơ sở khác không. Giao diện dựa vào đây để
+  // ẩn phần thứ tự phát hành và các nhắc "chuyển sang cơ sở kế tiếp".
+  function sharesInvoiceRange(tenant) {
+    return Boolean(normalizeTenant(tenant));
   }
 
   function empty() {
@@ -334,6 +343,7 @@
     SCHEMA_VERSION,
     TENANTS,
     DEFAULT_TENANT_ORDER,
+    sharesInvoiceRange,
     empty,
     normalize,
     normalizeOrder,

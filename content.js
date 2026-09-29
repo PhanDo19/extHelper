@@ -1793,7 +1793,7 @@
             <details><summary>Công cụ dữ liệu nâng cao</summary><div class="it-advanced-actions">
               <button id="it-import-web" type="button">Cập nhật danh mục web (.xlsx)</button>
               <button id="it-import-statement" type="button">Nhập nhanh sao kê (.xlsx)</button>
-              ${pageTenantSlug === "parisnhon" ? '<label class="it-amount-period">Kỳ số tiền <input id="it-amount-period" type="month"></label><button id="it-import-invoice-amount" type="button">Nhập danh sách số tiền CK/TM (.xlsx)</button>' : ""}
+              <label class="it-amount-period">Kỳ số tiền <input id="it-amount-period" type="month"></label><button id="it-import-invoice-amount" type="button">Nhập danh sách số tiền CK/TM (.xlsx)</button>
             </div></details>
             <details class="it-help-box"><summary>Giải thích các thuật ngữ</summary><dl><dt>Tồn kho</dt><dd>Số lượng hàng còn có thể đưa vào hóa đơn.</dd><dt>Ánh xạ</dt><dd>Ghép một mặt hàng trong kho với đúng mặt hàng trên website.</dd><dt>Batch Review</dt><dd>Màn hình xem trước nhiều hóa đơn trước khi lưu.</dd><dt>Đối soát</dt><dd>Kiểm tra hóa đơn đã lưu khớp đúng số tiền sao kê.</dd></dl></details>
           </div>
@@ -2629,7 +2629,6 @@
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      if (pageTenantSlug !== "parisnhon") throw new Error("Danh sách số tiền hiện chỉ dùng cho Paris Nhơn.");
       const period = String(
         document.getElementById("it-statement-amount-period")?.value ||
         document.getElementById("it-amount-period")?.value ||
@@ -3435,17 +3434,21 @@
     const node = document.getElementById("it-einvoice-admin");
     if (!node) return;
     const { fromDate, toDate } = suggestedEInvoiceRange();
+    // Cơ sở có dải số riêng (Nhơn) không có thứ tự phát hành để chọn.
+    const tenantOrderControl = InvoiceIssueCoordination.sharesInvoiceRange(pageTenantSlug)
+      ? `<label title="Số hóa đơn là dải dùng chung giữa các cơ sở. Mỗi cơ sở phát hành hết một ngày rồi cơ sở kế tiếp mới chạy, để số trong ngày liền mạch. Thứ tự này dùng chung cho các cơ sở đó.">Thứ tự phát hành<select id="it-einvoice-tenant-order">${
+        issueCoordination.tenantOrder.map((slug, index) =>
+          `<option value="${escapeHtml(slug)}"${slug === pageTenantSlug ? " selected" : ""}>${
+            index + 1}. ${escapeHtml(TENANT_LABELS[slug] || slug)}</option>`).join("")
+      }</select></label>`
+      : "";
     node.innerHTML = `<div class="it-batch-toolbar">
       <div><b>Phát hành hóa đơn điện tử</b><br><small>Chọn các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small></div>
       <label title="Lô phát hành luôn đúng một ngày để số hóa đơn liên tục và xen kẽ được với cơ sở kia.">Ngày phát hành<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
       <label class="it-locked-date" title="Lô phát hành khóa theo đúng một ngày nên Đến ngày luôn bằng Ngày phát hành.">Đến ngày<input id="it-einvoice-to-date" type="date" value="${escapeHtml(toDate)}" readonly tabindex="-1"></label>
       <button id="it-einvoice-prev-day" type="button" title="Lùi một ngày">‹ Ngày trước</button>
       <button id="it-einvoice-next-day" type="button" title="Sang ngày kế">Ngày sau ›</button>
-      <label title="Số hóa đơn là dải dùng chung mọi cơ sở. Mỗi cơ sở phát hành hết một ngày rồi cơ sở kế tiếp mới chạy, để số trong ngày liền mạch. Thứ tự này dùng chung cho tất cả các cơ sở.">Thứ tự phát hành<select id="it-einvoice-tenant-order">${
-        issueCoordination.tenantOrder.map((slug, index) =>
-          `<option value="${escapeHtml(slug)}"${slug === pageTenantSlug ? " selected" : ""}>${
-            index + 1}. ${escapeHtml(TENANT_LABELS[slug] || slug)}</option>`).join("")
-      }</select></label>
+      ${tenantOrderControl}
       <button id="it-load-einvoice" type="button" class="primary">Tải danh sách</button>
     </div>
     <div id="it-einvoice-summary"></div>
@@ -4160,7 +4163,9 @@
       progressMessages.push(
         `⚠ Số hóa đơn ngày ${batchDateKey} không liên tục (${continuity.from}–${continuity.to}): ` +
         continuity.gaps.map(gap => `thiếu ${gap.missing} số giữa ${gap.after} và ${gap.before}`).join("; ") +
-        ". Kiểm tra xem cơ sở kia có phát hành xen vào không."
+        (InvoiceIssueCoordination.sharesInvoiceRange(pageTenantSlug)
+          ? ". Kiểm tra xem cơ sở kia có phát hành xen vào không."
+          : ". Kiểm tra xem có hóa đơn nào được phát hành ngoài extension không.")
       );
     }
     showProgress(progressMessages.join("\n\n"));
@@ -4277,9 +4282,8 @@
       document.getElementById("it-amount-period")?.value ||
       ""
     );
-    const amountImportControls = pageTenantSlug === "parisnhon"
-      ? `<div class="it-statement-source"><label>Kỳ số tiền <input id="it-statement-amount-period" type="month" value="${escapeHtml(amountPeriod)}"></label><button id="it-statement-import-amount-button" type="button" class="primary">Nhập danh sách số tiền CK/TM</button></div>`
-      : "";
+    const amountImportControls =
+      `<div class="it-statement-source"><label>Kỳ số tiền <input id="it-statement-amount-period" type="month" value="${escapeHtml(amountPeriod)}"></label><button id="it-statement-import-amount-button" type="button" class="primary">Nhập danh sách số tiền CK/TM</button></div>`;
     node.innerHTML = `<div id="it-statement-view">
         <div class="it-statement-toolbar"><div class="it-statement-source"><b>${statementSourceLabel}: ${escapeHtml(statementDataset.source || "chưa nhập")}</b><button id="it-statement-import-button" type="button" class="primary">Nhập sao kê Excel</button></div>
         ${amountImportControls}<div class="it-statement-total"><small>${statementTotalLabel}</small><strong>${formatMoney(statementTotal)} đ</strong><span id="it-statement-visible-total"></span></div>

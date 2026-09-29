@@ -7,41 +7,56 @@ const Coordination = require("../issue-coordination.js");
 
 // --- Cờ thứ tự cơ sở ------------------------------------------------------
 
-// Từ ba cơ sở trở lên, "ai đi trước" không đủ: phải là một DÃY thứ tự đầy đủ,
-// vì biết Linh Đàm đầu tiên vẫn không nói lên Kim Giang hay Nhơn đi thứ hai.
+// Chỉ Linh Đàm và Kim Giang dùng chung dải số. Paris Nhơn có dải riêng nên
+// không nằm trong dãy (kế toán chốt 29/09/2026).
 assert.deepStrictEqual(Coordination.empty().tenantOrder,
-  ["parislinhdam", "pariskimgiang", "parisnhon"],
-  "Thứ tự mặc định: Linh Đàm → Kim Giang → Nhơn");
+  ["parislinhdam", "pariskimgiang"],
+  "Thứ tự mặc định: Linh Đàm → Kim Giang");
+assert.strictEqual(Coordination.sharesInvoiceRange("parislinhdam"), true);
+assert.strictEqual(Coordination.sharesInvoiceRange("pariskimgiang"), true);
+assert.strictEqual(Coordination.sharesInvoiceRange("parisnhon"), false, "Nhơn có dải số riêng");
 
-// Cơ sở đứng sau phải chờ TẤT CẢ cơ sở đứng trước, không chỉ một.
-assert.deepStrictEqual(Coordination.tenantsBefore(Coordination.empty(), "parisnhon"),
-  ["parislinhdam", "pariskimgiang"], "Nhơn phải chờ cả hai cơ sở trước");
+assert.deepStrictEqual(Coordination.tenantsBefore(Coordination.empty(), "pariskimgiang"),
+  ["parislinhdam"], "Kim Giang chờ Linh Đàm");
 assert.deepStrictEqual(Coordination.tenantsBefore(Coordination.empty(), "parislinhdam"), [],
   "Cơ sở đầu dãy không phải chờ ai");
 assert.deepStrictEqual(Coordination.tenantsAfter(Coordination.empty(), "parislinhdam"),
-  ["pariskimgiang", "parisnhon"]);
-assert.deepStrictEqual(Coordination.tenantsAfter(Coordination.empty(), "parisnhon"), [],
+  ["pariskimgiang"]);
+assert.deepStrictEqual(Coordination.tenantsAfter(Coordination.empty(), "pariskimgiang"), [],
   "Cơ sở cuối dãy không còn ai phía sau");
+assert.deepStrictEqual(Coordination.tenantsBefore(Coordination.empty(), "parisnhon"), [],
+  "Nhơn không phải chờ ai");
 
 // Đổi thứ tự: đưa một cơ sở lên đầu.
 const reordered = Coordination.setTenantOrder(Coordination.empty(),
-  ["parisnhon", "parislinhdam", "pariskimgiang"]);
-assert.deepStrictEqual(reordered.tenantOrder, ["parisnhon", "parislinhdam", "pariskimgiang"]);
-assert.deepStrictEqual(Coordination.tenantsBefore(reordered, "parisnhon"), [],
-  "Nhơn lên đầu thì không phải chờ ai");
+  ["pariskimgiang", "parislinhdam"]);
+assert.deepStrictEqual(reordered.tenantOrder, ["pariskimgiang", "parislinhdam"]);
+assert.deepStrictEqual(Coordination.tenantsBefore(reordered, "pariskimgiang"), [],
+  "Kim Giang lên đầu thì không phải chờ ai");
 
 // Dãy thiếu/thừa/lạ phải được vá lại chứ không làm vỡ điều phối.
-assert.deepStrictEqual(Coordination.normalizeOrder(["parisnhon"]),
-  ["parisnhon", "parislinhdam", "pariskimgiang"], "Cơ sở thiếu được bổ sung theo mặc định");
-assert.deepStrictEqual(Coordination.normalizeOrder(["parisnhon", "parisnhon", "ma-la"]),
-  ["parisnhon", "parislinhdam", "pariskimgiang"], "Bỏ trùng và bỏ mã lạ");
+assert.deepStrictEqual(Coordination.normalizeOrder(["pariskimgiang"]),
+  ["pariskimgiang", "parislinhdam"], "Cơ sở thiếu được bổ sung theo mặc định");
+assert.deepStrictEqual(Coordination.normalizeOrder(["pariskimgiang", "pariskimgiang", "ma-la"]),
+  ["pariskimgiang", "parislinhdam"], "Bỏ trùng và bỏ mã lạ");
 assert.deepStrictEqual(Coordination.normalizeOrder([]),
-  ["parislinhdam", "pariskimgiang", "parisnhon"], "Dãy rỗng quay về mặc định");
+  ["parislinhdam", "pariskimgiang"], "Dãy rỗng quay về mặc định");
 
 // Bản ghi cũ chỉ có firstTenant phải nâng cấp được, không mất thiết lập.
 assert.deepStrictEqual(Coordination.normalize({ firstTenant: "pariskimgiang" }).tenantOrder,
-  ["pariskimgiang", "parislinhdam", "parisnhon"],
+  ["pariskimgiang", "parislinhdam"],
   "firstTenant cũ được đưa lên đầu dãy mới");
+
+// Storage cũ (từ khi Nhơn còn trong dãy) phải được làm sạch: Nhơn đứng đầu
+// dãy cũ không được bắt Linh Đàm/Kim Giang chờ.
+const legacyWithNhon = Coordination.normalize({
+  tenantOrder: ["parisnhon", "parislinhdam", "pariskimgiang"],
+  statements: { parisnhon: { importedAt: "2026-07-03T00:00:00Z", days: { "2026-07-01": { count: 5 } } } },
+  cursors: { "2026-07-01": { parisnhon: { status: "running", count: 5 } } }
+});
+assert.deepStrictEqual(legacyWithNhon.tenantOrder, ["parislinhdam", "pariskimgiang"]);
+assert.strictEqual(legacyWithNhon.statements.parisnhon, undefined, "Bỏ sao kê đối chiếu của Nhơn");
+assert.deepStrictEqual(legacyWithNhon.cursors, {}, "Bỏ chốt tiến độ của Nhơn");
 
 // --- Bảng sao kê đối chiếu -------------------------------------------------
 
@@ -93,7 +108,7 @@ state = Coordination.recordStatement(state, "pariskimgiang", kgRows, "2026-07-03
 let view = Coordination.evaluate(state, "pariskimgiang", "2026-07-01");
 assert.strictEqual(view.goesFirst, false, "Kim Giang không phải cơ sở đi trước");
 assert.deepStrictEqual(view.pendingBefore, [], "Linh Đàm đã xong nên không còn ai phải chờ");
-assert.deepStrictEqual(view.nextTenants, ["parisnhon"], "Sau Kim Giang là Nhơn");
+assert.deepStrictEqual(view.nextTenants, [], "Kim Giang cuối dãy, không nhắc chuyển sang Nhơn");
 assert.deepStrictEqual(view.warnings.map(item => item.code), [],
   "Đúng thứ tự thì không cảnh báo gì");
 
@@ -113,30 +128,27 @@ assert.match(view.warnings.find(i => i.code === "other_should_go_first").text, /
   "Cảnh báo phải nêu số giao dịch cụ thể");
 assert.deepStrictEqual(view.pendingBefore, [{ tenant: "parislinhdam", count: 3 }]);
 
-// Cơ sở thứ BA phải chờ CẢ HAI cơ sở đứng trước. Đây là điểm mà mô hình hai cơ
-// sở cũ không diễn đạt được: chỉ kiểm "cơ sở kia" sẽ bỏ sót một bên và số hóa
-// đơn chèn vào giữa dải.
-let three = Coordination.recordStatement(Coordination.empty(), "parislinhdam", statementRows);
-three = Coordination.recordStatement(three, "pariskimgiang", kgRows);
-three = Coordination.recordStatement(three, "parisnhon", [
+// Nhơn có dải số riêng: không ghi sổ điều phối, không cảnh báo, không chờ ai —
+// kể cả khi Linh Đàm/Kim Giang còn việc hoặc có lô đứt dở cùng ngày.
+let withNhon = Coordination.recordStatement(Coordination.empty(), "parislinhdam", statementRows);
+withNhon = Coordination.recordStatement(withNhon, "pariskimgiang", kgRows);
+withNhon = Coordination.markCursor(withNhon, "parislinhdam", "2026-07-01", { status: "running", count: 1 });
+const nhonRecorded = Coordination.recordStatement(withNhon, "parisnhon", [
   { transactionDate: "2026-07-01", requestedAt: "2026-07-01 18:00", credit: 400000 }
 ]);
-view = Coordination.evaluate(three, "parisnhon", "2026-07-01");
-assert.deepStrictEqual(view.pendingBefore.map(item => item.tenant),
-  ["parislinhdam", "pariskimgiang"], "Nhơn phải chờ cả hai cơ sở trước");
-
-// Xong cơ sở đầu vẫn chưa đủ: còn cơ sở thứ hai.
-three = Coordination.markCursor(three, "parislinhdam", "2026-07-01", { status: "done", count: 3 });
-view = Coordination.evaluate(three, "parisnhon", "2026-07-01");
-assert.deepStrictEqual(view.pendingBefore.map(item => item.tenant), ["pariskimgiang"],
-  "Mới xong Linh Đàm thì Nhơn vẫn phải chờ Kim Giang");
-
-// Xong cả hai thì Nhơn chạy được, không còn cảnh báo thứ tự.
-three = Coordination.markCursor(three, "pariskimgiang", "2026-07-01", { status: "done", count: 2 });
-view = Coordination.evaluate(three, "parisnhon", "2026-07-01");
+assert.strictEqual(nhonRecorded.statements.parisnhon, undefined, "Sao kê Nhơn không vào bảng dùng chung");
+const nhonCursor = Coordination.markCursor(withNhon, "parisnhon", "2026-07-01", { status: "running", count: 1 });
+assert.strictEqual(nhonCursor.cursors["2026-07-01"].parisnhon, undefined, "Chốt của Nhơn không được ghi");
+view = Coordination.evaluate(withNhon, "parisnhon", "2026-07-01");
+assert.deepStrictEqual(view.warnings, [], "Nhơn không nhận cảnh báo chéo cơ sở");
 assert.deepStrictEqual(view.pendingBefore, []);
-assert(!view.warnings.some(item => item.code === "other_should_go_first"));
-assert.deepStrictEqual(view.nextTenants, [], "Nhơn cuối dãy nên không nhắc chuyển tiếp");
+assert.deepStrictEqual(view.nextTenants, []);
+
+// Ngược lại, lô dở của Nhơn (nếu có trong storage cũ) không làm phiền Kim Giang.
+const staleNhonRun = { ...withNhon, cursors: { "2026-07-01": { parisnhon: { status: "running", count: 2 } } } };
+view = Coordination.evaluate(staleNhonRun, "pariskimgiang", "2026-07-01");
+assert(!view.warnings.some(item => item.code === "other_interrupted"),
+  "Lô dở của Nhơn không phải việc của Kim Giang");
 
 // 2. Chưa import sao kê cơ sở kia — khác hẳn với "họ không có việc".
 const noStatement = Coordination.recordStatement(Coordination.empty(), "pariskimgiang", kgRows);
@@ -199,10 +211,10 @@ assert.strictEqual(broken.to, 126);
 const restored = Coordination.normalize(JSON.parse(JSON.stringify(state)));
 assert.deepStrictEqual(restored.tenantOrder, state.tenantOrder, "Vòng lưu/đọc không đổi thứ tự");
 assert.deepStrictEqual(Coordination.normalize(null).tenantOrder,
-  ["parislinhdam", "pariskimgiang", "parisnhon"],
+  ["parislinhdam", "pariskimgiang"],
   "Dữ liệu rỗng vẫn ra trạng thái dùng được");
 assert.deepStrictEqual(Coordination.normalize({ tenantOrder: "hỏng", cursors: "hỏng" }).tenantOrder,
-  ["parislinhdam", "pariskimgiang", "parisnhon"], "Dữ liệu sai kiểu không làm vỡ");
+  ["parislinhdam", "pariskimgiang"], "Dữ liệu sai kiểu không làm vỡ");
 
 // --- Đấu nối vào extension -------------------------------------------------
 

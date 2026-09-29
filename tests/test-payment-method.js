@@ -70,4 +70,35 @@ assert.throws(() => check({ PHUONGTHUCTT: "TM/CK" }, { expectsPaymentMethod: tru
 // Payload của website không bị chặn.
 assert.strictEqual(check({ PHUONGTHUCTT: "TM" }, {}, "TM/CK"), "ok");
 
+// CK/TM từ danh sách số tiền áp dụng cho MỌI cơ sở (kế toán chốt 29/09/2026);
+// giao dịch sao kê ngân hàng không mang phương thức nên vẫn ra TM/CK.
+const methodStart = source.indexOf("function invoiceCreationPaymentMethod(expected)");
+let methodEnd = -1;
+for (let index = source.indexOf("{", methodStart), depth = 0; index < source.length; index += 1) {
+  if (source[index] === "{") depth += 1;
+  if (source[index] === "}") depth -= 1;
+  if (depth === 0) { methodEnd = index + 1; break; }
+}
+const invoiceCreationPaymentMethod = new Function(
+  "INVOICE_PAYMENT_METHOD", "CREATION_PAYMENT_METHODS", "location",
+  `${source.slice(methodStart, methodEnd)}; return invoiceCreationPaymentMethod;`
+)("TM/CK", new Set(["CK", "TM", "TM/CK"]), { pathname: "/pariskimgiang/BanHang" });
+for (const tenantSlug of ["pariskimgiang", "parislinhdam", "parisnhon"]) {
+  assert.strictEqual(invoiceCreationPaymentMethod({ paymentMethod: "CK", tenantSlug }), "CK",
+    `${tenantSlug} phải được lập phiếu CK`);
+  assert.strictEqual(invoiceCreationPaymentMethod({ paymentMethod: "tm", tenantSlug }), "TM",
+    `${tenantSlug} phải được lập phiếu TM`);
+  assert.strictEqual(invoiceCreationPaymentMethod({ tenantSlug }), "TM/CK",
+    `${tenantSlug}: giao dịch sao kê không có phương thức vẫn ra TM/CK`);
+}
+assert.throws(() => invoiceCreationPaymentMethod({ paymentMethod: "THE" }), /khong hop le/,
+  "Phương thức lạ vẫn bị chặn");
+
+const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+assert(!/Danh sách số tiền hiện chỉ dùng cho Paris Nhơn/.test(contentSource),
+  "Nhập danh sách số tiền CK/TM không còn giới hạn ở Nhơn");
+assert(!/pageTenantSlug === "parisnhon"[^\n]*it-import-invoice-amount/.test(contentSource) &&
+  !/amountImportControls = pageTenantSlug === "parisnhon"/.test(contentSource),
+  "Nút nhập danh sách số tiền phải hiện ở mọi cơ sở");
+
 console.log("Phương thức thanh toán TM/CK: OK");
