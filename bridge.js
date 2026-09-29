@@ -2067,6 +2067,9 @@
   }
   const DEFAULT_INVOICE_BUYER = "Kh\u00e1ch l\u1ebb - Kh\u00f4ng l\u1ea5y h\u00f3a \u0111\u01a1n";
   const DEFAULT_INVOICE_ADDRESS = "Kh\u00e1ch kh\u00f4ng cung c\u1ea5p th\u00f4ng tin";
+  // Tiền tố lỗi tạo phiếu mới khi request CHƯA được gửi. content.js dựa vào nó
+  // để biết có được gỡ dấu "đang tạo phiếu" hay không; phải giữ khớp hai bên.
+  const NEW_INVOICE_NOT_SENT_TAG = "[chua-gui-api] ";
   const SALES_TABLE_ID = "d56b4b85-68c8-44c1-947d-9f3899e55a7c";
   const PRODUCT_GRID_TABLE_ID = "c07a4b54-e177-40d9-b077-c140fd4641d9";
   const PRODUCT_CATALOG_MENU_ID = "c4059f67-16f0-4088-a639-9bdf906585de";
@@ -2980,7 +2983,7 @@
     return { body, responseText, endpoint: new URL(endpoint).pathname, httpStatus: response.status };
   }
 
-  async function createAndPayFreshInvoiceViaApiLegacy(expected) {
+  async function createAndPayFreshInvoiceViaApiLegacy(expected, progress = {}) {
     const formData = currentFormData({ allowBlankRecordId: true });
     const paymentMethod = invoiceCreationPaymentMethod(expected);
     if (isGuid(formDataRecordId(formData))) {
@@ -3065,11 +3068,16 @@
       ID: "",
       Loai: 0
     };
+    // Từ đây request đã rời trình duyệt: server có thể đã tạo phiếu dù phía
+    // này nhận lỗi, nên lỗi phía sau KHÔNG được coi là an toàn để tạo lại.
+    progress.sessionSent = true;
     const session = await postDoSavePayload(sessionPayload);
     const sessionTag = session.body.Tag || {};
     if (!isGuid(sessionTag.LASTSAVEID) || !String(sessionTag.NAME || "").trim()) {
       throw new Error("Luu phien thanh cong nhung thieu NAME hoac LASTSAVEID.");
     }
+    progress.sessionInvoiceNo = String(sessionTag.NAME);
+    progress.sessionRecordId = String(sessionTag.ID || "");
     const paymentRows = finalPaymentDetailRows(sessionRows, sessionTag.detail, warehouseId, taxRate, invoiceDateKey);
     const paymentPayload = {
       mode: 2,
@@ -3128,7 +3136,25 @@
   // the accepted bank-statement day. GioClient controls the generated invoice
   // number/audit time; NGAY is persisted again while paying the created ID.
   async function createAndPayFreshInvoiceViaApi(expected) {
-    const result = await createAndPayFreshInvoiceViaApiLegacy(expected);
+    const progress = { sessionSent: false, sessionInvoiceNo: "", sessionRecordId: "" };
+    let result;
+    try {
+      result = await createAndPayFreshInvoiceViaApiLegacy(expected, progress);
+    } catch (error) {
+      const message = String(error?.message || error || "Khong ro loi.");
+      // Lỗi trước khi gửi request: chắc chắn chưa có gì trên server, content
+      // được phép gỡ dấu "đang tạo" để thử lại.
+      if (!progress.sessionSent) throw new Error(`${NEW_INVOICE_NOT_SENT_TAG}${message}`);
+      // Phiên mode=0 đã được cấp số nhưng bước thanh toán hỏng: phải nêu đúng
+      // số phiếu để người dùng xử lý trên website thay vì tạo thêm phiếu khác.
+      if (progress.sessionInvoiceNo) {
+        throw new Error(
+          `Da tao phien ${progress.sessionInvoiceNo} (ID ${progress.sessionRecordId || "khong ro"}) ` +
+          `nhung buoc thanh toan loi: ${message}`
+        );
+      }
+      throw error;
+    }
     return {
       ...result,
       invoiceDateKey: normalizeDateKey(expected?.invoiceDateKey),

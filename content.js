@@ -754,6 +754,33 @@
     return { opened: false, roomName: "", diagnostics };
   }
 
+  // Phải khớp NEW_INVOICE_NOT_SENT_TAG trong bridge.js.
+  const NEW_INVOICE_NOT_SENT_TAG = "[chua-gui-api] ";
+
+  // Một lần tạo phiếu mới đã từng gửi API mà chưa ghi nhận được kết quả thì
+  // server có thể đã cấp số. Tạo lại lúc đó là sinh phiếu trùng, nên chặn cho
+  // tới khi người dùng kiểm tra website rồi bấm "Đặt lại" giao dịch.
+  function newInvoiceAttemptBlockReason(transaction) {
+    if (!transaction?.newInvoiceCreateStartedAt) return "";
+    const detail = transaction.newInvoiceCreateError ? ` Lỗi lần trước: ${transaction.newInvoiceCreateError}` : "";
+    return `Giao dịch ${transaction.transactionDate || ""} · ${formatMoney(transaction.credit)}đ đã có lần gửi API tạo phiếu ` +
+      `lúc ${transaction.newInvoiceCreateStartedAt} mà chưa đối soát xong.${detail} ` +
+      "Không tạo lại để tránh trùng phiếu. Hãy kiểm tra danh sách Bán hàng ngày đó: có phiếu rồi thì Đặt lại giao dịch " +
+      "và Tạo Batch Review để gắn đúng phiếu; chưa có thì Đặt lại giao dịch rồi chạy lại.";
+  }
+
+  // Tab worker báo lỗi về tab gốc qua storage; tab gốc so thời điểm để không
+  // đọc nhầm lỗi của lần chạy trước.
+  async function reportNewInvoiceWorkerError(transaction, message) {
+    if (!transaction) return;
+    transaction.newInvoiceWorkerError = { message: String(message || "Không rõ lỗi."), at: new Date().toISOString() };
+    try {
+      await InvoiceMappingStore.saveStatement(statementDataset);
+    } catch (error) {
+      console.error("[InvoiceTarget] Không ghi được lỗi tab worker", error);
+    }
+  }
+
   async function applyPendingNewInvoicePlan(transaction) {
     const plan = pendingNewInvoice?.plan || transaction?.batchApprovedPlan;
     if (!transaction || !plan?.requiresNewInvoice || !Array.isArray(plan.items) || !plan.items.length) return false;
@@ -786,38 +813,54 @@
     // không ghi nhận, người dùng lại bấm tạo và sinh phiếu trùng. Phải chặn
     // TRƯỚC khi gửi API.
     assertRuntimeContext();
+    // Đọc bản sao kê MỚI NHẤT trong storage, không tin bản trong bộ nhớ: lần
+    // thử trước có thể do một tab khác ghi.
+    const storedStatement = await InvoiceMappingStore.loadStatement();
+    const storedTransaction = (storedStatement.transactions || [])
+      .find(item => String(item.id) === String(transaction.id));
+    const blockReason = newInvoiceAttemptBlockReason(storedTransaction) || newInvoiceAttemptBlockReason(transaction);
+    if (blockReason) throw new Error(blockReason);
+    // Ghi dấu TRƯỚC khi gửi API. Nếu tab bị đóng hoặc crash giữa chừng, dấu
+    // này là thứ duy nhất ngăn lần chạy sau tạo thêm một phiếu nữa.
+    transaction.newInvoiceCreateStartedAt = new Date().toISOString();
+    delete transaction.newInvoiceCreateError;
+    await InvoiceMappingStore.saveStatement(statementDataset);
     // Always trace extension-generated DoSave calls. This is independent from
     // the manual "Bắt API" button and captures both success and failure.
     await request("armApiTrace");
     let apiSaved;
     try {
       apiSaved = await request("createAndPayFreshInvoiceViaApi", apiExpected);
+      if (!apiSaved?.saved || !apiSaved?.savedRecordId || !apiSaved?.invoiceNo) {
+        throw new Error("Website chua xac nhan du hai buoc tao phien va thanh toan.");
+      }
     } catch (error) {
+      const rawMessage = String(error?.message || error || "Không rõ lỗi.");
+      const notSent = rawMessage.startsWith(NEW_INVOICE_NOT_SENT_TAG);
+      const message = notSent ? rawMessage.slice(NEW_INVOICE_NOT_SENT_TAG.length) : rawMessage;
+      if (notSent) {
+        // Chưa có request nào rời trình duyệt: an toàn để thử lại.
+        delete transaction.newInvoiceCreateStartedAt;
+      } else {
+        transaction.newInvoiceCreateError = message;
+        transaction.blockedNote = newInvoiceAttemptBlockReason(transaction);
+        transaction.blockedAt = new Date().toISOString();
+      }
+      try {
+        await InvoiceMappingStore.saveStatement(statementDataset);
+      } catch (saveError) {
+        console.error("[InvoiceTarget] Không ghi được kết quả lỗi tạo phiếu", saveError);
+      }
       try {
         await persistGeneratedInvoiceApiDebugLog({
           expected: apiExpected,
           outcome: "error",
-          error: error.message
+          error: message
         });
       } catch (logError) {
         console.error("[InvoiceTarget] Không thể xuất API debug log", logError);
       }
-      throw error;
-    }
-    // API đã thành công: từ đây lỗi ghi/tải log KHÔNG được làm mất kết quả lưu.
-    // Trước đây hai việc nằm chung một try, nên hủy hộp thoại lưu file là phiếu
-    // đã có trên website mà giao dịch vẫn ở trạng thái chưa tạo.
-    try {
-      await persistGeneratedInvoiceApiDebugLog({
-        expected: apiExpected,
-        outcome: "success",
-        result: apiSaved
-      });
-    } catch (logError) {
-      console.error("[InvoiceTarget] Không thể xuất API debug log sau khi lưu thành công", logError);
-    }
-    if (!apiSaved?.saved || !apiSaved?.savedRecordId || !apiSaved?.invoiceNo) {
-      throw new Error("Website chua xac nhan du hai buoc tao phien va thanh toan.");
+      throw new Error(notSent ? message : transaction.blockedNote);
     }
     const apiCompletedAt = new Date().toISOString();
     transaction.invoiceNo = apiSaved.invoiceNo;
@@ -839,10 +882,23 @@
     pendingNewInvoice.appliedAt = apiCompletedAt;
     pendingNewInvoice.savedAt = apiCompletedAt;
     pendingNewInvoice.savedRecordId = apiSaved.savedRecordId;
+    // Ghi kết quả NGAY sau khi API xác nhận, trước mọi việc phụ như ghi/tải log:
+    // khoảng hở giữa "server đã cấp số" và "extension đã ghi nhận" phải ngắn
+    // nhất có thể, vì trong khoảng đó tab bị đóng là mất dấu phiếu.
     await InvoiceMappingStore.saveStatement(statementDataset);
     syncBatchPlanTransaction(transaction);
     await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: structuredClone(pendingNewInvoice) });
     renderBatchPlans();
+    // Lỗi ghi/tải log KHÔNG được làm mất kết quả lưu đã ghi ở trên.
+    try {
+      await persistGeneratedInvoiceApiDebugLog({
+        expected: apiExpected,
+        outcome: "success",
+        result: apiSaved
+      });
+    } catch (logError) {
+      console.error("[InvoiceTarget] Không thể xuất API debug log sau khi lưu thành công", logError);
+    }
 
     // Worker tab only performs the official create/payment request. The
     // original Batch Review tab already has the invoice-list grid, so it will
@@ -1007,7 +1063,21 @@
         if (pendingNewInvoice.savedAt) return;
         if (pendingApplyError) {
           setStatus(`Đã mở form nhưng chưa áp dụng được phương án Batch Review: ${pendingApplyError}`, "error");
+          await reportNewInvoiceWorkerError(transaction, pendingApplyError);
           return;
+        }
+        // Mọi đường còn lại ở đây đều không tạo được phiếu. Báo ngay để tab gốc
+        // dừng lô thay vì chờ hết 90 giây.
+        if (!opened.opened) {
+          await reportNewInvoiceWorkerError(
+            transaction,
+            "Không tìm thấy phòng rảnh để mở form. " + roomSearchDiagnosticsText(opened.diagnostics)
+          );
+        } else if (!opened.roomName) {
+          await reportNewInvoiceWorkerError(
+            transaction,
+            "Tab Bán hàng đang có sẵn một form mở nên extension không áp dụng phương án. Hãy đóng form đó rồi chạy lại."
+          );
         }
         setStatus(
           opened.opened
@@ -1017,11 +1087,11 @@
           opened.opened ? "ok" : "error"
         );
       } else if (isSalesWorkspacePage() && pendingNewInvoice.formAutoOpenedAt) {
-        setStatus(
+        const reopenMessage =
           `Phiên này đã mở form phòng ${pendingNewInvoice.roomName || "rảnh"} trước đó. ` +
-          "Extension không tự mở lại sau khi bạn thoát hoặc tải lại trang.",
-          "warn"
-        );
+          "Extension không tự mở lại sau khi bạn thoát hoặc tải lại trang.";
+        setStatus(reopenMessage, "warn");
+        await reportNewInvoiceWorkerError(transaction, reopenMessage);
       }
     } else {
       const resume = stored.autoResume;
@@ -4318,6 +4388,10 @@
     transaction.ledgerId = "";
     transaction.apiSavedAt = "";
     transaction.apiSavedRecordId = "";
+    // Người dùng đã tự kiểm tra website nên gỡ dấu chặn tạo phiếu trùng.
+    delete transaction.newInvoiceCreateStartedAt;
+    delete transaction.newInvoiceCreateError;
+    delete transaction.newInvoiceWorkerError;
     delete transaction.newInvoiceRoomName;
     delete transaction.newInvoiceRoomId;
     delete transaction.newInvoiceCheckIn;
@@ -4720,6 +4794,11 @@
       transaction.reconciledNote = "";
       transaction.apiSavedAt = "";
       transaction.apiSavedRecordId = "";
+      // Phiếu cũ đã đối soát nên kết quả lần tạo trước là chắc chắn: gỡ dấu chặn
+      // để lần chạy lại được phép tạo phiếu mới nếu cần.
+      delete transaction.newInvoiceCreateStartedAt;
+      delete transaction.newInvoiceCreateError;
+      delete transaction.newInvoiceWorkerError;
       transaction.pendingPlan = null;
       delete transaction.batchApprovedPlan;
       delete transaction.batchApprovedAt;
@@ -7924,6 +8003,10 @@
       throw new Error("Dong phieu moi chua o trang thai Da Accept.");
     }
     const transactionId = String(entry.transactionId || "");
+    const blockReason = newInvoiceAttemptBlockReason(findStatementTransaction(transactionId));
+    if (blockReason) throw new Error(blockReason);
+    // Chỉ tính lỗi worker ghi SAU mốc này; lỗi của lần chạy trước bị bỏ qua.
+    const workerStartedAt = new Date().toISOString();
     const opened = await openPosForNewInvoice({ target: { dataset: { index: String(index) } } });
     if (!opened?.opened) throw new Error(opened?.error || "Khong mo duoc tab worker tao phieu moi.");
 
@@ -7991,10 +8074,20 @@
           workerTabId: opened.tabId
         };
       }
-      if (latestTransaction?.status === "error") {
-        throw new Error(latestTransaction.blockedNote || "Tab worker bao loi khi tao phieu moi.");
+      const workerError = latestTransaction?.newInvoiceWorkerError;
+      if (workerError?.at && workerError.at >= workerStartedAt) {
+        statementDataset = latestStatement;
+        throw new Error(`Tab tạo phiếu mới báo lỗi: ${workerError.message}`);
+      }
+      // Worker hủy phương án không còn hợp lệ và đưa giao dịch về Chờ xử lý.
+      if (latestTransaction?.status === "pending") {
+        statementDataset = latestStatement;
+        throw new Error(latestTransaction.blockedNote || "Tab tạo phiếu mới đã hủy phương án; cần tính lại Batch Review.");
       }
     }
+    // Nhận bản sao kê worker đã ghi (dấu "đang tạo phiếu", ghi chú lỗi); nếu giữ
+    // bản cũ trong bộ nhớ thì lần ghi kế tiếp của tab này sẽ xóa mất dấu đó.
+    statementDataset = await InvoiceMappingStore.loadStatement();
     throw new Error(
       "Tab tao phieu moi chua hoan tat sau 90 giay. Tab duoc giu lai de kiem tra; khong chay lai API neu phieu da duoc luu."
     );

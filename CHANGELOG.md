@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.28.5 (2026-09-28)
+
+- **Chống tạo trùng phiếu mới.** Tab worker ghi dấu `newInvoiceCreateStartedAt` vào sao kê TRƯỚC khi gửi API tạo phiếu. Khi lần gửi trước chưa có kết quả chắc chắn (tab bị đóng hoặc crash giữa chừng, request hết giờ, website trả lỗi sau khi đã nhận request), mọi lần chạy lại đều bị chặn với hướng dẫn: kiểm tra danh sách Bán hàng ngày đó rồi bấm **Đặt lại** giao dịch. Trước đây giao dịch vẫn ở `batch_ready` nên bấm Lưu API lần nữa sẽ tạo thêm một phiếu.
+- API tạo phiếu thành công thì kết quả được ghi vào sao kê **ngay lập tức**, trước bước ghi/tải log debug, để khoảng hở giữa "server đã cấp số" và "extension đã ghi nhận" ngắn nhất có thể.
+- Bridge đánh dấu lỗi xảy ra trước khi request rời trình duyệt (`[chua-gui-api]`). Chỉ những lỗi này mới được gỡ dấu để thử lại ngay.
+- Phiên mode=0 đã được cấp số mà bước thanh toán mode=2 lỗi: thông báo nêu rõ số phiếu và ID phiên tạo dở để xử lý trên website.
+- **Tab gốc dừng ngay khi tab worker lỗi.** Worker ghi `newInvoiceWorkerError` (không có phòng rảnh, không áp được phương án, form đã mở từ trước, phương án bị hủy) và tab gốc dừng lô với đúng lý do. Trước đây tab gốc chờ tín hiệu `status === "error"` mà không nơi nào ghi, nên luôn chờ đủ 90 giây. Khi hết giờ, tab gốc nạp lại sao kê mới nhất để không ghi đè dấu worker vừa ghi.
+- **Đặt lại** giao dịch và **Hoàn kho theo khoảng ngày** gỡ các dấu trên.
+
 ## 1.28.4 (2026-09-28)
 
 - **Phiếu ĐÃ CÓ SẴN nay cũng phải đạt sàn 30 phút.** Trước đây nền Tiền giờ của phiếu có sẵn là chính Tiền giờ cũ trên form, nên phiếu đang ghi 52.000đ cho sàn ~41.600đ và mọi tổ hợp hàng tới 415.000đ đều hợp lệ — ca thật Nhơn 21/07/2026 ra 3-14 phút hát (sao kê 500.500đ–607.200đ). Nay nền không thấp hơn mốc phút, phần nới 20% không kéo sàn xuống dưới mốc, và có cổng chặn cuối so theo số phút. Các ca đó nay ra 30-32 phút. Tăng mốc công thức lên `website-inclusive-vat-4` để phương án cũ tự hủy.
