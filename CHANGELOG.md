@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.28.7 (2026-09-29)
+
+- Thêm quyền `unlimitedStorage`: sổ đối soát và sổ phát hành chỉ tăng, trong khi `chrome.storage.local` mặc định giới hạn khoảng 10 MB cho cả ba cơ sở. Đầy bộ nhớ có thể làm hỏng đúng bước ghi kết quả sau khi phiếu đã được tạo.
+- Sửa thông báo còn ghi cứng "trần 35%" (ở lý do loại phương án và bảng kiểm tra phương án): nay đọc thẳng từ `MAX_HOUR_PRETAX_RATIO` (hiện 45%).
+- Sửa 20 comment còn ghi "sàn Nhơn 15 phút" / "trần 35%" cho khớp luật hiện hành; số liệu lịch sử được ghi rõ là của luật cũ. Ngưỡng phiếu nhỏ của Nhơn trong comment sửa thành 275.000đ / 385.000đ / 495.000đ (phòng 400k/600k/800k).
+- Gỡ luồng cũ không còn được gọi trong `bridge.js`: năm lệnh điều phối (`apply`, `applyInvoiceTimes`, `applyInvoiceTotals`, `normalizePaymentDialog`, `saveCurrentInvoiceViaApi`) và bảy hàm của luồng "bấm nút Lưu của website để khởi tạo phiếu mới", đã được thay bằng API tạo phiếu hai bước. Chốt chặn thanh toán khi người dùng tự bấm Lưu vẫn giữ nguyên.
+- Đổi tên `createAndPayFreshInvoiceViaApiLegacy` thành `postFreshInvoiceTwoStep` — đây là hàm tạo phiếu duy nhất đang chạy, không phải bản cũ.
+- Cập nhật README và `docs/BATCH_REVIEW.md` theo luồng hiện tại: extension tự lưu phiếu bằng API rồi đối soát, file hạch toán là `.xlsx`, cách chọn phiếu ưu tiên giờ vào/ra khớp ngày sao kê.
+
 ## 1.28.6 (2026-09-29)
 
 - **Danh sách số tiền CK/TM dùng được ở mọi cơ sở** (kế toán chốt 29/09/2026). Nút nhập danh sách số tiền hiện ở cả Kim Giang và Linh Đàm, và bridge không còn chặn phương thức `CK`/`TM` ngoài Paris Nhơn. Giao dịch từ sao kê ngân hàng vẫn ghi `TM/CK` như cũ.

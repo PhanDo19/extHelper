@@ -589,7 +589,7 @@
         (plan.items.length !== 1 || Math.round(Number(plan.items[0]?.qty) || 0) !== SMALL_INVOICE_BEER_QTY)) {
       return `Phương án dưới ${formatMoney(SMALL_INVOICE_BEER_LIMIT)}đ phải có đúng một mã với số lượng ${SMALL_INVOICE_BEER_QTY}.`;
     }
-    // Sàn phút danh nghĩa phải kẹp theo trần 35% tổng trước VAT giống lúc lập
+    // Sàn phút danh nghĩa phải kẹp theo trần MAX_HOUR_PRETAX_RATIO giống lúc lập
     // phương án. Nếu giữ nguyên mốc 30/50 phút ở đây thì phương án hợp lệ vừa
     // tính xong (Tiền giờ đã bị kẹp về trần) lại bị chính hàm này loại ngay,
     // và giao dịch quay về trạng thái Lỗi dù solver đã khớp tuyệt đối.
@@ -621,7 +621,7 @@
       plan.requiresNewInvoice && grand >= PARIS_NHON_LARGE_INVOICE_THRESHOLD
       ? PARIS_NHON_LARGE_INVOICE_MIN_HOUR
       : nominalMinimumHour;
-    // Giống hourPlanningBounds: mốc phút bị kẹp xuống bằng trần 35% thì bỏ hẳn
+    // Giống hourPlanningBounds: mốc phút bị kẹp xuống bằng trần tỷ lệ thì bỏ hẳn
     // sàn, vì sàn = trần chỉ cho đúng một giá trị Tiền giờ hợp lệ.
     const minimumHour = plan.specialRule === "under-500k-two-beers" || (hourCap > 0 && tenantMinimumHour >= hourCap)
       ? 0
@@ -5530,7 +5530,7 @@
   const MAX_HOUR_TO_GOODS_RATIO = 2;
   // Keep the singing charge close to its time-based baseline. A larger
   // residual is allowed only while the final singing charge remains at most
-  // 35% of the invoice total before VAT.
+  // MAX_HOUR_PRETAX_RATIO of the invoice total before VAT.
   // Bước giá thấp nhất của lưới giá mặt hàng. Tiền hàng luôn là tổng các mức giá
   // này nên hiếm khi rơi đúng vào mức tối thiểu mà một ràng buộc tỷ lệ đòi hỏi;
   // dùng làm dung sai cho các phép so tỷ lệ ở cổng kiểm tra cuối.
@@ -5550,7 +5550,7 @@
   // sẽ được dùng lại nguyên vẹn và bấm "Tính toán lại" cũng không đổi gì — nhánh
   // batch_ready ở buildBatchReview trả thẳng batchApprovedPlan rồi continue.
   //
-  // v3 (23/09/2026): sàn giờ hát Nhơn 30 -> 15 phút; ngưỡng phiếu nhỏ suy theo
+  // v3 (23/09/2026): sàn giờ hát Nhơn 30 -> 15 phút (sau đó đưa lại 30 phút); ngưỡng phiếu nhỏ suy theo
   // đơn giá phòng thay vì cố định 300.000đ; chọn món phải chừa đủ cho sàn; chọn
   // phòng ưu tiên đạt sàn. Mọi phương án lập trước đó đều theo công thức cũ.
   // v4 (28/09/2026): phiếu ĐÃ CÓ SẴN nay cũng phải đạt sàn phút (trước đây nền
@@ -5595,11 +5595,11 @@
       : DEFAULT_MIN_SINGING_MINUTES;
   }
 
-  // Ngưỡng "phiếu quá nhỏ": phần trước VAT không đủ cho sàn 15 phút CỘNG một
+  // Ngưỡng "phiếu quá nhỏ": phần trước VAT không đủ cho sàn phút CỘNG một
   // món rẻ nhất. Dưới mức đó thì đúng 1 bia, toàn bộ phần còn lại là Tiền giờ.
   //
-  // Ngưỡng phải tính theo ĐƠN GIÁ PHÒNG chứ không cố định: 15 phút ở phòng 400k
-  // là 100.000đ nhưng ở phòng 800k là 200.000đ, nên một mốc cứng sẽ hoặc chặn
+  // Ngưỡng phải tính theo ĐƠN GIÁ PHÒNG chứ không cố định: 30 phút ở phòng 400k
+  // là 200.000đ nhưng ở phòng 800k là 400.000đ, nên một mốc cứng sẽ hoặc chặn
   // oan phòng rẻ hoặc bỏ lọt phòng đắt.
   function smallInvoiceGrandLimit(hourlyRate, itemPrice = SMALL_INVOICE_ITEM_MAX_PRICE) {
     const rate = Math.max(1000, Math.round(Number(hourlyRate) || DEFAULT_HOURLY_RATE));
@@ -5683,13 +5683,13 @@
     const step = Math.max(1, Math.round(Number(hourPricing?.hourStep) || 1));
     const isNewInvoice = Boolean(scan?.newInvoicePlanning);
     const bankGrand = Math.max(0, Math.round(Number(statementGrand) || Number(scan?.statementGrand) || 0));
-    // Sàn phút: 50 phút cho sao kê trên 1 triệu; còn lại theo cơ sở (Nhơn 15
-    // phút từ 23/09/2026, các cơ sở khác 30 phút). Xem minimumSingingMinutes.
+    // Sàn phút: 50 phút cho sao kê trên 1 triệu; còn lại 30 phút ở mọi cơ sở.
+    // Xem minimumSingingMinutes.
     const minimumMinutes = minimumSingingMinutes(bankGrand);
     const minuteBaseHour = Math.max(step, Math.round(Number(hourPricing?.hourlyRate || DEFAULT_HOURLY_RATE) * minimumMinutes / 60));
-    // Sàn theo phút và trần 35% tổng trước VAT mâu thuẫn nhau ở hóa đơn nhỏ:
-    // mốc 30 phút (300.000đ) chỉ nằm dưới trần khi tổng trước VAT ≥ 857.143đ, và
-    // mốc 50 phút (500.000đ) cần ≥ 1.428.572đ. Trong khoảng dưới các ngưỡng đó
+    // Sàn theo phút và trần tỷ lệ Tiền giờ mâu thuẫn nhau ở hóa đơn nhỏ. Với trần
+    // 35% cũ: mốc 30 phút (300.000đ) chỉ nằm dưới trần khi tổng trước VAT
+    // ≥ 857.143đ, và mốc 50 phút (500.000đ) cần ≥ 1.428.572đ. Trong khoảng dưới các ngưỡng đó
     // solver không còn giá trị Tiền giờ nào hợp lệ nên phương án rơi về 0.
     // Trần cơ cấu là ràng buộc hình dạng hóa đơn nên phải giữ; sàn phút chỉ là
     // điểm neo khởi tạo nên được phép co lại theo trần.
@@ -5697,7 +5697,7 @@
     const preTaxCap = preTax > 0 ? Math.max(step, Math.floor(preTax * MAX_HOUR_PRETAX_RATIO)) : 0;
     // Phiếu đã có sẵn lấy Tiền giờ đang nằm trên form làm nền. Giá trị đó thuộc
     // hóa đơn cũ và thường lớn hơn nhiều so với tổng sao kê đang khớp (ví dụ
-    // nền 600.000đ cho hóa đơn 560.000đ), nên cũng phải kẹp theo trần 35% giống
+    // nền 600.000đ cho hóa đơn 560.000đ), nên cũng phải kẹp theo trần tỷ lệ giống
     // phiếu mới — nếu không nền đã vượt trần ngay từ đầu và mọi tổ hợp đều vỡ
     // cả hai điều kiện của cổng kiểm tra cuối.
     const currentHour = Math.max(0, Math.round(Number(scan?.currentHour) || 0));
@@ -5721,13 +5721,13 @@
     const nominalBaseHour = isNewInvoice || currentHour <= 0
       ? Math.max(minuteBaseHour, tenantMinimumHour)
       : Math.max(currentHour, minuteBaseHour);
-    // Sàn thời lượng là LUẬT NGHIỆP VỤ, trần 35% chỉ là quy ước cơ cấu, nên khi
+    // Sàn thời lượng là LUẬT NGHIỆP VỤ, trần tỷ lệ chỉ là quy ước cơ cấu, nên khi
     // hai thứ mâu thuẫn thì sàn thắng và trần được nới vừa đủ.
     //
     // Kế toán chốt 18/09/2026: mọi hóa đơn phải có tối thiểu 30 phút hát. Với
-    // phiếu nhỏ, 30 phút chiếm tới 37-51% tổng trước VAT nên luôn vượt trần 35%
-    // (sao kê 486.200đ từng ra đúng 1 phút hát). Từ khoảng 628.000đ trở lên thì
-    // 35% đã đủ cho 30 phút nên trần giữ nguyên như cũ.
+    // phiếu nhỏ, 30 phút chiếm tới 37-51% tổng trước VAT nên từng vượt trần khi
+    // trần còn 35% (sao kê 486.200đ từng ra đúng 1 phút hát). Phiếu đủ lớn thì
+    // trần đã chứa được 30 phút nên giữ nguyên.
     //
     // Phần trước VAT quá nhỏ để đủ 30 phút (ví dụ 143.000đ) thì lấy tối đa có
     // thể: chừa đúng một món rẻ rồi dồn hết phần còn lại vào Tiền giờ.
@@ -6008,7 +6008,7 @@
     // nhất để còn được nhiều Tiền giờ nhất có thể.
     //
     // Mốc phải là sàn THẬT theo đơn giá phòng, không phải hằng số 30.000đ (3
-    // phút) của luật cũ: với sàn 15 phút ở Nhơn, sao kê 143.000đ chọn nhầm món
+    // phút) của luật cũ. Ví dụ từ thời sàn Nhơn còn 15 phút: sao kê 143.000đ chọn nhầm món
     // 50.000đ sẽ chỉ còn 80.000đ Tiền giờ = 12 phút, dưới sàn, trong khi món
     // 25.000đ để lại 105.000đ = 16 phút.
     const preTax = Math.max(0, Math.round(Number(preTaxTarget) || 0));
@@ -6219,9 +6219,9 @@
     const targetGrand = requestedGrand > 0 ? requestedGrand : statementGrand;
     const grandDifference = targetGrand - statementGrand;
     // Ngưỡng "phiếu quá nhỏ". Ở Nhơn nó tính theo ĐƠN GIÁ PHÒNG: phần trước VAT
-    // không đủ cho sàn 15 phút cộng một món rẻ nhất thì đi nhánh riêng — đúng 1
+    // không đủ cho sàn 30 phút cộng một món rẻ nhất thì đi nhánh riêng — đúng 1
     // bia, toàn bộ phần còn lại là Tiền giờ (kế toán chốt 23/09/2026). Phòng
-    // 400k ra ~165.000đ, 600k ~220.000đ, 800k ~275.000đ. Các cơ sở khác giữ mốc
+    // 400k ra 275.000đ, 600k 385.000đ, 800k 495.000đ. Các cơ sở khác giữ mốc
     // cố định 300.000đ như cũ.
     const isParisNhon = (typeof pageTenantSlug === "string" ? pageTenantSlug : "") === PARIS_NHON_TENANT_SLUG;
     const smallInvoiceLimit = isParisNhon
@@ -6231,9 +6231,9 @@
             : (inferHourPricing(scan)?.hourlyRate || DEFAULT_HOURLY_RATE)
         )
       : SMALL_INVOICE_BEER_LIMIT;
-    // Ngưỡng của Nhơn là ĐIỂM HÒA VỐN suy ra từ sàn 15 phút cộng một món, nên
+    // Ngưỡng của Nhơn là ĐIỂM HÒA VỐN suy ra từ sàn phút cộng một món, nên
     // tổng bằng đúng ngưỡng vẫn chỉ vừa đủ: đi nhánh thường sẽ ghép 2-3 dòng
-    // hàng và đẩy Tiền giờ xuống dưới sàn (165.000đ @400k từng ra 14 phút).
+    // hàng và đẩy Tiền giờ xuống dưới sàn (thời sàn 15 phút: 165.000đ @400k từng ra 14 phút).
     // Mốc 300.000đ của các cơ sở khác là con số kế toán chốt tay nên giữ "<".
     const withinSmallInvoice = isParisNhon
       ? targetGrand <= smallInvoiceLimit
@@ -6310,7 +6310,7 @@
     }
     // Hóa đơn không được phép không có Tiền giờ. Phiếu mới dùng sàn 30 phút,
     // hoặc 50 phút khi sao kê trên 1 triệu, để solver chừa chỗ cho tiền giờ.
-    // Trần 35% đã được hourPlanningBounds nới vừa đủ để chứa sàn 30 phút của
+    // Trần tỷ lệ đã được hourPlanningBounds nới vừa đủ để chứa sàn 30 phút của
     // phiếu nhỏ; dùng đúng trần đã nới, nếu không cổng kiểm tra cuối sẽ loại
     // chính phương án mà sàn thời lượng vừa bắt buộc phải có.
     const hourPreTaxCap = Math.max(
@@ -6318,7 +6318,7 @@
       Math.round(Number(hourBounds.effectiveCap) || 0)
     );
     // Valid upper range is the union of: baseline +/- 20%, or a final
-    // singing charge no higher than 35% of the pre-VAT total.
+    // singing charge no higher than MAX_HOUR_PRETAX_RATIO of the pre-VAT total.
     hourBounds.maxHourAmount = Math.max(hourBounds.maxHourAmount, hourPreTaxCap);
     const minHourAmount = hourBounds.minHourAmount;
     // The goods amount must leave no more than the permitted singing charge.
@@ -6351,7 +6351,7 @@
     const activeLineLimit = maxActiveLines(targets.goodsTarget);
     // Trần số lượng/HĐ mặc định (bia 12 lon, đồ khô 2-4 gói...) là cho hóa đơn
     // thường. Hóa đơn rất lớn ở cơ sở toàn mã giá thấp không thể đạt tiền hàng
-    // tối thiểu mà trần 35% Tiền giờ đặt ra: Nhơn 14 triệu cần tiền hàng
+    // tối thiểu mà trần tỷ lệ Tiền giờ đặt ra (số liệu thời trần 35%): Nhơn 14 triệu cần tiền hàng
     // ≥ 8,27 triệu trong khi 20 mã ở mức trần chỉ được ~6,8 triệu. Khi đó nâng
     // trần theo bội số VỪA ĐỦ (dư 10% cho solver ghép), tối đa 5 lần; hóa đơn
     // thường còn đủ sức chứa thì giữ nguyên bội số 1. Mã bán theo suất và mã có
@@ -6597,11 +6597,11 @@
     if (!hourAdjustmentSmall && !hourWithinPreTaxCap) {
       return {
         status: "error",
-        reason: `Phần bù vào Tiền giờ ${formatMoney(hourBaseAdjustment)} vượt 20% tiền giờ nền (${formatMoney(hourBounds.adjustmentLimit)}), đồng thời Tiền giờ ${formatMoney(finalHourAmount)} vượt trần 35% tổng trước VAT (${formatMoney(hourPreTaxCap)}); cần tính lại tổ hợp hàng.`
+        reason: `Phần bù vào Tiền giờ ${formatMoney(hourBaseAdjustment)} vượt 20% tiền giờ nền (${formatMoney(hourBounds.adjustmentLimit)}), đồng thời Tiền giờ ${formatMoney(finalHourAmount)} vượt trần ${Math.round(MAX_HOUR_PRETAX_RATIO * 100)}% tổng trước VAT (${formatMoney(hourPreTaxCap)}); cần tính lại tổ hợp hàng.`
       };
     }
     // Tỷ lệ Tiền giờ/tiền hàng tối đa 2 lần là quy ước cơ cấu, cùng hạng với
-    // trần 35%: nó phải nhường SÀN THỜI LƯỢNG. Phiếu nhỏ giữ 30 phút thì tỷ lệ
+    // trần tỷ lệ Tiền giờ: nó phải nhường SÀN THỜI LƯỢNG. Phiếu nhỏ giữ 30 phút thì tỷ lệ
     // lên tới 3 lần (sao kê 440.000đ: giờ 300.000đ, hàng 100.000đ) mà vẫn đúng
     // luật kế toán. Chỉ chặn khi Tiền giờ vượt tỷ lệ mà KHÔNG phải do sàn.
     // Chỉ miễn khi chính SÀN là thứ đẩy tỷ lệ lên: tức ngay cả khi Tiền giờ
@@ -6648,7 +6648,7 @@
       hour: finalHourAmount,
       hourBase: hourBounds.baseHour,
       hourBaseAdjustment,
-      // Nền Tiền giờ có bị kẹp theo trần 35% hay không, để đối soát hiểu vì sao
+      // Nền Tiền giờ có bị kẹp theo trần tỷ lệ hay không, để đối soát hiểu vì sao
       // số phút thấp hơn mốc 30/50 phút danh nghĩa.
       hourBaseClamped: Boolean(hourBounds.baseHourClamped),
       hourMinuteBase: hourBounds.minuteBaseHour,
@@ -8572,7 +8572,7 @@
         </div>
         <div class="it-review-checks">
           <div class="${ratioRealistic ? "pass" : "fail"}">${ratioRealistic ? "✓" : "×"} Tiền giờ không vượt ${MAX_HOUR_TO_GOODS_RATIO} lần tiền hàng</div>
-          <div class="${hourPolicyAccepted ? "pass" : "fail"}">${hourPolicyAccepted ? "✓" : "×"} Tiền giờ: bù ${formatMoney(hourBaseAdjustment)} (giới hạn 20%: ${formatMoney(hourBounds.adjustmentLimit)}) hoặc không vượt 35% trước VAT (${formatMoney(hourPreTaxCap)})</div>
+          <div class="${hourPolicyAccepted ? "pass" : "fail"}">${hourPolicyAccepted ? "✓" : "×"} Tiền giờ: bù ${formatMoney(hourBaseAdjustment)} (giới hạn 20%: ${formatMoney(hourBounds.adjustmentLimit)}) hoặc không vượt ${Math.round(MAX_HOUR_PRETAX_RATIO * 100)}% trước VAT (${formatMoney(hourPreTaxCap)})</div>
           <div class="${dateMatched ? "pass" : "fail"}">${dateMatched ? "✓" : "×"} Ngày phiếu khớp sao kê</div>
           <div class="${stockSufficient ? "pass" : "fail"}">${stockSufficient ? "✓" : "×"} Không vượt tồn kho</div>
           <div class="${totalDifference === 0 ? "pass" : "fail"}">${totalDifference === 0 ? "✓" : "×"} Tổng khớp tuyệt đối</div>

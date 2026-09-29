@@ -2,7 +2,7 @@
 
 ## Quy tắc ghép phiếu trong Batch Review
 
-Khi một ngày có nhiều phiếu chưa xuất, extension tự chọn phiếu có `Tổng cộng` hiện tại gần số tiền sao kê nhất. Một phiếu chỉ được gán cho một giao dịch trong cùng lượt Batch Review. Kết quả tự chọn và mức chênh lệch được hiển thị để người dùng kiểm tra trước khi Accept.
+Khi một ngày có nhiều phiếu chưa xuất, extension mở thử tối đa 3 phiếu gần số tiền sao kê nhất và **ưu tiên phiếu có giờ vào/ra rơi đúng ngày sao kê**; chỉ khi không phiếu nào khớp ngày mới dời ca của một phiếu sang ngày sao kê. Một phiếu chỉ được gán cho một giao dịch trong cùng lượt Batch Review. Không còn phiếu chưa xuất thì extension dò hóa đơn đã xuất khớp số tiền; không có nữa thì lập phương án **phiếu mới**.
 
 ## Bàn giao trạng thái tồn không cần backend
 
@@ -46,14 +46,15 @@ Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
 2. Bấm nút **Σ**.
 3. Bấm **Nhập data.xlsx** nếu danh mục web có thay đổi.
 4. Bấm **Nhập KhoT5.xlsx** nếu có file kho mới.
-5. Bấm **Nhập sao kê.xlsx**, sau đó mở **Batch Review** để lập trước tối đa 50 phương án.
-6. Kiểm tra tổng tiền, phiếu, tiền hàng, tiền giờ, VAT và chi tiết mã hàng; chỉ **Accept** các dòng hợp lệ.
-7. Các phương án đã Accept đi vào hàng đợi `batch_ready` và được giữ nguyên, chưa sửa hoặc lưu hóa đơn.
-8. Với dòng `needs_new_invoice`, bấm **Mở tab Bán hàng mới để tạo phiếu**. Tab danh sách được giữ nguyên; tab mới tự khôi phục ngày, tổng mục tiêu, diễn giải giao dịch và Batch Review.
-9. Xử lý tuần tự từng dòng đã Accept: extension mở đúng phiếu, áp dụng phương án; người dùng kiểm tra rồi bấm **Lưu HĐ**.
-10. Mở lại phiếu và đối soát sau lưu để trừ tồn kho chính thức.
-11. Vào tab **Giao dịch ngân hàng** → sub-tab **Phát hành hóa đơn**, chọn khoảng ngày, tích các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô.
-12. Sang tab Kho bấm **Xuất kho đã phát hành** để lấy file JSON hạch toán gửi kế toán.
+5. Bấm **Nhập sao kê** (hoặc **Nhập danh sách số tiền CK/TM**), chọn khoảng ngày rồi **Tạo Batch Review** để lập trước tối đa 500 phương án. Chưa có hóa đơn nào bị sửa hoặc lưu ở bước này.
+6. Kiểm tra tổng tiền, phiếu, tiền hàng, tiền giờ, VAT và chi tiết mã hàng; chỉ **Accept** các dòng hợp lệ. Accept chỉ đưa phương án vào hàng đợi `batch_ready`.
+7. Bấm **Lưu API N phiếu đã Accept**. Extension xử lý tuần tự, dừng ở lỗi đầu tiên:
+   - Phiếu có sẵn: mở đúng phiếu, lưu bằng API chính thức của website.
+   - Phiếu mới: mở một tab Bán hàng phụ, tự chọn phòng trống đúng đơn giá, tạo và thanh toán phiếu bằng hai request API, rồi tự đóng tab phụ.
+   - Sau mỗi phiếu, extension mở lại phiếu từ server và **đối soát sau lưu**; chỉ khi khớp tuyệt đối mới đánh dấu giao dịch đã xử lý và trừ tồn kho.
+8. Nếu một lần tạo phiếu mới báo lỗi mà chưa rõ website đã cấp số hay chưa, extension chặn tạo lại. Kiểm tra danh sách Bán hàng ngày đó rồi bấm **Đặt lại** giao dịch trước khi chạy tiếp.
+9. Vào tab **Giao dịch ngân hàng** → sub-tab **Phát hành hóa đơn**, chọn ngày, tích các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô.
+10. Sang tab Kho bấm **Xuất kho đã phát hành (Excel)** để lấy file `.xlsx` hạch toán gửi kế toán.
 
 ## Dashboard kế toán
 
@@ -99,7 +100,7 @@ Nút **Xuất kho đã phát hành (Excel)** ở tab Kho tạo file `.xlsx`, m�
 - Bộ giải bắt đầu mọi số lượng từ 0; hàng cũ trên hóa đơn không phải nguồn tồn.
 - Bộ giải ưu tiên 3–6 mã hàng khác nhau, phạt lặp nhiều cùng một sản phẩm và luôn lấy giới hạn thấp hơn giữa tồn kho với trần thực tế/phiếu.
 - Trần mặc định: hoa quả 1, rượu vang 1, thuốc lá 2, đồ khô 2–4, nước 6, bia 12; riêng Mắc Ca tối đa 2 hộp.
-- Accept chỉ cập nhật form website, chưa thay đổi tồn. Nếu sửa lại phiếu đã ghi sổ, lần Đối soát sau lưu kế tiếp sẽ hoàn phương án cũ rồi trừ phương án mới trong cùng một giao dịch lưu.
+- Accept và Lưu API đều chưa thay đổi tồn; tồn chỉ bị trừ ở bước Đối soát sau lưu. Nếu sửa lại phiếu đã ghi sổ, lần Đối soát sau lưu kế tiếp sẽ hoàn phương án cũ rồi trừ phương án mới trong cùng một giao dịch lưu.
 
 ## Cấu trúc thư mục
 
@@ -155,9 +156,11 @@ node --check mapping-engine.js
 
 Chi tiết Batch Review xem tại `docs/BATCH_REVIEW.md`.
 
-## Bước tiếp theo
+## Giới hạn hiện tại
 
-Triển khai thao tác an toàn trên Kendo Grid: tạo bản sao trạng thái, xóa/đặt 0 hàng cũ, thêm mã web theo phương án, đọc lại tổng và cung cấp nút hoàn tác. Tuyệt đối chưa tự bấm Lưu HĐ hoặc Phát hành.
+- Mỗi phiếu mới mở một tab Bán hàng phụ, nên lô nhiều phiếu mới chạy chậm.
+- Không có khóa giữa các tab: trong lúc tab phụ đang tạo phiếu, không thao tác ghi dữ liệu ở tab gốc.
+- Extension không tự phát hành hóa đơn điện tử khi chưa có xác nhận của người dùng, và không tự hủy hóa đơn.
 # Mới trong MVP 0.4
 
 - Chọn giao dịch ngân hàng sẽ tự lọc danh sách Bán hàng theo đúng ngày giao dịch.

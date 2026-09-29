@@ -47,7 +47,7 @@ function extractConst(source, name) {
 async function bridgeError(behaviour) {
   const box = {
     normalizeDateKey: value => value,
-    createAndPayFreshInvoiceViaApiLegacy: async (_expected, progress) => behaviour(progress)
+    postFreshInvoiceTwoStep: async (_expected, progress) => behaviour(progress)
   };
   vm.createContext(box);
   vm.runInContext(

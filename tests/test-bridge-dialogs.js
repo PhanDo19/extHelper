@@ -149,18 +149,15 @@ if (!source.includes('["LUU IN", "LUU THOAT"].includes(normalizedVietnameseText(
 if (!source.includes("event.stopImmediatePropagation()")) {
   throw new Error("Invalid payment values must block the official save action.");
 }
-if (!source.includes("paymentDialog?.contains(control)") ||
-    source.includes('control.closest(".k-window,.k-dialog,[role=\'dialog\'],.ui-dialog,.modal")')) {
-  throw new Error("Main Lưu HĐ/Thanh toán control must not be rejected by the form modal wrapper.");
-}
-for (const freshBootstrapInvariant of [
-  "function officialSaveCancelControl(dialog)",
-  "const initializedFormData = currentFormData({ allowBlankRecordId: true })",
-  "await postCurrentInvoiceViaApi(expected)",
-  "officialUiBootstrap: true"
+// Luồng cũ "bấm nút Lưu của website để khởi tạo phiếu mới" đã được thay bằng
+// API tạo phiếu hai bước (mode=0 rồi mode=2), nên không được sống lại.
+for (const removedFreshUiFlow of [
+  "function saveFreshInvoiceThroughOfficialUi(",
+  "function visibleOfficialInvoiceSaveControl(",
+  "detail.action === \"saveCurrentInvoiceViaApi\""
 ]) {
-  if (!source.includes(freshBootstrapInvariant)) {
-    throw new Error(`Missing safe fresh-invoice bootstrap invariant: ${freshBootstrapInvariant}`);
+  if (source.includes(removedFreshUiFlow)) {
+    throw new Error(`Luồng lưu phiếu mới qua giao diện website đã gỡ nhưng còn: ${removedFreshUiFlow}`);
   }
 }
 for (const requiredCapture of [

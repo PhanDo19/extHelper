@@ -1,50 +1,42 @@
-# Batch Review 1.3.10
+# Batch Review
 
-Batch Review lập trước nhiều phương án từ các giao dịch sao kê chưa hoàn tất.
+Batch Review lập trước nhiều phương án từ các giao dịch chưa hoàn tất (sao kê ngân hàng hoặc danh sách số tiền CK/TM), rồi lưu và đối soát tuần tự bằng API chính thức của website.
 
-- Mỗi giao dịch chỉ tự gắn khi tìm được đúng một phiếu chưa xuất hóa đơn cùng ngày.
-- Tồn kho được giữ chỗ cộng dồn theo thứ tự giao dịch; phương án sau không dùng lại phần tồn đã dành cho phương án trước.
-- Màn hình hiển thị sao kê, số phiếu, tiền hàng, tiền giờ, VAT, trạng thái và chi tiết mã hàng.
+- Giao dịch được sắp theo ngày → giờ giao dịch → thứ tự dòng trong file, tối đa 500 giao dịch mỗi lượt. Giao dịch ở trạng thái `review` (Credit không rõ là chuyển khoản, hoặc từ 20 triệu trở lên) không được lập phương án cho tới khi người dùng bấm **Là doanh thu**.
+- Tồn kho được giữ chỗ cộng dồn theo thứ tự giao dịch, kể cả các phương án đã Accept nằm ngoài khoảng ngày đang xem.
 - `Accept` chỉ ghi phương án đã duyệt vào hàng đợi `batch_ready`; chưa sửa và chưa lưu hóa đơn.
-- Các phương án đã Accept được giữ nguyên khi mở lại Batch Review, không tự tính lại.
-- Việc áp dụng, bấm `Lưu HĐ` và đối soát sau lưu vẫn thực hiện tuần tự từng hóa đơn để dùng validation chính thức của website.
-- Cảnh báo native “không có dữ liệu” của website được chặn cục bộ trong lúc Batch Review tìm kiếm; cảnh báo ngoài thao tác batch không bị ảnh hưởng.
-- Giữ và khôi phục bộ điều khiển danh sách của website sau mỗi lần đóng chi tiết phiếu, nên batch có thể mở nhiều phiếu liên tiếp và chạy lại.
-- Lỗi mở/đọc một phiếu chỉ đánh dấu lỗi giao dịch đó; các giao dịch sau vẫn tiếp tục được lập phương án.
+- Các phương án đã Accept được giữ nguyên khi mở lại Batch Review. Khi mốc công thức (`CALCULATION_VERSION`) đổi, phương án cũ tự bị hủy và giao dịch quay về **Chờ xử lý**.
+- Cảnh báo native “không có dữ liệu” của website được chặn cục bộ trong lúc Batch Review tìm kiếm.
+- Lỗi mở/đọc một phiếu chỉ đánh dấu lỗi giao dịch đó; các giao dịch sau vẫn tiếp tục được lập phương án. Ba dòng lỗi quá tải liên tiếp thì extension tự tải lại trang rồi chạy tiếp.
 
-## Khi không có phiếu chưa xuất hóa đơn
+## Chọn phiếu cho một giao dịch
 
-Trước đây trường hợp này bị gộp chung thành `Lỗi`. Nay Batch Review tách thành hai trạng thái:
+1. **Có phiếu chưa xuất hóa đơn cùng ngày**: xếp theo độ gần số tiền sao kê, mở thử tối đa 3 phiếu và ưu tiên phiếu có giờ vào/ra rơi đúng ngày sao kê. Không phiếu nào khớp ngày thì dời ca của một phiếu sang ngày sao kê. Không đọc được phiếu nào thì báo `error`, không gán nhầm.
+2. **Không còn phiếu chưa xuất**: dò hóa đơn **đã xuất** cùng ngày có tổng khớp tuyệt đối.
+   - Khớp → `already_issued` (“Đã có HĐ khớp”). Người dùng bấm `Xác nhận đã có HĐ <số phiếu>` thì giao dịch mới chuyển `done`; extension không tự gắn.
+   - Dò lỗi → `lookup_error`. Chỉ được dò lại; extension không lập phiếu mới trong trạng thái này để tránh tạo trùng.
+3. **Không có cả hai**: lập phương án **phiếu mới** (`requiresNewInvoice`), gồm giờ vào/ra (rải từ 17:00 theo slot trong ngày) và đơn giá phòng. Tính được thì dòng ở trạng thái `ready` như phiếu thường; không tính được thì `needs_new_invoice` kèm lý do.
 
-- **`already_issued` — “Đã có HĐ khớp”**: sau khi không còn phiếu chưa xuất, Batch Review lọc lại danh sách
-  theo bộ lọc “Đã xuất hóa đơn” cùng ngày và tìm hóa đơn có tổng cộng khớp tuyệt đối số tiền giao dịch
-  (so sánh sau `Math.round`). Hóa đơn đã gắn cho giao dịch khác bị loại khỏi kết quả.
-  - Khớp đúng một hóa đơn: hiện nút `Xác nhận đã có HĐ <số phiếu>`. Bấm nút mới gắn số phiếu vào giao dịch,
-    chuyển giao dịch sang `done` và ghi `reconciledNote`. Extension không tự gắn.
-  - Khớp nhiều hóa đơn: hiển thị danh sách chọn; người dùng phải chọn đúng số phiếu rồi mới có thể xác nhận.
-- **`needs_new_invoice` — “Cần tạo phiếu”**: không có phiếu chưa xuất và cũng không có hóa đơn đã xuất khớp
-  số tiền. Nút `Mở màn hình Bán hàng để tạo phiếu` chỉ **điều hướng** và hiển thị gợi ý ngày + tổng mục tiêu;
-  extension KHÔNG tự tạo, điền hay lưu phiếu. Sau khi người dùng tự lưu phiếu mới, chạy lại Batch Review.
+Trạng thái `needs_choice` chỉ còn xuất hiện ở phiên lưu từ bản cũ; Batch Review hiện tự chọn bằng cách mở thử phiếu.
 
-Nếu việc dò hóa đơn đã xuất bị lỗi (bridge timeout, chưa mở danh sách Bán hàng…), giao dịch được xếp vào
-`lookup_error`. Người dùng chỉ được thử dò lại; extension không gợi ý tạo phiếu mới trong trạng thái này để
-tránh tạo trùng hóa đơn.
+## Lưu API và đối soát
 
-Khi có nhiều phiếu **chưa xuất** cùng ngày, mỗi dòng `needs_choice` có danh sách chọn. Sau khi người dùng chọn,
-extension lưu liên kết tạm và tính lại toàn bộ Batch Review để giữ đúng thứ tự giữ chỗ tồn kho.
+Nút **Lưu API N phiếu đã Accept** xử lý tuần tự, dừng ở lỗi đầu tiên, tự tải lại trang sau mỗi 15 phiếu.
 
-Hai trạng thái này được đếm riêng trong KPI (`Đã có HĐ khớp`, `Cần tạo phiếu`) nên không còn bị tính vào
-ô `Cần xử lý`.
+- **Phiếu có sẵn**: mở đúng phiếu, gửi `DoSave` bằng API, đóng form.
+- **Phiếu mới**: tab gốc mở một tab Bán hàng phụ. Tab phụ tự chọn phòng trống đúng đơn giá của phương án (theo sơ đồ phòng website trả về, không chồng giờ với phiếu khác trong ngày, không bao giờ chọn `BÁN LẺ`), gửi hai request `DoSave` (mode=0 tạo phiên, mode=2 thanh toán), ghi kết quả rồi tự đóng.
+- Sau mỗi phiếu, tab gốc mở lại phiếu **từ danh sách trên server** và đối soát tuyệt đối với phương án. Chỉ khi khớp mới đánh dấu giao dịch `done` và trừ tồn kho.
 
-## Giữ phiên khi chuyển sang Bán hàng
+### Chống tạo trùng phiếu mới
 
-- Khi bấm `Mở tab Bán hàng mới để tạo phiếu`, extension giữ nguyên tab danh sách hiện tại, mở Bán hàng trong tab mới và lưu Batch Review, giới hạn batch,
-  giao dịch cần tạo phiếu và trạng thái mở/đóng panel vào `chrome.storage.local`.
-- Sau khi tab Bán hàng mới nạp xong, extension tự mở cả panel lẫn chế độ Batch Review, hiển thị thẻ giao dịch và tự chọn phòng không hoạt động đầu tiên theo thứ tự website để mở form tạo phiếu.
-- Phòng chỉ được coi là rảnh khi ô phòng chỉ hiển thị đúng tên phòng, không có thời lượng/trạng thái hoạt động. `BÁN LẺ` luôn bị loại khỏi danh sách tự chọn.
-- Nếu không có phòng rảnh, extension dừng và báo lỗi; không mở `BÁN LẺ` hoặc phòng đang hoạt động.
-- Liên kết Bán hàng được đọc cả khi thanh menu website đang thu gọn; tab mới không còn rơi về URL danh sách hóa đơn hiện tại.
-- Mỗi lần bấm `needs_new_invoice` chỉ tự mở phòng một lần. Nếu người dùng bấm `Thoát` hoặc tải lại tab, extension không tự mở lại form; bấm lại dòng `needs_new_invoice` sẽ bắt đầu một lượt mới.
-- Extension chỉ mở form; không tự bấm `Lưu HĐ`, `Hủy HĐ` hay `Phát hành`.
-- Phiên UI chỉ lưu `transactionId`; dữ liệu giao dịch được liên kết lại với bản sao kê mới nhất khi khôi phục.
-- Phiên tự hết hạn sau 7 ngày. Chọn `Quay lại tính toán` sẽ xóa phiên Batch Review đã lưu.
+- Trước khi gửi API tạo phiếu, extension ghi dấu `newInvoiceCreateStartedAt` vào giao dịch. Lần gửi trước chưa có kết quả chắc chắn (tab bị đóng, hết giờ, website báo lỗi sau khi đã nhận request) thì mọi lần chạy lại đều bị chặn.
+- Lỗi xảy ra **trước** khi request được gửi thì được gỡ dấu và thử lại bình thường.
+- Tạo phiên thành công mà bước thanh toán lỗi: thông báo nêu rõ số phiếu và ID phiên tạo dở.
+- Tab phụ gặp lỗi (không có phòng trống, không áp được phương án…) thì báo về ngay; tab gốc dừng lô với đúng lý do.
+- Gỡ chặn: kiểm tra danh sách Bán hàng ngày đó. Có phiếu rồi → **Đặt lại** giao dịch và **Tạo Batch Review** để gắn đúng phiếu; chưa có → **Đặt lại** rồi chạy lại.
+
+## Phiên làm việc
+
+- Phiên Batch Review (danh sách phương án, khoảng ngày, giới hạn, giao dịch đang tạo phiếu mới) được lưu vào `chrome.storage.local` và khôi phục khi tải lại trang. Phiên chỉ lưu `transactionId`; dữ liệu giao dịch được liên kết lại với bản sao kê mới nhất.
+- Tab phụ chỉ tự mở phòng **một lần** cho mỗi lượt; nếu tab phụ bị tải lại sau khi đã mở form, extension không tự mở lại mà báo lỗi về tab gốc.
+- Phiên tự hết hạn sau 7 ngày. Đóng chế độ xử lý hàng loạt (bấm lại nút **Mở xử lý hàng loạt**) sẽ xóa phiên Batch Review đã lưu.

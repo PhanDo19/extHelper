@@ -2020,29 +2020,6 @@
     };
   }
 
-  function apply(changes) {
-    const found = invoiceGrid();
-    if (!found || !found.fields.qty) throw new Error("Không truy cập được Kendo Grid của các dòng hàng.");
-    const rows = (typeof found.grid.dataSource.view === "function" && found.grid.dataSource.view()) ||
-      (typeof found.grid.dataSource.data === "function" && found.grid.dataSource.data()) || [];
-    const byUid = new Map((changes || []).map(change => [String(change.uid), change]));
-    let changed = 0;
-    rows.forEach((item, index) => {
-      const uid = String(item.uid || index);
-      const change = byUid.get(uid);
-      if (!change) return;
-      const nextQty = Math.max(0, Math.round(Number(change.newQty)));
-      const maxQty = Math.max(0, Math.floor(Number(change.maxQty)));
-      if (!Number.isFinite(maxQty) || nextQty > maxQty) throw new Error(`Số lượng ${nextQty} vượt tồn cho phép ${maxQty}.`);
-      const currentQty = money(objectValue(item, found.fields.qty));
-      if (nextQty === currentQty) return;
-      if (typeof item.set === "function") item.set(found.fields.qty, nextQty);
-      else item[found.fields.qty] = nextQty;
-      changed += 1;
-    });
-    return { changed, snapshot: scan() };
-  }
-
   // Giao dich tu sao ke ngan hang khong mang phuong thuc rieng nen ghi TM/CK.
   // Dong trong danh sach so tien cua ke toan mang san CK hoac TM va duoc giu
   // nguyen, o moi co so (ke toan chot 29/09/2026).
@@ -2233,130 +2210,6 @@
       .replace(/\s+/g, " ")
       .trim()
       .toUpperCase();
-  }
-
-  function visibleOfficialInvoiceSaveControl() {
-    const paymentDialog = visiblePaymentDialog();
-    return Array.from(document.querySelectorAll(
-      "button,input[type='button'],input[type='submit'],a"
-    )).find(control => {
-      // Form bán hàng của website tự nó cũng nằm trong một Kendo/modal wrapper.
-      // Chỉ loại nút thuộc hộp Lưu hóa đơn đang mở; không loại Lưu HĐ hoặc
-      // Thanh toán (F12) của form chính.
-      if (!isLayoutVisible(control) || paymentDialog?.contains(control)) {
-        return false;
-      }
-      const label = normalizedVietnameseText(dialogControlText(control));
-      return label === "LUU HD" || label === "THANH TOAN" || label === "THANH TOAN (F12)";
-    }) || null;
-  }
-
-  function officialSaveExitControl(dialog) {
-    return dialogControls(dialog).find(control =>
-      normalizedVietnameseText(dialogControlText(control)) === "LUU THOAT"
-    ) || null;
-  }
-
-  function officialSaveCancelControl(dialog) {
-    return dialogControls(dialog).find(control =>
-      normalizedVietnameseText(dialogControlText(control)) === "HUY BO"
-    ) || null;
-  }
-
-  function waitForSaveCapture(timeoutMs = 15000) {
-    return new Promise((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        window.removeEventListener(SAVE_CAPTURED, onCapture);
-        reject(new Error("Website khong gui request DoSave sau khi bam Luu thoat."));
-      }, timeoutMs);
-      function onCapture(event) {
-        window.clearTimeout(timeout);
-        window.removeEventListener(SAVE_CAPTURED, onCapture);
-        resolve(event.detail || {});
-      }
-      window.addEventListener(SAVE_CAPTURED, onCapture);
-    });
-  }
-
-  function verifyDisplayedInvoiceBeforeOfficialSave(expected) {
-    const actual = scan();
-    if (!actual.ready) throw new Error(actual.reason || "Form phieu moi chua san sang de luu.");
-    const expectedGrand = Math.round(Number(expected?.targetGrand) || 0);
-    const expectedGoods = Math.round(Number(expected?.targetGoods) || 0);
-    const expectedHour = Math.round(Number(expected?.targetHour) || 0);
-    const expectedTax = Math.round(Number(expected?.targetTax) || 0);
-    if (Math.round(Number(actual.currentGrand) || 0) !== expectedGrand ||
-        Math.round(Number(actual.currentGoods) || 0) !== expectedGoods ||
-        Math.round(Number(actual.currentHour) || 0) !== expectedHour ||
-        Math.round(Number(actual.currentTax) || 0) !== expectedTax) {
-      throw new Error("Form phieu moi chua khop tong/tien hang/tien gio/VAT; chua mo hop thoai luu.");
-    }
-    const expectedItems = expectedItemMap(expected?.items);
-    const actualItems = expectedItemMap(actual.items);
-    if (actualItems.size !== expectedItems.size) {
-      throw new Error("So dong hang tren form phieu moi chua khop phuong an.");
-    }
-    for (const [code, item] of expectedItems) {
-      const current = actualItems.get(code);
-      if (!current || current.qty !== item.qty || current.price !== item.price) {
-        throw new Error(`Mat hang ${code} tren form phieu moi chua khop phuong an.`);
-      }
-    }
-    return actual;
-  }
-
-  async function saveFreshInvoiceThroughOfficialUi(expected) {
-    verifyDisplayedInvoiceBeforeOfficialSave(expected);
-    const saveControl = visibleOfficialInvoiceSaveControl();
-    if (!saveControl) throw new Error("Khong tim thay nut Luu HD/Thanh toan cua website cho phieu moi.");
-    saveControl.click();
-
-    const dialogDeadline = Date.now() + 6000;
-    let dialog = null;
-    while (Date.now() < dialogDeadline) {
-      await wait(100);
-      dialog = visiblePaymentDialog();
-      if (dialog) break;
-    }
-    if (!dialog) throw new Error("Website khong mo hop thoai LUU HOA DON.");
-
-    // Website khởi tạo ID/NAME/LASTSAVEID khi mở bước thanh toán. Nếu đã có
-    // GUID, đóng hộp thoại mà không lưu rồi dùng payload API chính xác của
-    // extension. Điều này tránh website lưu tổng đang hiển thị bị làm tròn.
-    const initializedFormData = currentFormData({ allowBlankRecordId: true });
-    if (isGuid(formDataRecordId(initializedFormData))) {
-      const cancel = officialSaveCancelControl(dialog);
-      if (!cancel) throw new Error("Website da tao ID phieu nhung khong tim thay nut Huy bo cua hop thoai luu.");
-      cancel.click();
-      await wait(250);
-      if (visiblePaymentDialog()) throw new Error("Khong dong duoc hop thoai luu truoc khi gui API.");
-      const saved = await postCurrentInvoiceViaApi(expected);
-      return { ...saved, officialUiBootstrap: true };
-    }
-
-    const payment = normalizePaymentDialog();
-    if (!payment.ready || payment.grand !== Math.round(Number(expected?.targetGrand) || 0)) {
-      throw new Error("Tien mat trong hop thoai luu chua khop Tong tien; extension da dung truoc khi gui.");
-    }
-    const saveExit = officialSaveExitControl(dialog);
-    if (!saveExit) throw new Error("Khong tim thay nut Luu thoat trong hop thoai hoa don.");
-
-    const capturedPromise = waitForSaveCapture();
-    saveExit.click();
-    const captured = await capturedPromise;
-    let payload = null;
-    try { payload = JSON.parse(String(captured.body || "")); } catch (_) {}
-    if (!payload) throw new Error("Khong doc duoc payload DoSave do website vua gui.");
-    const verified = validateSavePayload(payload, expected);
-    const confirmed = verifySaveResponse(captured.responseText, payload.ID);
-    return {
-      saved: true,
-      officialUiBootstrap: true,
-      httpStatus: Number(captured.status || 0),
-      endpoint: String(captured.url || ""),
-      ...verified,
-      ...confirmed
-    };
   }
 
   function localServerDateTime(date) {
@@ -2974,7 +2827,10 @@
     return { body, responseText, endpoint: new URL(endpoint).pathname, httpStatus: response.status };
   }
 
-  async function createAndPayFreshInvoiceViaApiLegacy(expected, progress = {}) {
+  // Tạo phiếu mới bằng hai request DoSave giống website: mode=0 tạo phiên (server
+  // cấp số phiếu), rồi mode=2 thanh toán đúng ID đó. `progress` cho lớp gọi biết
+  // request đã rời trình duyệt chưa, để phân biệt lỗi an toàn với lỗi chưa rõ.
+  async function postFreshInvoiceTwoStep(expected, progress = {}) {
     const formData = currentFormData({ allowBlankRecordId: true });
     const paymentMethod = invoiceCreationPaymentMethod(expected);
     if (isGuid(formDataRecordId(formData))) {
@@ -3130,7 +2986,7 @@
     const progress = { sessionSent: false, sessionInvoiceNo: "", sessionRecordId: "" };
     let result;
     try {
-      result = await createAndPayFreshInvoiceViaApiLegacy(expected, progress);
+      result = await postFreshInvoiceTwoStep(expected, progress);
     } catch (error) {
       const message = String(error?.message || error || "Khong ro loi.");
       // Lỗi trước khi gửi request: chắc chắn chưa có gì trên server, content
@@ -3497,14 +3353,6 @@
     return result;
   }
 
-  async function saveCurrentInvoiceViaApi(expected) {
-    const formData = currentFormData({ allowBlankRecordId: Boolean(expected?.requiresFreshDraft) });
-    if (expected?.requiresFreshDraft && !isGuid(formDataRecordId(formData))) {
-      return saveFreshInvoiceThroughOfficialUi(expected);
-    }
-    return postCurrentInvoiceViaApi(expected);
-  }
-
   // Bridge chay o MAIN world, content script o isolated world; detail cua
   // CustomEvent bi structured-clone khi di qua ranh gioi nay. Neu ket qua chua
   // gia tri khong clone duoc (vi du dong Kendo con giu ham), dispatchEvent NEM
@@ -3549,7 +3397,6 @@
       if (detail.action === "scan") result = scan();
       else if (detail.action === "getRoomMap") result = await getRoomMap({ refresh: Boolean(detail.refresh) });
       else if (detail.action === "getOpenFormRoom") result = getOpenFormRoom();
-      else if (detail.action === "apply") result = apply(detail.changes);
       else if (detail.action === "replaceInvoiceItems") result = await replaceInvoiceItems(detail.items);
       else if (detail.action === "findInvoiceCandidates") result = await findInvoiceCandidates(
         detail.dateKey,
@@ -3559,14 +3406,10 @@
       else if (detail.action === "findIssuedInvoiceByAmount") result = await findIssuedInvoiceByAmount(detail.dateKey, detail.amount);
       else if (detail.action === "openInvoiceCandidate") result = await openInvoiceCandidate(detail.uid, detail.invoiceNo);
       else if (detail.action === "applyCheckOut") result = applyCheckOut(detail.value);
-      else if (detail.action === "applyInvoiceTimes") result = applyInvoiceTimes(detail.checkIn, detail.checkOut, detail.keepCheckIn);
       else if (detail.action === "applyHourAmount") result = applyHourAmount(detail.value);
       else if (detail.action === "closeInvoiceDetail") result = await closeInvoiceDetail();
       else if (detail.action === "getInvoiceUiState") result = invoiceUiState();
-      else if (detail.action === "applyInvoiceTotals") result = applyInvoiceTotals(detail.targetGrand, detail.targetGoods);
-      else if (detail.action === "normalizePaymentDialog") result = normalizePaymentDialog();
       else if (detail.action === "applyInvoicePlan") result = await applyInvoicePlan(detail);
-      else if (detail.action === "saveCurrentInvoiceViaApi") result = await saveCurrentInvoiceViaApi(detail);
       else if (detail.action === "saveExistingInvoicePlanViaApi") result = await saveExistingInvoicePlanViaApi(detail);
       else if (detail.action === "createAndPayFreshInvoiceViaApi") result = await createAndPayFreshInvoiceViaApi(detail);
       else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);
