@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.28.8 (2026-09-29)
+
+- **Sửa lỗi đối soát ở Paris Nhơn ghi đè kho chung của Kim Giang/Linh Đàm.** `commitVerifiedInvoice` ghi kho vào khóa cố định `invoiceTargetSharedWarehouseV1` thay vì `warehouseKey()`, nên từ khi Nhơn tách kho riêng (10/09/2026) mỗi lần đối soát một phiếu ở Nhơn lại đè kho Nhơn lên kho chung của Kim Giang/Linh Đàm, còn kho riêng của Nhơn không bao giờ bị trừ. Khi Kim Giang/Linh Đàm mở lại trang, mã kho không có trong kho bị đè sẽ về tồn 0 và "thiếu trong kho". Cần kiểm tra và kiểm kê lại kho của cả ba cơ sở nếu đã đối soát ở Nhơn từ 10/09.
+- Test lưu trữ đa cơ sở nay dùng chung một storage cho cả ba cơ sở; trước đây tab Nhơn dùng storage riêng nên phép kiểm "không ghi đè kho chung" luôn đúng dù code sai.
+
 ## 1.28.7 (2026-09-29)
 
 - Thêm quyền `unlimitedStorage`: sổ đối soát và sổ phát hành chỉ tăng, trong khi `chrome.storage.local` mặc định giới hạn khoảng 10 MB cho cả ba cơ sở. Đầy bộ nhớ có thể làm hỏng đúng bước ghi kết quả sau khi phiếu đã được tạo.

@@ -278,7 +278,10 @@
         [tenantKey(STATEMENT_BASE_KEY)]: statement,
         [tenantKey(LEDGER_BASE_KEY)]: ledger
       };
-      if (sharedWarehouse) values[SHARED_WAREHOUSE_KEY] = sharedWarehouse;
+      // Phải dùng warehouseKey() như load/saveSharedWarehouse: ghi thẳng
+      // SHARED_WAREHOUSE_KEY khiến mỗi lần đối soát ở Nhơn đè kho Nhơn lên kho
+      // chung của Kim Giang/Linh Đàm, còn kho riêng của Nhơn không bao giờ bị trừ.
+      if (sharedWarehouse) values[warehouseKey()] = sharedWarehouse;
       await chrome.storage.local.set(values);
     }
     return { dataset, statement, ledger, sharedWarehouse };

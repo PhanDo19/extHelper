@@ -151,6 +151,24 @@ assert.equal(linhDam.api.currentTenant(), "parislinhdam");
   assert.equal((await ldStock.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 55,
     "Ghi so doi soat phai cap nhat kho chung trong cung lan storage.set");
 
+  // Đối soát ở tab Nhơn KHÔNG được đụng kho chung Kim Giang/Linh Đàm, và phải
+  // trừ đúng kho riêng của Nhơn. Ba cơ sở phải dùng CHUNG một chrome.storage
+  // như trình duyệt thật — tách storage thì phép kiểm này luôn đúng dù code sai.
+  const nhonStock = makeStore("/parisnhon/Form", multiTenantStorage);
+  await nhonStock.api.saveSharedWarehouse({ initialized: true, items: [{ stockCode: "NHON-001", availableQty: 40 }] });
+  const sharedBefore = JSON.stringify(multiTenantStorage.invoiceTargetSharedWarehouseV1);
+  await nhonStock.api.commitVerifiedInvoice(
+    { mappings: [{ stockCode: "NHON-001", webCode: "0000001", availableQty: 37 }] },
+    { transactions: [] },
+    { entries: [] },
+    { initialized: true, items: [{ stockCode: "NHON-001", availableQty: 37 }] }
+  );
+  assert.equal(JSON.stringify(multiTenantStorage.invoiceTargetSharedWarehouseV1), sharedBefore,
+    "Đối soát ở Nhơn không được ghi đè kho chung Kim Giang/Linh Đàm");
+  assert.equal((await kgStock.api.loadSharedWarehouse({ items: [] })).items[0].stockCode, "BANHSNACK");
+  assert.equal((await nhonStock.api.loadSharedWarehouse({ items: [] })).items[0].availableQty, 37,
+    "Đối soát ở Nhơn phải trừ kho riêng của Nhơn");
+
   await kgStock.api.saveStockStateMeta({ currentExportId: "kg-stock" });
   await ldStock.api.saveStockStateMeta({ currentExportId: "ld-stock" });
   assert.equal((await kgStock.api.loadStockStateMeta()).currentExportId, "kg-stock");
