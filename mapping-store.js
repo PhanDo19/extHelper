@@ -125,11 +125,65 @@
     return stored[key] || { source: "", transactions: [] };
   }
 
+  // Sao kê được cả tab gốc lẫn tab tạo phiếu phụ ghi. Mỗi lần ghi tăng
+  // `revision`; ghi dựa trên bản cũ hơn bản đang lưu thì bị TỪ CHỐI thay vì âm
+  // thầm đè mất thay đổi của tab kia. Web Locks (cùng origin nên các tab dùng
+  // chung) giữ cho bước "kiểm tra rồi ghi" không xen kẽ giữa hai tab; trình
+  // duyệt không có Web Locks thì vẫn kiểm tra, chỉ còn một khe rất nhỏ.
+  const STATEMENT_CONFLICT = "statement-conflict";
+
+  function withStorageLock(name, task) {
+    const locks = root.navigator?.locks;
+    return locks?.request ? locks.request(`invoice-target:${name}`, () => task()) : task();
+  }
+
+  function statementRevision(statement) {
+    return Math.max(0, Math.floor(Number(statement?.revision) || 0));
+  }
+
+  async function assertStatementBase(key, statement) {
+    const stored = (await chrome.storage.local.get(key))[key];
+    if (!stored || statementRevision(stored) === statementRevision(statement)) return;
+    const error = new Error(
+      "Sao kê vừa được một tab khác cập nhật nên thao tác này chưa được lưu. " +
+      "Hãy tải lại trang (F5) để lấy dữ liệu mới nhất rồi làm lại."
+    );
+    error.code = STATEMENT_CONFLICT;
+    throw error;
+  }
+
   async function saveStatement(statement) {
-    if (globalThis.chrome?.storage?.local) {
-      await chrome.storage.local.set({ [tenantKey(STATEMENT_BASE_KEY)]: statement });
-    }
+    if (!globalThis.chrome?.storage?.local) return statement;
+    const key = tenantKey(STATEMENT_BASE_KEY);
+    await withStorageLock(key, async () => {
+      await assertStatementBase(key, statement);
+      const revision = statementRevision(statement) + 1;
+      await chrome.storage.local.set({ [key]: { ...statement, revision } });
+      // Chỉ tăng bản trong bộ nhớ sau khi ghi thành công, để lần ghi lỗi không
+      // làm lệch revision và tự gây xung đột ở lần sau.
+      statement.revision = revision;
+    });
     return statement;
+  }
+
+  // Đọc bản MỚI NHẤT, sửa và ghi trong cùng một khóa; trả về bản đã ghi. Dùng
+  // cho lần ghi không được phép thất bại vì xung đột (ví dụ kết quả API tạo
+  // phiếu đã được cấp số). `mutator` ném lỗi thì không ghi gì.
+  async function mutateStatement(mutator) {
+    if (!globalThis.chrome?.storage?.local) {
+      const statement = { source: "", transactions: [] };
+      await mutator(statement);
+      return statement;
+    }
+    const key = tenantKey(STATEMENT_BASE_KEY);
+    return withStorageLock(key, async () => {
+      const stored = (await chrome.storage.local.get(key))[key];
+      const latest = stored ? structuredClone(stored) : { source: "", transactions: [] };
+      await mutator(latest);
+      latest.revision = statementRevision(latest) + 1;
+      await chrome.storage.local.set({ [key]: latest });
+      return latest;
+    });
   }
 
   function defaultPriorityRules() {
@@ -273,22 +327,31 @@
 
   async function commitVerifiedInvoice(dataset, statement, ledger, sharedWarehouse) {
     if (globalThis.chrome?.storage?.local) {
-      const values = {
-        [tenantKey(MAPPING_BASE_KEY)]: dataset,
-        [tenantKey(STATEMENT_BASE_KEY)]: statement,
-        [tenantKey(LEDGER_BASE_KEY)]: ledger
-      };
-      // Phải dùng warehouseKey() như load/saveSharedWarehouse: ghi thẳng
-      // SHARED_WAREHOUSE_KEY khiến mỗi lần đối soát ở Nhơn đè kho Nhơn lên kho
-      // chung của Kim Giang/Linh Đàm, còn kho riêng của Nhơn không bao giờ bị trừ.
-      if (sharedWarehouse) values[warehouseKey()] = sharedWarehouse;
-      await chrome.storage.local.set(values);
+      const statementKey = tenantKey(STATEMENT_BASE_KEY);
+      // Cùng khóa và cùng phép kiểm revision với saveStatement: sao kê lệch thì
+      // từ chối CẢ lần ghi, để tồn kho và sổ đối soát không được ghi nửa vời.
+      await withStorageLock(statementKey, async () => {
+        await assertStatementBase(statementKey, statement);
+        const revision = statementRevision(statement) + 1;
+        const values = {
+          [tenantKey(MAPPING_BASE_KEY)]: dataset,
+          [statementKey]: { ...statement, revision },
+          [tenantKey(LEDGER_BASE_KEY)]: ledger
+        };
+        // Phải dùng warehouseKey() như load/saveSharedWarehouse: ghi thẳng
+        // SHARED_WAREHOUSE_KEY khiến mỗi lần đối soát ở Nhơn đè kho Nhơn lên kho
+        // chung của Kim Giang/Linh Đàm, còn kho riêng của Nhơn không bao giờ bị trừ.
+        if (sharedWarehouse) values[warehouseKey()] = sharedWarehouse;
+        await chrome.storage.local.set(values);
+        statement.revision = revision;
+      });
     }
     return { dataset, statement, ledger, sharedWarehouse };
   }
 
   root.InvoiceMappingStore = {
-    load, save, reset, loadCatalog, saveCatalog, loadStatement, saveStatement,
+    load, save, reset, loadCatalog, saveCatalog, loadStatement, saveStatement, mutateStatement,
+    STATEMENT_CONFLICT,
     loadPriorityRules, savePriorityRules, loadLedger, loadUiSession, saveUiSession,
     clearUiSession, commitVerifiedInvoice, loadStockStateMeta, saveStockStateMeta,
     saveMappingBackup, loadMappingBackup,

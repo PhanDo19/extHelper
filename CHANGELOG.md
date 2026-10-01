@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.29.0 (2026-09-30)
+
+- **Tạo phiếu mới không cần mở tab Bán hàng phụ.** Lưu API chọn phòng theo sơ đồ phòng của website, đọc form trống của phòng bằng `GET AddEdit` (RecordID rỗng: chỉ dựng form, không tạo bản ghi — trace 02/08/2026), rồi gửi hai request `DoSave` và đối soát ngay trên tab danh sách. Bỏ được một lần tải trang đầy đủ và thời gian chờ tab phụ cho mỗi phiếu mới.
+  - Chưa kiểm chứng trên website thật rằng HTML trả về chứa `new DataTransferJs(...)`; nút **Kiểm tra tạo phiếu không cần tab phụ** chỉ đọc form của một phòng trống để xác nhận, không lưu gì.
+  - Không có sơ đồ phòng hoặc không đọc được form phòng (chưa gửi request ghi nào) thì tự quay về cách mở tab phụ như trước. Phòng đang có phiên chạy hoặc mất phiên đăng nhập thì dừng, không quay về.
+  - Lõi tạo phiếu (dấu chống trùng, gọi API, ghi kết quả) dùng chung cho cả hai cách; cách mới ghi luôn phòng và giờ đã dùng để phiếu mới kế tiếp không trùng phòng trùng giờ.
+- **Không tạo và không dùng phiếu ở quầy BÁN LẺ** vì không lập được hóa đơn điện tử.
+  - Nhận diện quầy BÁN LẺ theo cụm từ (cả "BÁN LẺ 2", "KHU BÁN LẺ"); trước đây chỉ khớp đúng chuỗi "BAN LE". Cộng thêm cờ quầy của sơ đồ phòng.
+  - Bridge từ chối tạo phiếu mới và từ chối lưu phiếu có sẵn ở quầy BÁN LẺ, kiểm tra ngay trước khi gửi `DoSave`.
+  - Batch Review bỏ qua phiếu chưa xuất ở quầy BÁN LẺ khi mở thử (không tính vào giới hạn 3 phiếu thử, nhớ lại để không mở lại); nếu cả ngày chỉ còn phiếu BÁN LẺ thì dò HĐ đã xuất rồi lập phiếu mới ở phòng hát. Chế độ "Điều chỉnh một phiếu" cũng từ chối phiếu BÁN LẺ.
+  - Kết quả đọc phiếu (`scan`) trả thêm tên phòng, id phòng và cờ quầy bán lẻ.
+- **Sửa lỗi lệnh ghi hết giờ sau 5 giây.** `createAndPayFreshInvoiceViaApi` và `saveExistingInvoicePlanViaApi` gửi 2–3 request lên server nhưng chỉ được chờ 5 giây: server chậm là extension báo "Trang không phản hồi" trong khi bridge vẫn đang gửi và có thể đã lưu. Nay chờ 90 giây.
+
+## 1.28.9 (2026-09-29)
+
+- **Kiểm tra phiên bản sao kê giữa các tab.** Mỗi lần ghi sao kê tăng `revision`; tab nào ghi dựa trên bản cũ hơn bản đang lưu sẽ bị từ chối với lời nhắc tải lại trang, thay vì âm thầm đè mất thay đổi của tab khác. Ghi sổ đối soát (`commitVerifiedInvoice`) cũng kiểm tra như vậy và từ chối cả lần ghi, để tồn kho và sổ không bị ghi nửa vời.
+- Bước "kiểm tra rồi ghi" chạy trong Web Lock dùng chung giữa các tab cùng origin. Trình duyệt không có Web Locks (trang `http://`) thì vẫn kiểm tra revision, chỉ còn khe nhỏ khi hai lần ghi trùng đúng thời điểm.
+- Mọi lần ghi của tab tạo phiếu phụ (dấu "đang tạo phiếu", kết quả API, báo lỗi, phòng đã mở, hủy phương án) nay sửa đúng giao dịch trên **bản mới nhất** trong storage (`mutateStatement`): không thất bại vì tab gốc vừa ghi và không đè thay đổi của tab gốc. Kiểm tra dấu chặn và ghi dấu "đang tạo phiếu" gộp trong một lần khóa, nên hai tab không thể cùng tạo phiếu cho một giao dịch.
+- Nhập sao kê / danh sách số tiền giữ revision của bản đang có.
+
 ## 1.28.8 (2026-09-29)
 
 - **Sửa lỗi đối soát ở Paris Nhơn ghi đè kho chung của Kim Giang/Linh Đàm.** `commitVerifiedInvoice` ghi kho vào khóa cố định `invoiceTargetSharedWarehouseV1` thay vì `warehouseKey()`, nên từ khi Nhơn tách kho riêng (10/09/2026) mỗi lần đối soát một phiếu ở Nhơn lại đè kho Nhơn lên kho chung của Kim Giang/Linh Đàm, còn kho riêng của Nhơn không bao giờ bị trừ. Khi Kim Giang/Linh Đàm mở lại trang, mã kho không có trong kho bị đè sẽ về tồn 0 và "thiếu trong kho". Cần kiểm tra và kiểm kê lại kho của cả ba cơ sở nếu đã đối soát ở Nhơn từ 10/09.

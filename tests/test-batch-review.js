@@ -80,6 +80,9 @@ const batchPlanDeps = [
   extractFunction("maxActiveLines"),
   extractFunction("reachableGoodsUpperBound"),
   extractFunction("minimumGroupCount"),
+  extractFunction("roomAreaKey"),
+  extractFunction("isRetailRoomName"),
+  extractFunction("isRetailInvoiceScan"),
   extractFunction("calculateBatchPlan"),
   "this.calculateBatchPlan = calculateBatchPlan;",
   "this.isBeerStock = isBeerStock; this.isWetTowelStock = isWetTowelStock;",
@@ -534,10 +537,10 @@ if (sandbox.isIdleRoomLabel("BAN LE", "BAN LE")) {
   throw new Error("BAN LE must not be selected for a room-hour invoice.");
 }
 // Quầy bán lẻ ở mọi cách viết đều bị loại; phòng thật thì không.
-for (const retail of ["BÁN LẺ", "BAN LE", "Bán lẻ", "  ban   le "]) {
+for (const retail of ["BÁN LẺ", "BAN LE", "Bán lẻ", "  ban   le ", "BÁN LẺ 2", "KHU BÁN LẺ"]) {
   if (!sandbox.isRetailRoomName(retail)) throw new Error(`"${retail}" phải được nhận là quầy bán lẻ.`);
 }
-for (const room of ["VIP 21", "VIP 55", "P.301", ""]) {
+for (const room of ["VIP 21", "VIP 55", "P.301", "", "BANLE", "BAN LED"]) {
   if (sandbox.isRetailRoomName(room)) throw new Error(`"${room}" không phải quầy bán lẻ.`);
 }
 
@@ -687,6 +690,24 @@ if (residualPlan.hour !== 605909) throw new Error("Phần dư sau VAT website v�
 if (residualPlan.hourFromTime !== 606000 || residualPlan.hourAdjustment !== -91) throw new Error("Sai chi tiết bù chênh Tiền giờ.");
 if (residualPlan.hourBaseAdjustment !== -6091) throw new Error("Sai mức thay đổi so với tiền giờ nền của phiếu.");
 if (residualPlan.tax !== 216091 || residualPlan.difference !== 0) throw new Error("VAT phải bằng 10% tổng trước VAT và tổng phải khớp tuyệt đối.");
+
+// Cùng phiếu đó nhưng ở quầy BÁN LẺ: không lập được HĐĐT nên không lập phương án.
+const retailInvoicePlan = planBox.calculateBatchPlan({
+  ready: true,
+  invoiceNo: "HD0126060332",
+  invoiceDateKey: "2026-06-30",
+  currentHour: 612000,
+  currentGrand: 1734700,
+  taxRate: 10,
+  roomName: "BÁN LẺ",
+  roomIsRetail: true
+}, {
+  transactionDate: "2026-06-30",
+  credit: 2377000
+}, mandatoryFixture);
+if (retailInvoicePlan.status !== "error" || !/BÁN LẺ/.test(retailInvoicePlan.reason || "")) {
+  throw new Error(`Phiếu ở quầy BÁN LẺ không được lập phương án: ${JSON.stringify(retailInvoicePlan)}`);
+}
 
 const overnightResidualPlan = planBox.calculateBatchPlan({
   ready: true,
@@ -1251,7 +1272,8 @@ if (requiredOnlyRuleCandidates.find(item => item.code === "1100019")?.minQty !==
 
 // --- Nhánh already_issued / needs_new_invoice trong buildBatchReview ---
 
-async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, invoiceCandidates }) {
+async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, invoiceCandidates, retailInvoiceNos }) {
+  const retail = new Set(retailInvoiceNos || []);
   const calls = [];
   const box = {
     structuredClone,
@@ -1262,6 +1284,9 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
     inventory: [],
     pendingNewInvoice: null,
     MAX_SESSION_CANDIDATE_PROBES: 3,
+    MAX_SESSION_CANDIDATE_OPENS: 8,
+    knownRetailInvoiceNos: new Set(),
+    isRetailInvoiceScan: scan => Boolean(scan?.roomIsRetail),
     SESSION_CANDIDATE_PROBE_TIMEOUT_MS: 5000,
     formatMoney: value => String(Number(value) || 0),
     // Không có phiếu chưa xuất nào -> ép vào nhánh fallback mới.
@@ -1330,7 +1355,12 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
       checkOut: "20/07/2026 15:46",
       items: [{ code: "A", qty: 1, price: 900000, maxQty: 1 }]
     }),
-    waitForOpenedInvoice: invoiceNo => ({ ready: true, invoiceNo }),
+    waitForOpenedInvoice: invoiceNo => ({
+      ready: true,
+      invoiceNo,
+      roomName: retail.has(invoiceNo) ? "BÁN LẺ" : "VIP 21",
+      roomIsRetail: retail.has(invoiceNo)
+    }),
     // Chốt chặn context mồ côi và tự tải lại khi quá tải nằm ngoài phạm vi
     // luồng này: context luôn "sống", không lỗi nào là quá tải.
     assertRuntimeContext: () => {},
@@ -1369,6 +1399,43 @@ const baseTransaction = {
   if (closestUnissued.plans[0]?.status !== "ready" ||
       !closestUnissued.plans[0]?.reason?.includes("HD010")) {
     throw new Error("Closest invoice selection must be visible in the ready plan.");
+  }
+
+  // Phiếu gần tiền nhất ở quầy BÁN LẺ (không lập được HĐĐT) phải bị bỏ qua để
+  // chọn phiếu phòng hát kế tiếp, và không tính vào giới hạn số phiếu thử.
+  const skipRetail = await runBuildBatchReview({
+    transactions: [{ ...baseTransaction }],
+    invoiceCandidates: [
+      { uid: "r1", invoiceNo: "HD001", grandTotal: 1500000, available: true },
+      { uid: "r2", invoiceNo: "HD002", grandTotal: 1499000, available: true },
+      { uid: "r3", invoiceNo: "HD003", grandTotal: 1498000, available: true },
+      { uid: "vip", invoiceNo: "HD004", grandTotal: 1300000, available: true }
+    ],
+    retailInvoiceNos: ["HD001", "HD002", "HD003"]
+  });
+  if (skipRetail.plans[0]?.status !== "ready" || skipRetail.plans[0]?.plan?.invoiceNo !== "HD004") {
+    throw new Error(`Phải bỏ qua phiếu BÁN LẺ và dùng phiếu phòng hát HD004: ${JSON.stringify(skipRetail.plans[0])}`);
+  }
+
+  // Mọi phiếu chưa xuất đều ở quầy BÁN LẺ: xử lý như không còn phiếu chưa xuất
+  // (dò HĐ đã xuất, không có thì lập phiếu mới ở phòng hát) và nêu rõ lý do.
+  const onlyRetail = await runBuildBatchReview({
+    transactions: [{ ...baseTransaction }],
+    invoiceCandidates: [
+      { uid: "r1", invoiceNo: "HD001", grandTotal: 1500000, available: true },
+      { uid: "r2", invoiceNo: "HD002", grandTotal: 1400000, available: true }
+    ],
+    retailInvoiceNos: ["HD001", "HD002"]
+  });
+  const retailPlan = onlyRetail.plans[0];
+  if (retailPlan?.status !== "ready" || !retailPlan?.plan?.requiresNewInvoice) {
+    throw new Error(`Chỉ còn phiếu BÁN LẺ thì phải lập phương án phiếu mới: ${JSON.stringify(retailPlan)}`);
+  }
+  if (!/BÁN LẺ/.test(retailPlan.reason || "") || !/HD001/.test(retailPlan.reason || "")) {
+    throw new Error("Phương án phải nêu các phiếu BÁN LẺ đã bị bỏ qua.");
+  }
+  if (!onlyRetail.calls.some(call => call.action === "findIssuedInvoiceByAmount")) {
+    throw new Error("Chỉ còn phiếu BÁN LẺ thì vẫn phải dò HĐ đã xuất trước khi lập phiếu mới.");
   }
 
   // 1. Có đúng một HĐ đã xuất khớp tiền -> already_issued kèm số phiếu để xác nhận.
@@ -1530,20 +1597,25 @@ const baseTransaction = {
   if (!source.includes("plan: structuredClone(plan)")) {
     throw new Error("The approved Batch Review plan must be carried into the new Sales tab.");
   }
+  // Lõi dùng chung gọi API; tab phụ chỉ gọi lõi rồi tự đóng.
+  const submitNewInvoiceSource = extractFunction("submitNewInvoiceViaApi");
   const applyNewInvoiceSource = extractFunction("applyPendingNewInvoicePlan");
-  if (!applyNewInvoiceSource.includes('await request("createAndPayFreshInvoiceViaApi"') ||
+  if (!submitNewInvoiceSource.includes('await request("createAndPayFreshInvoiceViaApi"') ||
+      !applyNewInvoiceSource.includes("await submitNewInvoiceViaApi(transaction, plan)") ||
       !applyNewInvoiceSource.includes('"invoiceTarget.closeCurrentBatchWorkerTab"')) {
     throw new Error("Phiếu mới phải được lưu bằng API chính thức rồi tự đóng tab worker.");
   }
   for (const requiredField of ["invoiceDateKey", "checkIn", "checkOut"]) {
-    if (!applyNewInvoiceSource.includes(requiredField)) {
+    if (!submitNewInvoiceSource.includes(requiredField)) {
       throw new Error(`Lưu phiếu mới phải truyền ${requiredField} vào Batch API.`);
     }
   }
-  const apiSaveCallIndex = applyNewInvoiceSource.indexOf('await request("createAndPayFreshInvoiceViaApi"');
-  const apiSavedGuardIndex = applyNewInvoiceSource.indexOf("if (!apiSaved?.saved");
-  const appliedAtIndex = applyNewInvoiceSource.indexOf("pendingNewInvoice.appliedAt = apiCompletedAt");
-  if (apiSaveCallIndex < 0 || apiSavedGuardIndex < apiSaveCallIndex || appliedAtIndex < apiSavedGuardIndex) {
+  const apiSaveCallIndex = submitNewInvoiceSource.indexOf('await request("createAndPayFreshInvoiceViaApi"');
+  const apiSavedGuardIndex = submitNewInvoiceSource.indexOf("if (!apiSaved?.saved");
+  const plannedIndex = submitNewInvoiceSource.indexOf('latest.status = "planned"');
+  const appliedAtIndex = applyNewInvoiceSource.indexOf("pendingNewInvoice.appliedAt = savedTransaction.apiSavedAt");
+  if (apiSaveCallIndex < 0 || apiSavedGuardIndex < apiSaveCallIndex || plannedIndex < apiSavedGuardIndex ||
+      appliedAtIndex < applyNewInvoiceSource.indexOf("await submitNewInvoiceViaApi(transaction, plan)")) {
     throw new Error("Không được đánh dấu appliedAt trước khi API xác nhận lưu phiếu mới thành công.");
   }
   if (!source.includes("extension ch")) {
@@ -2303,10 +2375,15 @@ if (floorPlan.status !== "ready" || floorPlan.hour <= 0) {
 if (floorPlan.goods + floorPlan.hour + floorPlan.tax !== 541200) {
   throw new Error("Phương án 541.200đ phải khớp tuyệt đối tổng sao kê.");
 }
+// Phương án bị hủy (ở tab phụ hay luồng không cần tab phụ) phải trả lý do thật
+// cho Lưu API, không phải thông báo chung.
 const openPosSource = extractFunction("openPosForNewInvoice");
-if (!openPosSource.includes("Phương án đã bị hủy và Batch Review đã tính lại") ||
-    openPosSource.indexOf("Phương án đã bị hủy và Batch Review đã tính lại") < openPosSource.indexOf("opened: false,")) {
-  throw new Error("Phương án bị hủy lúc mở tab worker phải trả lý do thật cho Lưu API, không phải thông báo chung.");
+const discardSource = extractFunction("discardInvalidNewInvoicePlan");
+const directSource = extractFunction("saveNewBatchEntryDirect");
+if (!discardSource.includes("Phương án đã bị hủy và Batch Review đã tính lại") ||
+    !openPosSource.includes("error: await discardInvalidNewInvoicePlan(t, planError)") ||
+    !directSource.includes("throw new Error(await discardInvalidNewInvoicePlan(transaction, planError))")) {
+  throw new Error("Phương án bị hủy lúc tạo phiếu mới phải trả lý do thật cho Lưu API, không phải thông báo chung.");
 }
 
 // --- Đơn giá giờ theo phòng: chọn phòng hợp với số tiền -------------------------

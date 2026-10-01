@@ -93,19 +93,29 @@ function makeContentBox(options) {
     },
     InvoiceMappingStore: {
       loadStatement: async () => structuredClone(stored.value),
-      saveStatement: async statement => {
-        const tx = statement.transactions[0];
+      // Giống mapping-store: đọc bản mới nhất, sửa, ghi; mutator ném lỗi thì
+      // không ghi gì.
+      mutateStatement: async mutator => {
+        const latest = structuredClone(stored.value);
+        await mutator(latest);
+        const tx = latest.transactions[0];
         events.push(`save:${tx.status}:${tx.newInvoiceCreateStartedAt ? "marked" : "clear"}`);
-        stored.value = structuredClone(statement);
+        stored.value = structuredClone(latest);
+        return latest;
       }
     }
   };
   vm.createContext(box);
   vm.runInContext(
     "var pendingNewInvoice = null; var statementDataset = null; var currentBankTransaction = null;\n" +
+    "function findStatementTransaction(id) { return (statementDataset.transactions || []).find(item => String(item.id) === String(id)); }\n" +
     `${extractConst(contentSource, "NEW_INVOICE_NOT_SENT_TAG")}\n` +
+    `${extractConst(contentSource, "NEW_INVOICE_FORM_UNAVAILABLE_TAG")}\n` +
     `${extractFunction(contentSource, "newInvoiceAttemptBlockReason")}\n` +
+    `${extractFunction(contentSource, "updateStatementTransaction")}\n` +
+    `${extractFunction(contentSource, "submitNewInvoiceViaApi")}\n` +
     `${extractFunction(contentSource, "applyPendingNewInvoicePlan")}\n` +
+    "this.submit = submitNewInvoiceViaApi;\n" +
     "this.apply = applyPendingNewInvoicePlan;\n" +
     "this.setState = (pending, statement) => { pendingNewInvoice = pending; statementDataset = statement; };\n" +
     "this.getStatement = () => statementDataset;",

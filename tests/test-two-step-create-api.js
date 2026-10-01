@@ -3,7 +3,7 @@ const path = require("path");
 
 const bridge = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 const content = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
-const legacyStart = bridge.indexOf("async function postFreshInvoiceTwoStep(expected, progress = {})");
+const legacyStart = bridge.indexOf("async function postFreshInvoiceTwoStep(expected, progress = {}, context = null)");
 const wrapperStart = bridge.indexOf("async function createAndPayFreshInvoiceViaApi(expected)", legacyStart);
 const end = bridge.indexOf("// ---------------------------------------------------------------------------", wrapperStart);
 if (legacyStart < 0 || wrapperStart < 0 || end < 0) {
@@ -34,7 +34,7 @@ if (!bridge.includes("const VIETNAM_UTC_OFFSET_HOURS = 7") ||
 ].forEach(invariant => {
   if (!flow.includes(invariant)) throw new Error(`Missing fresh-create invariant: ${invariant}`);
 });
-if (!wrapper.includes("postFreshInvoiceTwoStep(expected, progress)") ||
+if (!wrapper.includes("postFreshInvoiceTwoStep(expected, progress, context)") ||
     !wrapper.includes('createProtocol: "mode0-then-mode2"')) {
   throw new Error("Live fresh-create action is not routed through the two-step protocol.");
 }

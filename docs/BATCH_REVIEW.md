@@ -9,6 +9,15 @@ Batch Review lập trước nhiều phương án từ các giao dịch chưa ho�
 - Cảnh báo native “không có dữ liệu” của website được chặn cục bộ trong lúc Batch Review tìm kiếm.
 - Lỗi mở/đọc một phiếu chỉ đánh dấu lỗi giao dịch đó; các giao dịch sau vẫn tiếp tục được lập phương án. Ba dòng lỗi quá tải liên tiếp thì extension tự tải lại trang rồi chạy tiếp.
 
+## Quầy BÁN LẺ
+
+Quầy BÁN LẺ không lập được hóa đơn điện tử, nên extension không tạo và không dùng phiếu ở đó:
+
+- Phiếu mới chỉ được tạo ở phòng hát: loại theo tên phòng/khu (có dấu hay không, kể cả "BÁN LẺ 2", "KHU BÁN LẺ") và cờ quầy trong sơ đồ phòng. Bridge kiểm tra lại ngay trước khi gửi `DoSave`.
+- Phiếu chưa xuất có sẵn ở quầy BÁN LẺ (chỉ biết được khi mở phiếu, vì danh sách không có cột phòng) bị bỏ qua khi Batch Review mở thử phiếu, không tính vào giới hạn 3 phiếu thử, và được nhớ lại trong lần tải trang để không mở lại.
+- Nếu mọi phiếu chưa xuất trong ngày đều ở quầy BÁN LẺ, giao dịch được xử lý như không còn phiếu chưa xuất: dò hóa đơn đã xuất khớp tiền, không có thì lập phương án phiếu mới ở phòng hát.
+- Lưu API phiếu có sẵn và chế độ "Điều chỉnh một phiếu" cũng từ chối phiếu ở quầy BÁN LẺ.
+
 ## Chọn phiếu cho một giao dịch
 
 1. **Có phiếu chưa xuất hóa đơn cùng ngày**: xếp theo độ gần số tiền sao kê, mở thử tối đa 3 phiếu và ưu tiên phiếu có giờ vào/ra rơi đúng ngày sao kê. Không phiếu nào khớp ngày thì dời ca của một phiếu sang ngày sao kê. Không đọc được phiếu nào thì báo `error`, không gán nhầm.
@@ -24,7 +33,9 @@ Trạng thái `needs_choice` chỉ còn xuất hiện ở phiên lưu từ bản
 Nút **Lưu API N phiếu đã Accept** xử lý tuần tự, dừng ở lỗi đầu tiên, tự tải lại trang sau mỗi 15 phiếu.
 
 - **Phiếu có sẵn**: mở đúng phiếu, gửi `DoSave` bằng API, đóng form.
-- **Phiếu mới**: tab gốc mở một tab Bán hàng phụ. Tab phụ tự chọn phòng trống đúng đơn giá của phương án (theo sơ đồ phòng website trả về, không chồng giờ với phiếu khác trong ngày, không bao giờ chọn `BÁN LẺ`), gửi hai request `DoSave` (mode=0 tạo phiên, mode=2 thanh toán), ghi kết quả rồi tự đóng.
+- **Phiếu mới**: tạo ngay trên tab danh sách, không mở tab phụ. Extension chọn phòng trống đúng đơn giá của phương án theo sơ đồ phòng website trả về (không chồng giờ với phiếu khác trong ngày, không bao giờ chọn quầy `BÁN LẺ`), đọc form trống của phòng bằng `GET AddEdit` (chỉ dựng form, không tạo bản ghi), rồi gửi hai request `DoSave` (mode=0 tạo phiên, mode=2 thanh toán).
+  - Không có sơ đồ phòng hoặc không đọc được form phòng (lúc đó chưa gửi request ghi nào) thì tự quay về cách cũ: mở một tab Bán hàng phụ, mở form phòng trên giao diện, gửi hai request rồi tự đóng.
+  - Nút **Kiểm tra tạo phiếu không cần tab phụ** chỉ đọc form của một phòng trống để xác nhận cách mới dùng được trên website; không lưu gì.
 - Sau mỗi phiếu, tab gốc mở lại phiếu **từ danh sách trên server** và đối soát tuyệt đối với phương án. Chỉ khi khớp mới đánh dấu giao dịch `done` và trừ tồn kho.
 
 ### Chống tạo trùng phiếu mới

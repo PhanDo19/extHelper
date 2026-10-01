@@ -47,13 +47,14 @@ const downloadIndex = content.indexOf('invoice-api-debug-${pageTenantSlug}-${tra
 if (storeIndex < 0 || downloadIndex < 0 || storeIndex > downloadIndex) {
   throw new Error("The API debug log must be stored before any download attempt.");
 }
-const applyStart = content.indexOf("async function applyPendingNewInvoicePlan(");
+// Lõi tạo phiếu mới dùng chung cho luồng tab danh sách và tab phụ.
+const applyStart = content.indexOf("async function submitNewInvoiceViaApi(");
 const guardIndex = content.indexOf("assertRuntimeContext();", applyStart);
 const createIndex = content.indexOf('apiSaved = await request("createAndPayFreshInvoiceViaApi", apiExpected);', applyStart);
 const successLogIndex = content.indexOf('outcome: "success"', applyStart);
 const createCatchIndex = content.indexOf("} catch (error) {", createIndex);
 if (applyStart < 0 || guardIndex < 0 || createIndex < 0 || guardIndex > createIndex) {
-  throw new Error("applyPendingNewInvoicePlan must assert the extension runtime before calling the create API.");
+  throw new Error("submitNewInvoiceViaApi must assert the extension runtime before calling the create API.");
 }
 if (successLogIndex < 0 || createCatchIndex < 0 || successLogIndex < createCatchIndex) {
   throw new Error("The success debug log must run outside the create API try block.");

@@ -385,11 +385,13 @@
       .toLocaleUpperCase("vi-VN");
   }
 
-  // "BÁN LẺ"/"BAN LE" là quầy bán lẻ, không phải phòng hát: không được nhận
-  // phiếu có tiền giờ. Phiếu 01000000260 (Nhơn, 01/07/2026) đã bị tạo trên
-  // BAN LE đúng vì bộ loại trừ trước đây chỉ nhận cách viết có dấu.
+  // "BÁN LẺ"/"BAN LE" là quầy bán lẻ, không phải phòng hát: không có tiền giờ
+  // và không lập được hóa đơn điện tử, nên extension không tạo hay dùng phiếu ở
+  // đó. Phiếu 01000000260 (Nhơn, 01/07/2026) đã bị tạo trên BAN LE vì bộ loại
+  // trừ trước đây chỉ nhận cách viết có dấu. Khớp theo CỤM TỪ để bắt cả "BÁN LẺ
+  // 2", "KHU BÁN LẺ"; khớp đúng chuỗi thì các biến thể đó lọt qua.
   function isRetailRoomName(value) {
-    return roomAreaKey(value) === "BAN LE";
+    return /(^| )BAN LE( |$)/.test(roomAreaKey(value));
   }
 
   // Nút chọn khu "TẤT CẢ" trên sơ đồ phòng. Ưu tiên id _ALL_ đã quan sát được
@@ -754,8 +756,9 @@
     return { opened: false, roomName: "", diagnostics };
   }
 
-  // Phải khớp NEW_INVOICE_NOT_SENT_TAG trong bridge.js.
+  // Phải khớp NEW_INVOICE_NOT_SENT_TAG / NEW_INVOICE_FORM_UNAVAILABLE_TAG trong bridge.js.
   const NEW_INVOICE_NOT_SENT_TAG = "[chua-gui-api] ";
+  const NEW_INVOICE_FORM_UNAVAILABLE_TAG = "[form-phong] ";
 
   // Một lần tạo phiếu mới đã từng gửi API mà chưa ghi nhận được kết quả thì
   // server có thể đã cấp số. Tạo lại lúc đó là sinh phiếu trùng, nên chặn cho
@@ -769,30 +772,41 @@
       "và Tạo Batch Review để gắn đúng phiếu; chưa có thì Đặt lại giao dịch rồi chạy lại.";
   }
 
+  // Sửa đúng MỘT giao dịch trên bản sao kê MỚI NHẤT trong storage rồi nhận bản
+  // đó làm bản hiện hành, trả về giao dịch đã ghi. Dùng cho các lần ghi của tab
+  // tạo phiếu phụ: không được thất bại vì tab gốc vừa ghi (kết quả API đã cấp số
+  // thì phải lưu được) và cũng không được đè thay đổi của tab gốc. `mutate` ném
+  // lỗi thì không ghi gì.
+  async function updateStatementTransaction(transactionId, mutate) {
+    const id = String(transactionId);
+    statementDataset = await InvoiceMappingStore.mutateStatement(statement => {
+      const target = (statement.transactions || []).find(item => String(item.id) === id);
+      if (!target) throw new Error("Không tìm thấy giao dịch trong sao kê mới nhất để ghi.");
+      mutate(target);
+    });
+    return findStatementTransaction(id);
+  }
+
   // Tab worker báo lỗi về tab gốc qua storage; tab gốc so thời điểm để không
   // đọc nhầm lỗi của lần chạy trước.
   async function reportNewInvoiceWorkerError(transaction, message) {
     if (!transaction) return;
-    transaction.newInvoiceWorkerError = { message: String(message || "Không rõ lỗi."), at: new Date().toISOString() };
+    const workerError = { message: String(message || "Không rõ lỗi."), at: new Date().toISOString() };
     try {
-      await InvoiceMappingStore.saveStatement(statementDataset);
+      await updateStatementTransaction(transaction.id, latest => { latest.newInvoiceWorkerError = workerError; });
     } catch (error) {
       console.error("[InvoiceTarget] Không ghi được lỗi tab worker", error);
     }
   }
 
-  async function applyPendingNewInvoicePlan(transaction) {
-    const plan = pendingNewInvoice?.plan || transaction?.batchApprovedPlan;
-    if (!transaction || !plan?.requiresNewInvoice || !Array.isArray(plan.items) || !plan.items.length) return false;
-    // Các bản cũ từng ghi appliedAt trước khi API thực sự thành công, khiến một
-    // lần lưu lỗi bị kẹt vĩnh viễn. Chỉ savedAt mới được coi là hoàn tất.
-    if (pendingNewInvoice?.savedAt) return false;
-    if (pendingNewInvoice?.appliedAt && !pendingNewInvoice?.savedAt) {
-      pendingNewInvoice.appliedAt = "";
-    }
-    currentBankTransaction = transaction;
-    document.getElementById("it-target").value = formatMoney(plan.targetGrand || transaction.credit);
-    setStatus("Dang tao phien va thanh toan phieu moi qua 2 request API chinh thuc...", "warn");
+  // Lõi tạo phiếu mới, dùng chung cho luồng tab danh sách (có `room`: form phòng
+  // đọc bằng API, không mở tab phụ) và luồng tab phụ (không có `room`: dùng form
+  // đang mở trên giao diện). Gồm ghi dấu chống trùng, gọi API và ghi kết quả
+  // hoặc lỗi lên bản sao kê mới nhất. Trả về { transaction, apiSaved }.
+  //
+  // Lỗi ném ra mang `formUnavailable` khi CHƯA gửi request ghi nào và chỉ vì
+  // không đọc được form phòng bằng API: lớp gọi được phép quay về tab phụ.
+  async function submitNewInvoiceViaApi(transaction, plan, room = null) {
     const apiTargetGrand = Math.round(Number(plan.targetGrand || transaction.credit) || 0);
     const apiExpected = {
       items: plan.items,
@@ -807,24 +821,35 @@
       paymentMethod: transaction.paymentMethod || "",
       tenantSlug: pageTenantSlug
     };
+    if (room) {
+      apiExpected.room = {
+        id: String(room.id || ""),
+        areaId: String(room.areaId || ""),
+        name: String(room.name || ""),
+        areaName: String(room.areaName || ""),
+        counter: Number(room.counter) || 0
+      };
+    }
     // Content script mồ côi (extension vừa Reload) vẫn gọi được bridge trong
     // trang, tức API tạo phiếu vẫn chạy và server vẫn cấp số, nhưng mọi bước
     // ghi chrome.storage sau đó đều hỏng: phiếu có trên website mà extension
     // không ghi nhận, người dùng lại bấm tạo và sinh phiếu trùng. Phải chặn
     // TRƯỚC khi gửi API.
     assertRuntimeContext();
-    // Đọc bản sao kê MỚI NHẤT trong storage, không tin bản trong bộ nhớ: lần
-    // thử trước có thể do một tab khác ghi.
-    const storedStatement = await InvoiceMappingStore.loadStatement();
-    const storedTransaction = (storedStatement.transactions || [])
-      .find(item => String(item.id) === String(transaction.id));
-    const blockReason = newInvoiceAttemptBlockReason(storedTransaction) || newInvoiceAttemptBlockReason(transaction);
-    if (blockReason) throw new Error(blockReason);
     // Ghi dấu TRƯỚC khi gửi API. Nếu tab bị đóng hoặc crash giữa chừng, dấu
     // này là thứ duy nhất ngăn lần chạy sau tạo thêm một phiếu nữa.
-    transaction.newInvoiceCreateStartedAt = new Date().toISOString();
-    delete transaction.newInvoiceCreateError;
-    await InvoiceMappingStore.saveStatement(statementDataset);
+    //
+    // Kiểm tra dấu chặn và ghi dấu trong CÙNG một lần khóa trên bản sao kê mới
+    // nhất (không tin bản trong bộ nhớ): hai tab không thể cùng vượt qua bước
+    // này cho một giao dịch.
+    const createStartedAt = new Date().toISOString();
+    transaction = await updateStatementTransaction(transaction.id, latest => {
+      const blockReason = newInvoiceAttemptBlockReason(latest);
+      if (blockReason) throw new Error(blockReason);
+      latest.newInvoiceCreateStartedAt = createStartedAt;
+      delete latest.newInvoiceCreateError;
+    });
+    currentBankTransaction = transaction;
     // Always trace extension-generated DoSave calls. This is independent from
     // the manual "Bắt API" button and captures both success and failure.
     await request("armApiTrace");
@@ -837,17 +862,23 @@
     } catch (error) {
       const rawMessage = String(error?.message || error || "Không rõ lỗi.");
       const notSent = rawMessage.startsWith(NEW_INVOICE_NOT_SENT_TAG);
-      const message = notSent ? rawMessage.slice(NEW_INVOICE_NOT_SENT_TAG.length) : rawMessage;
-      if (notSent) {
-        // Chưa có request nào rời trình duyệt: an toàn để thử lại.
-        delete transaction.newInvoiceCreateStartedAt;
-      } else {
-        transaction.newInvoiceCreateError = message;
-        transaction.blockedNote = newInvoiceAttemptBlockReason(transaction);
-        transaction.blockedAt = new Date().toISOString();
-      }
+      let message = notSent ? rawMessage.slice(NEW_INVOICE_NOT_SENT_TAG.length) : rawMessage;
+      const formUnavailable = notSent && message.startsWith(NEW_INVOICE_FORM_UNAVAILABLE_TAG);
+      if (formUnavailable) message = message.slice(NEW_INVOICE_FORM_UNAVAILABLE_TAG.length);
+      const recordFailure = latest => {
+        if (notSent) {
+          // Chưa có request nào rời trình duyệt: an toàn để thử lại.
+          delete latest.newInvoiceCreateStartedAt;
+        } else {
+          latest.newInvoiceCreateError = message;
+          latest.blockedNote = newInvoiceAttemptBlockReason(latest);
+          latest.blockedAt = new Date().toISOString();
+        }
+      };
+      // Ghi vào bộ nhớ trước để thông báo lỗi vẫn đúng khi storage không ghi được.
+      recordFailure(transaction);
       try {
-        await InvoiceMappingStore.saveStatement(statementDataset);
+        transaction = await updateStatementTransaction(transaction.id, recordFailure);
       } catch (saveError) {
         console.error("[InvoiceTarget] Không ghi được kết quả lỗi tạo phiếu", saveError);
       }
@@ -860,12 +891,12 @@
       } catch (logError) {
         console.error("[InvoiceTarget] Không thể xuất API debug log", logError);
       }
-      throw new Error(notSent ? message : transaction.blockedNote);
+      const failure = new Error(notSent ? message : transaction.blockedNote);
+      failure.formUnavailable = formUnavailable;
+      throw failure;
     }
     const apiCompletedAt = new Date().toISOString();
-    transaction.invoiceNo = apiSaved.invoiceNo;
-    transaction.status = "planned";
-    transaction.pendingPlan = {
+    const savedPendingPlan = {
       ...structuredClone(plan),
       invoiceNo: apiSaved.invoiceNo,
       invoiceDateKey: transaction.transactionDate,
@@ -874,21 +905,29 @@
       apiSavedRecordId: apiSaved.savedRecordId,
       createdAt: apiCompletedAt
     };
-    transaction.apiSavedAt = apiCompletedAt;
-    transaction.apiSavedRecordId = apiSaved.savedRecordId;
-    transaction.verifiedAt = "";
-    transaction.ledgerId = "";
-    pendingNewInvoice.invoiceNo = apiSaved.invoiceNo;
-    pendingNewInvoice.appliedAt = apiCompletedAt;
-    pendingNewInvoice.savedAt = apiCompletedAt;
-    pendingNewInvoice.savedRecordId = apiSaved.savedRecordId;
     // Ghi kết quả NGAY sau khi API xác nhận, trước mọi việc phụ như ghi/tải log:
     // khoảng hở giữa "server đã cấp số" và "extension đã ghi nhận" phải ngắn
-    // nhất có thể, vì trong khoảng đó tab bị đóng là mất dấu phiếu.
-    await InvoiceMappingStore.saveStatement(statementDataset);
-    syncBatchPlanTransaction(transaction);
-    await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: structuredClone(pendingNewInvoice) });
-    renderBatchPlans();
+    // nhất có thể, vì trong khoảng đó tab bị đóng là mất dấu phiếu. Ghi trên bản
+    // mới nhất nên tab khác có ghi xen vào cũng không làm mất kết quả này.
+    //
+    // Luồng không cần tab phụ ghi luôn phòng và giờ đã dùng, để phiếu mới kế
+    // tiếp trong ngày không chọn trùng phòng trùng giờ.
+    transaction = await updateStatementTransaction(transaction.id, latest => {
+      latest.invoiceNo = apiSaved.invoiceNo;
+      latest.status = "planned";
+      latest.pendingPlan = structuredClone(savedPendingPlan);
+      latest.apiSavedAt = apiCompletedAt;
+      latest.apiSavedRecordId = apiSaved.savedRecordId;
+      latest.verifiedAt = "";
+      latest.ledgerId = "";
+      if (room) {
+        latest.newInvoiceRoomName = String(room.name || "");
+        latest.newInvoiceRoomId = String(room.id || "");
+        latest.newInvoiceCheckIn = plan.checkIn || "";
+        latest.newInvoiceCheckOut = plan.checkOut || "";
+      }
+    });
+    currentBankTransaction = transaction;
     // Lỗi ghi/tải log KHÔNG được làm mất kết quả lưu đã ghi ở trên.
     try {
       await persistGeneratedInvoiceApiDebugLog({
@@ -899,6 +938,30 @@
     } catch (logError) {
       console.error("[InvoiceTarget] Không thể xuất API debug log sau khi lưu thành công", logError);
     }
+    return { transaction, apiSaved };
+  }
+
+  // Luồng tab phụ: form phòng đã được mở trên giao diện của tab này.
+  async function applyPendingNewInvoicePlan(transaction) {
+    const plan = pendingNewInvoice?.plan || transaction?.batchApprovedPlan;
+    if (!transaction || !plan?.requiresNewInvoice || !Array.isArray(plan.items) || !plan.items.length) return false;
+    // Các bản cũ từng ghi appliedAt trước khi API thực sự thành công, khiến một
+    // lần lưu lỗi bị kẹt vĩnh viễn. Chỉ savedAt mới được coi là hoàn tất.
+    if (pendingNewInvoice?.savedAt) return false;
+    if (pendingNewInvoice?.appliedAt && !pendingNewInvoice?.savedAt) {
+      pendingNewInvoice.appliedAt = "";
+    }
+    currentBankTransaction = transaction;
+    document.getElementById("it-target").value = formatMoney(plan.targetGrand || transaction.credit);
+    setStatus("Dang tao phien va thanh toan phieu moi qua 2 request API chinh thuc...", "warn");
+    const { transaction: savedTransaction, apiSaved } = await submitNewInvoiceViaApi(transaction, plan);
+    pendingNewInvoice.invoiceNo = apiSaved.invoiceNo;
+    pendingNewInvoice.appliedAt = savedTransaction.apiSavedAt;
+    pendingNewInvoice.savedAt = savedTransaction.apiSavedAt;
+    pendingNewInvoice.savedRecordId = apiSaved.savedRecordId;
+    syncBatchPlanTransaction(savedTransaction);
+    await saveBatchUiSession({ panelOpen: true, pendingNewInvoice: structuredClone(pendingNewInvoice) });
+    renderBatchPlans();
 
     // Worker tab only performs the official create/payment request. The
     // original Batch Review tab already has the invoice-list grid, so it will
@@ -997,14 +1060,17 @@
       const pendingPlanError = newInvoicePlanValidationError(pendingNewInvoice.plan, transaction);
       if (pendingPlanError) {
         if (transaction) {
-          transaction.status = "pending";
-          transaction.pendingPlan = null;
-          transaction.batchApprovedPlan = null;
-          delete transaction.acceptedGrandOverride;
-          delete transaction.acceptedGrandOverrideAt;
-          transaction.blockedNote = `${pendingPlanError} Đã hủy phương án cũ và cần tính lại.`;
-          transaction.blockedAt = new Date().toISOString();
-          await InvoiceMappingStore.saveStatement(statementDataset);
+          // Tab tạo phiếu phụ cũng chạy tới đây: ghi trên bản mới nhất để không
+          // đè thay đổi tab gốc vừa ghi.
+          await updateStatementTransaction(transaction.id, latest => {
+            latest.status = "pending";
+            latest.pendingPlan = null;
+            latest.batchApprovedPlan = null;
+            delete latest.acceptedGrandOverride;
+            delete latest.acceptedGrandOverrideAt;
+            latest.blockedNote = `${pendingPlanError} Đã hủy phương án cũ và cần tính lại.`;
+            latest.blockedAt = new Date().toISOString();
+          });
         }
         pendingNewInvoice = null;
         batchPlans = [];
@@ -1045,11 +1111,13 @@
           // Ghi phòng KÈM khoảng giờ vào sao kê: phiếu mới sau trong cùng ngày
           // chỉ cần tránh trùng khoảng giờ, vẫn dùng lại được phòng này.
           if (transaction) {
-            transaction.newInvoiceRoomName = opened.roomName;
-            transaction.newInvoiceRoomId = opened.roomId || "";
-            transaction.newInvoiceCheckIn = pendingNewInvoice.plan?.checkIn || "";
-            transaction.newInvoiceCheckOut = pendingNewInvoice.plan?.checkOut || "";
-            await InvoiceMappingStore.saveStatement(statementDataset);
+            const roomPlan = pendingNewInvoice.plan;
+            await updateStatementTransaction(transaction.id, latest => {
+              latest.newInvoiceRoomName = opened.roomName;
+              latest.newInvoiceRoomId = opened.roomId || "";
+              latest.newInvoiceCheckIn = roomPlan?.checkIn || "";
+              latest.newInvoiceCheckOut = roomPlan?.checkOut || "";
+            });
           }
           await saveBatchUiSession({ panelOpen: true });
           if (transaction && pendingNewInvoice.plan?.requiresNewInvoice) {
@@ -1130,7 +1198,10 @@
       const timeoutMs = ["replaceInvoiceItems", "applyInvoicePlan"].includes(action) ? 90000
         : action === "issueEInvoice" ? issueTimeoutMs(payload)
         : action === "readInvoiceItems" ? 45000
-        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap"].includes(action) ? 30000
+        // Lệnh ghi gửi nhiều request lên server: hết giờ sớm là báo lỗi trong khi
+        // bridge vẫn đang gửi và server có thể đã lưu.
+        : ["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi"].includes(action) ? 90000
+        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm"].includes(action) ? 30000
         : 5000;
       const timeout = setTimeout(
         () => reject(new Error(`Trang không phản hồi sau ${Math.round(timeoutMs / 1000)}s (${action}).`)),
@@ -2702,7 +2773,8 @@
         source: file.name,
         sourceType: "invoice_amount",
         importedAt: new Date().toISOString(),
-        transactions: [...baseTransactions, ...imported]
+        transactions: [...baseTransactions, ...imported],
+        revision: statementDataset.revision
       };
       await InvoiceMappingStore.saveStatement(statementDataset);
       issueCoordination = InvoiceIssueCoordination.recordStatement(
@@ -2766,7 +2838,14 @@
           "phải tự kiểm đây là doanh thu hay khoản nạp tiền/chuyển nội bộ trước khi lập phiếu.";
         manualReviewCount += 1;
       }
-      statementDataset = { source: file.name, importedAt: new Date().toISOString(), transactions };
+      // Giữ revision của bản đang có: nhập file thay cả sao kê nên phải dựa trên
+      // đúng bản mới nhất, nếu tab khác vừa ghi thì bị từ chối thay vì đè mất.
+      statementDataset = {
+        source: file.name,
+        importedAt: new Date().toISOString(),
+        transactions,
+        revision: statementDataset.revision
+      };
       await InvoiceMappingStore.saveStatement(statementDataset);
       // Trích bảng tóm tắt cho cơ sở kia đọc: ngày, giờ, số tiền — vừa đủ để
       // biết trước ngày đó bên này có bao nhiêu việc. Parse đã dùng đúng
@@ -5558,6 +5637,19 @@
   // chặn cuối theo số phút. Phương án v3 của phiếu có sẵn có thể vỡ sàn.
   const CALCULATION_VERSION = "website-inclusive-vat-4";
   const MAX_SESSION_CANDIDATE_PROBES = 3;
+  // Tạo phiếu mới ngay trên tab danh sách (đọc form phòng bằng API). Tắt thì
+  // mọi phiếu mới đi qua tab Bán hàng phụ như trước.
+  const DIRECT_NEW_INVOICE_ENABLED = true;
+  // Trần tổng số phiếu được mở cho MỘT giao dịch, kể cả phiếu bán lẻ bị bỏ qua.
+  const MAX_SESSION_CANDIDATE_OPENS = 8;
+  // Số phiếu đã mở ra và thấy ở quầy BÁN LẺ trong lần tải trang này; các giao
+  // dịch sau loại luôn, khỏi mở lại.
+  const knownRetailInvoiceNos = new Set();
+
+  // Phiếu ở quầy BÁN LẺ không lập được HĐĐT nên không dùng để khớp sao kê.
+  function isRetailInvoiceScan(scan) {
+    return Boolean(scan && !scan.newInvoicePlanning && (scan.roomIsRetail || isRetailRoomName(scan.roomName)));
+  }
   const SESSION_CANDIDATE_PROBE_TIMEOUT_MS = 5000;
   // Phiếu nhỏ: tổng dưới mức này đi luật riêng — đúng MỘT món giá thấp, toàn
   // bộ phần trước VAT còn lại là Tiền giờ. Kế toán chốt 17/09/2026: hạ ngưỡng
@@ -6203,6 +6295,13 @@
   function calculateBatchPlan(scan, transaction, inventoryState, productUsage, overrideGrand) {
     const maxHourToGoodsRatio = 2;
     if (!scan?.ready) return { status: "error", reason: "Không đọc được chi tiết phiếu." };
+    if (isRetailInvoiceScan(scan)) {
+      return {
+        status: "error",
+        reason: `Phiếu ${scan.invoiceNo || ""} ở quầy BÁN LẺ (${scan.roomName || "không rõ tên"}) không lập được HĐĐT; ` +
+          "không dùng phiếu này để khớp sao kê."
+      };
+    }
     if (!invoiceMatchesTransactionDate(scan, transaction.transactionDate)) {
       const formDates = invoiceBusinessDateKeys(scan);
       const invoiceLabel = String(scan?.invoiceNo || "").trim() || "không đọc được số phiếu";
@@ -7094,12 +7193,17 @@
           dateKey: transaction.transactionDate,
           usedInvoiceNos: [...usedInvoiceNos].filter(invoiceNo => invoiceNo !== String(transaction.invoiceNo || ""))
         });
-        const available = (found.candidates || []).filter(item => item.available);
+        // Phiếu đã biết là ở quầy BÁN LẺ (không lập được HĐĐT) bị loại ngay, khỏi
+        // phải mở lại.
+        const available = (found.candidates || [])
+          .filter(item => item.available && !knownRetailInvoiceNos.has(String(item.invoiceNo)));
         const rankedCandidates = rankInvoiceCandidates(available, transaction.credit, transaction.invoiceNo);
         const rankedCandidate = rankedCandidates[0] || null;
         let candidate = rankedCandidate;
-        if (!candidate) {
-          // Không còn phiếu chưa xuất: dò trong các phiếu ĐÃ xuất xem giao dịch đã được lập HĐ khớp tiền chưa.
+        // Không còn phiếu chưa xuất DÙNG ĐƯỢC — hết phiếu, hoặc chỉ còn phiếu ở
+        // quầy BÁN LẺ: dò phiếu ĐÃ xuất xem giao dịch đã được lập HĐ khớp tiền
+        // chưa, không có thì lập phương án phiếu mới ở phòng hát.
+        const planWithoutUnissuedInvoice = async (note = "") => {
           let issued = null;
           try {
             issued = await request("findIssuedInvoiceByAmount", {
@@ -7111,9 +7215,9 @@
               transactionId: String(transaction.id),
               status: "lookup_error",
               transaction,
-              reason: `Không dò được hóa đơn đã xuất: ${error.message} Hãy thử lại; chưa được tạo phiếu mới.`
+              reason: `${note}Không dò được hóa đơn đã xuất: ${error.message} Hãy thử lại; chưa được tạo phiếu mới.`
             });
-            continue;
+            return;
           }
           const issuedMatches = (issued.matches || []).filter(row => !usedInvoiceNos.has(String(row.invoiceNo)));
           if (issuedMatches.length) {
@@ -7126,9 +7230,9 @@
                 invoiceNo: issuedMatches.length === 1 ? issuedMatches[0].invoiceNo : "",
                 grand: transaction.credit
               },
-              reason: issuedMatches.length === 1
+              reason: note + (issuedMatches.length === 1
                 ? `Đã có HĐ ${issuedMatches[0].invoiceNo} khớp ${formatMoney(transaction.credit)}đ. Kiểm tra rồi xác nhận.`
-                : `Có ${issuedMatches.length} HĐ đã xuất khớp số tiền; chọn đúng phiếu rồi xác nhận.`
+                : `Có ${issuedMatches.length} HĐ đã xuất khớp số tiền; chọn đúng phiếu rồi xác nhận.`)
             });
           } else {
             const slotIndex = takeNewInvoiceSlot(transaction.transactionDate);
@@ -7142,15 +7246,18 @@
               transaction,
               plan,
               candidates: available,
-              reason: plan.status === "ready"
-                ? "Đã tính sẵn phương án từ tồn kho cho phiếu mới. Accept để giữ phương án rồi mở tab Bán hàng."
-                : `Cần tạo phiếu mới nhưng chưa tính được phương án: ${plan.reason || "không rõ lỗi"}.`
+              reason: note + (plan.status === "ready"
+                ? "Đã tính sẵn phương án từ tồn kho cho phiếu mới. Accept rồi Lưu API để tạo phiếu."
+                : `Cần tạo phiếu mới nhưng chưa tính được phương án: ${plan.reason || "không rõ lỗi"}.`)
             });
             if (plan.status === "ready") {
               workingInventory = reserveBatchStock(workingInventory, plan.items);
               addPlanProductUsage(productUsage, plan.items);
             }
           }
+        };
+        if (!candidate) {
+          await planWithoutUnissuedInvoice();
           continue;
         }
         // The list date alone is not enough: an old room session can be shown in a
@@ -7162,14 +7269,22 @@
         let selectedCandidateScan = null;
         let selectedCandidateLeftOpen = false;
         let candidateProbeSucceeded = false;
-        const candidatesToProbe = rankedCandidates.slice(0, MAX_SESSION_CANDIDATE_PROBES);
         // Do not fall back to the first list row after every probe fails.  A
         // timed-out row is not a usable invoice, and reusing it for the next
         // transaction caused several transactions to report the same invoice
         // number (for example 01000000150).
+        //
+        // Phiếu ở quầy BÁN LẺ chỉ lộ ra khi mở phiếu (danh sách không có cột
+        // phòng). Chúng bị bỏ qua và KHÔNG tính vào giới hạn số phiếu thử, vì
+        // không phải lựa chọn thật; trần tổng số lần mở giữ lô không chạy mãi.
         candidate = null;
-        for (let probeIndex = 0; probeIndex < candidatesToProbe.length; probeIndex += 1) {
-          const currentCandidate = candidatesToProbe[probeIndex];
+        const attemptedCandidates = [];
+        const retailSkipped = [];
+        let usableProbes = 0;
+        for (const currentCandidate of rankedCandidates) {
+          if (usableProbes >= MAX_SESSION_CANDIDATE_PROBES ||
+              attemptedCandidates.length >= MAX_SESSION_CANDIDATE_OPENS) break;
+          attemptedCandidates.push(currentCandidate);
           let inspecting = false;
           try {
             // Reserve every attempted row, including failed probes, so a
@@ -7179,7 +7294,7 @@
             if (summary) {
               summary.textContent =
                 `Đang tính ${index + 1}/${transactions.length}: ${transaction.transactionDate} · ${formatMoney(transaction.credit)}` +
-                ` · kiểm tra phiếu ${probeIndex + 1}/${candidatesToProbe.length}`;
+                ` · kiểm tra phiếu ${attemptedCandidates.length}`;
             }
             await request("openInvoiceCandidate", {
               uid: currentCandidate.uid,
@@ -7191,6 +7306,12 @@
               currentCandidate.dateKey || transaction.transactionDate,
               SESSION_CANDIDATE_PROBE_TIMEOUT_MS
             );
+            if (isRetailInvoiceScan(inspectedScan)) {
+              knownRetailInvoiceNos.add(String(currentCandidate.invoiceNo));
+              retailSkipped.push(String(currentCandidate.invoiceNo));
+              continue;
+            }
+            usableProbes += 1;
             if (invoiceSessionTouchesTransactionDate(inspectedScan, transaction.transactionDate)) {
               candidate = currentCandidate;
               candidateProbeSucceeded = true;
@@ -7235,16 +7356,28 @@
             }
           }
         }
+        const retailNote = retailSkipped.length
+          ? `Bỏ qua ${retailSkipped.length} phiếu ở quầy BÁN LẺ (${retailSkipped.join(", ")}) vì không lập được HĐĐT. `
+          : "";
+        // Mọi phiếu chưa xuất trong ngày đều ở quầy BÁN LẺ: xử lý như không còn
+        // phiếu chưa xuất. Chỉ khi đã xét HẾT danh sách, nếu không còn phiếu chưa
+        // mở có thể là phiếu phòng hát dùng được.
+        if (!candidate && retailSkipped.length &&
+            retailSkipped.length === attemptedCandidates.length &&
+            attemptedCandidates.length === rankedCandidates.length) {
+          await planWithoutUnissuedInvoice(retailNote);
+          continue;
+        }
         if (!candidate || !candidateProbeSucceeded) {
-          const attempted = candidatesToProbe.map(item => String(item.invoiceNo || "")).filter(Boolean);
+          const attempted = attemptedCandidates.map(item => String(item.invoiceNo || "")).filter(Boolean);
           batchPlans.push({
             transactionId: String(transaction.id),
             status: "error",
             transaction,
             candidates: available,
-            reason: attempted.length
+            reason: retailNote + (attempted.length
               ? `Không mở/đọc được các phiếu ứng viên ${attempted.join(", ")}; đã bỏ qua để không gán nhầm phiếu cho giao dịch ${formatMoney(transaction.credit)}đ. Hãy kiểm tra website rồi tính lại.`
-              : "Không có phiếu ứng viên đọc được cho giao dịch này; chưa gán nhầm phiếu.",
+              : "Không có phiếu ứng viên đọc được cho giao dịch này; chưa gán nhầm phiếu."),
           });
           continue;
         }
@@ -7430,6 +7563,7 @@
       <label><input id="it-batch-select-all" type="checkbox" checked> Chọn tất cả phương án sẵn sàng</label>
       <button id="it-approve-batch" type="button" class="primary" ${ready.length ? "" : "disabled"}>Accept các phương án đã chọn</button>
       <button id="it-run-batch-api" type="button" class="primary" ${apiQueue.length ? "" : "disabled"}>Lưu API ${apiQueue.length} phiếu đã Accept</button>
+      <button id="it-probe-direct-create" type="button" title="Chỉ đọc form của một phòng trống bằng API để kiểm tra; không lưu gì lên website">Kiểm tra tạo phiếu không cần tab phụ</button>
     </div>
     <div class="it-table-wrap"><table class="it-batch-table it-batch-plan-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>Giờ vào → ra</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     table.querySelector("#it-batch-select-all")?.addEventListener("change", event => {
@@ -7437,6 +7571,7 @@
     });
     table.querySelector("#it-approve-batch")?.addEventListener("click", approveBatchPlans);
     table.querySelector("#it-run-batch-api")?.addEventListener("click", runAcceptedBatchApi);
+    table.querySelector("#it-probe-direct-create")?.addEventListener("click", probeDirectNewInvoice);
     table.querySelectorAll(".it-unissued-choice").forEach(select => select.addEventListener("change", chooseUnissuedInvoice));
     table.querySelectorAll(".it-issued-choice").forEach(select => select.addEventListener("change", chooseIssuedInvoice));
     table.querySelectorAll(".it-confirm-issued").forEach(button => button.addEventListener("click", confirmAlreadyIssued));
@@ -8001,6 +8136,119 @@
     return { invoiceNo: plan.invoiceNo, httpStatus: saved.httpStatus };
   }
 
+  // Tạo phiếu mới NGAY trên tab danh sách, không mở tab Bán hàng phụ: chọn
+  // phòng theo sơ đồ phòng của website, bridge đọc form phòng bằng API rồi gửi
+  // hai request DoSave, sau đó đối soát luôn trên tab này (đã có danh sách).
+  //
+  // Trả về null khi chưa gửi request ghi nào mà không dùng được cách này (không
+  // có sơ đồ phòng, không đọc được form phòng) để lớp gọi quay về tab phụ.
+  async function saveNewBatchEntryDirect(index) {
+    const entry = batchPlans[index];
+    if (!entry || entry.status !== "batch_ready" || !entry.plan?.requiresNewInvoice) {
+      throw new Error("Dòng phiếu mới chưa ở trạng thái Đã Accept.");
+    }
+    const transactionId = String(entry.transactionId || "");
+    const transaction = findStatementTransaction(transactionId);
+    if (!transaction) throw new Error("Không tìm thấy giao dịch sao kê của dòng phiếu mới.");
+    entry.transaction = transaction;
+    const plan = entry.plan || transaction.batchApprovedPlan;
+    const planError = newInvoicePlanValidationError(plan, transaction);
+    if (planError) throw new Error(await discardInvalidNewInvoicePlan(transaction, planError));
+    const blockReason = newInvoiceAttemptBlockReason(transaction);
+    if (blockReason) throw new Error(blockReason);
+
+    const roomMap = await loadRoomMapForSelection();
+    if (!roomMap.rooms.length) return null;
+    const bookings = roomBookingsOnDate(transaction.transactionDate, transactionId);
+    const plannedRate = Number(plan.hourlyRate) || 0;
+    const ranked = rankIdleRoomsFromMap(roomMap.rooms, bookings, plan.checkIn, plan.checkOut, plannedRate);
+    if (!ranked.length) {
+      throw new Error(
+        "Không còn phòng hát trống phù hợp để tạo phiếu mới (không dùng quầy BÁN LẺ). " +
+        roomSearchDiagnosticsText({ ...roomMap.diagnostics, mapFreeForTime: 0, plannedHourlyRate: plannedRate })
+      );
+    }
+    const room = ranked[0];
+    currentBankTransaction = transaction;
+    setStatus(
+      `Đang tạo phiếu mới ${transaction.transactionDate} · ${formatMoney(transaction.credit)}đ trên phòng ${room.name} ` +
+      "ngay tại tab này (không mở tab phụ)…",
+      "warn"
+    );
+    let submitted;
+    try {
+      submitted = await submitNewInvoiceViaApi(transaction, plan, room);
+    } catch (error) {
+      if (error?.formUnavailable) {
+        console.warn("[InvoiceTarget] Không đọc được form phòng bằng API; quay về tab phụ.", error);
+        return null;
+      }
+      throw error;
+    }
+    syncBatchPlanTransaction(submitted.transaction);
+    await saveBatchUiSession({ panelOpen: true });
+    renderBatchPlans();
+    const verifyIndex = batchPlans.findIndex(item => String(item.transactionId) === transactionId);
+    if (verifyIndex < 0) throw new Error("Không tìm thấy dòng Batch vừa tạo phiếu để đối soát.");
+    const verification = await verifyBatchSavedInvoice({
+      target: { closest: () => batchButtonProxy(verifyIndex) }
+    });
+    const verified = findStatementTransaction(transactionId);
+    if (!verification?.verified || verified?.status !== "done") {
+      throw new Error(
+        `Đã lưu ${submitted.apiSaved.invoiceNo} nhưng đọc lại từ server chưa khớp: ` +
+        `${verification?.error || "không rõ lỗi"}. Tồn kho chưa bị trừ; KHÔNG chạy lại API, hãy bấm Đối soát sau lưu.`
+      );
+    }
+    const uiState = await request("getInvoiceUiState");
+    if (uiState?.detailVisible || !uiState?.listVisible) {
+      throw new Error(
+        `Sau khi đối soát ${verified.invoiceNo}, website chưa trở về danh sách phiếu; ` +
+        "batch đã dừng để không ghi nhầm phiếu."
+      );
+    }
+    return { invoiceNo: verified.invoiceNo, transactionId, roomName: room.name, formSource: "api" };
+  }
+
+  // Phiếu mới: ưu tiên tạo ngay trên tab danh sách; chỉ mở tab Bán hàng phụ khi
+  // không dùng được cách đó — lúc ấy chưa có request ghi nào được gửi.
+  async function saveNewBatchEntry(index) {
+    if (DIRECT_NEW_INVOICE_ENABLED) {
+      const direct = await saveNewBatchEntryDirect(index);
+      if (direct) return direct;
+      setStatus("Không đọc được form phòng bằng API; chuyển sang mở tab Bán hàng phụ để tạo phiếu.", "warn");
+    }
+    return saveNewBatchEntryViaWorker(index);
+  }
+
+  // Chỉ ĐỌC form của một phòng trống để kiểm tra luồng tạo phiếu không cần tab
+  // phụ trên website thật. Không gửi request ghi nào.
+  async function probeDirectNewInvoice(event) {
+    const button = event?.currentTarget || event?.target?.closest?.("button");
+    try {
+      if (button) button.disabled = true;
+      setStatus("Đang đọc thử form của một phòng trống bằng API (không lưu gì)…", "warn");
+      const roomMap = await loadRoomMapForSelection();
+      if (!roomMap.rooms.length) throw new Error("chưa đọc được sơ đồ phòng từ website.");
+      const room = roomMap.rooms.find(isIdleMapRoom);
+      if (!room) throw new Error("hiện không có phòng hát trống để đọc thử.");
+      const result = await request("probeBlankRoomForm", { room });
+      setStatus(
+        `Đọc được form phòng ${result.roomName} bằng API (${result.fieldCount} trường, chưa có ID phiếu, kho xuất hợp lệ). ` +
+        "Lưu API sẽ tạo phiếu mới ngay trên tab này, không mở tab phụ. Chưa có gì được ghi lên website.",
+        "ok"
+      );
+    } catch (error) {
+      setStatus(
+        `Chưa đọc được form phòng bằng API: ${error.message} ` +
+        "Lưu API sẽ tự dùng cách mở tab Bán hàng phụ như trước. Chưa có gì được ghi lên website.",
+        "warn"
+      );
+    } finally {
+      if (button?.isConnected) button.disabled = false;
+    }
+  }
+
   async function saveNewBatchEntryViaWorker(index) {
     const entry = batchPlans[index];
     if (!entry || entry.status !== "batch_ready" || !entry.plan?.requiresNewInvoice) {
@@ -8105,7 +8353,7 @@
         button.disabled = true;
         button.textContent = "Đang tạo, lưu và đối soát…";
       }
-      const result = await saveNewBatchEntryViaWorker(index);
+      const result = await saveNewBatchEntry(index);
       setStatus(
         `Đã tạo, đọc lại và đối soát ${result.invoiceNo}. Tồn kho chỉ được cập nhật sau bước đối soát này.`,
         "ok"
@@ -8230,7 +8478,7 @@
       for (const index of indexes) {
         if (button?.isConnected) button.textContent = `Đang xử lý ${completed + 1}/${indexes.length}…`;
         if (batchPlans[index]?.plan?.requiresNewInvoice) {
-          await saveNewBatchEntryViaWorker(index);
+          await saveNewBatchEntry(index);
         } else {
           await saveBatchEntryViaApi(index);
         }
@@ -8301,6 +8549,24 @@
     setStatus(`Đã gắn giao dịch với HĐ ${invoiceNo} và đánh dấu đã xử lý.`, "ok");
   }
 
+  // Phương án phiếu mới không còn hợp lệ (công thức/ngày/giờ đổi): hủy, đưa
+  // giao dịch về Chờ xử lý và tính lại Batch Review. Trả về thông báo lỗi.
+  async function discardInvalidNewInvoicePlan(transaction, planError) {
+    if (transaction) {
+      transaction.status = "pending";
+      transaction.pendingPlan = null;
+      transaction.batchApprovedPlan = null;
+      delete transaction.acceptedGrandOverride;
+      delete transaction.acceptedGrandOverrideAt;
+      transaction.blockedNote = `${planError} Đã hủy phương án cũ và cần tính lại.`;
+      transaction.blockedAt = new Date().toISOString();
+      await InvoiceMappingStore.saveStatement(statementDataset);
+    }
+    setStatus(`${planError} Không tạo phiếu bằng phương án này; đang tính lại Batch Review.`, "error");
+    await buildBatchReview();
+    return `${planError} Phương án đã bị hủy và Batch Review đã tính lại; hãy Accept lại phương án mới rồi chạy Lưu API.`;
+  }
+
   async function openPosForNewInvoice(event) {
     const index = Number(event.target.dataset.index);
     const entry = batchPlans[index];
@@ -8309,24 +8575,7 @@
     entry.transaction = t;
     const plan = entry.plan || t?.batchApprovedPlan || null;
     const planError = newInvoicePlanValidationError(plan, t);
-    if (planError) {
-      if (t) {
-        t.status = "pending";
-        t.pendingPlan = null;
-        t.batchApprovedPlan = null;
-        delete t.acceptedGrandOverride;
-        delete t.acceptedGrandOverrideAt;
-        t.blockedNote = `${planError} Đã hủy phương án cũ và cần tính lại.`;
-        t.blockedAt = new Date().toISOString();
-        await InvoiceMappingStore.saveStatement(statementDataset);
-      }
-      setStatus(`${planError} Không mở form bằng phương án này; đang tính lại Batch Review.`, "error");
-      await buildBatchReview();
-      return {
-        opened: false,
-        error: `${planError} Phương án đã bị hủy và Batch Review đã tính lại; hãy Accept lại phương án mới rồi chạy Lưu API.`
-      };
-    }
+    if (planError) return { opened: false, error: await discardInvalidNewInvoicePlan(t, planError) };
     const salesAnchor = Array.from(document.querySelectorAll("a"))
       .find(anchor => (anchor.innerText || "").trim() === "Bán hàng" && anchor.href);
     const salesUrl = salesAnchor?.href || location.href;
@@ -8494,6 +8743,13 @@
     if (!document.getElementById("it-stock-confirm").checked) return setStatus("Hãy xác nhận dữ liệu tồn kho còn hiệu lực.", "error");
     if (!latestScan?.ready) await scanInvoice();
     if (!latestScan?.ready) return;
+    if (isRetailInvoiceScan(latestScan)) {
+      return setStatus(
+        `Phiếu đang mở ở quầy BÁN LẺ (${latestScan.roomName || "không rõ tên"}) không lập được HĐĐT; ` +
+        "hãy dùng phiếu của phòng hát.",
+        "error"
+      );
+    }
     if (currentBankTransaction) {
       if (!invoiceBusinessDateKeys(latestScan).length) return setStatus("Không đọc được ngày trên phiếu; chưa thể xác nhận khớp ngày sao kê.", "error");
       if (!invoiceMatchesTransactionDate(latestScan, currentBankTransaction.transactionDate)) {

@@ -79,8 +79,9 @@ assert.equal(linhDam.api.currentTenant(), "parislinhdam");
   assert.equal((await linhDam.api.loadIssuedInvoices()).entries.length, 2);
 
   // --- So doi chieu: tach ---
-  await kimGiang.api.commitVerifiedInvoice({ items: [] }, { transactions: [] }, { entries: [{ id: "kg-led" }] });
-  await linhDam.api.commitVerifiedInvoice({ items: [] }, { transactions: [] }, { entries: [{ id: "ld-led" }] });
+  // Ghi sổ phải dựa trên bản sao kê đang lưu (cùng revision), như content.js.
+  await kimGiang.api.commitVerifiedInvoice({ items: [] }, await kimGiang.api.loadStatement(), { entries: [{ id: "kg-led" }] });
+  await linhDam.api.commitVerifiedInvoice({ items: [] }, await linhDam.api.loadStatement(), { entries: [{ id: "ld-led" }] });
   assert.equal((await kimGiang.api.loadLedger()).entries[0].id, "kg-led");
   assert.equal((await linhDam.api.loadLedger()).entries[0].id, "ld-led");
 

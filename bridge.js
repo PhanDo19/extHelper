@@ -2001,9 +2001,18 @@
 
     const invoiceDate = findInvoiceDate();
     const invoiceTimes = findInvoiceTimes();
+    // Phòng của phiếu: content dựa vào đây để bỏ qua phiếu ở quầy BÁN LẺ
+    // (không lập được HĐĐT). Cờ quầy lấy từ sơ đồ phòng nếu đã có.
+    const roomName = String(suffixInput("lblTENBAN")?.textContent || "").replace(/\s+/g, " ").trim();
+    const roomId = getOpenFormRoom().roomId;
+    const mappedRoom = mappedRoomById(roomId);
     return {
       ready: items.length > 0,
       mode,
+      roomName,
+      roomId,
+      roomIsRetail: isRetailRoomText(roomName) ||
+        Boolean(mappedRoom && (Number(mappedRoom.counter) || isRetailRoomText(mappedRoom.name) || isRetailRoomText(mappedRoom.areaName))),
       invoiceNo: (suffixInput("txtNAME") || {}).value || "",
       currentGoods: valueOf("numTIENHANG"),
       currentHour: valueOf("numTIENGIO"),
@@ -2038,6 +2047,9 @@
   // Tiền tố lỗi tạo phiếu mới khi request CHƯA được gửi. content.js dựa vào nó
   // để biết có được gỡ dấu "đang tạo phiếu" hay không; phải giữ khớp hai bên.
   const NEW_INVOICE_NOT_SENT_TAG = "[chua-gui-api] ";
+  // Đi sau NEW_INVOICE_NOT_SENT_TAG khi không đọc được form phòng bằng API:
+  // content quay về cách mở tab phụ. Cũng phải giữ khớp với content.js.
+  const NEW_INVOICE_FORM_UNAVAILABLE_TAG = "[form-phong] ";
   const SALES_TABLE_ID = "d56b4b85-68c8-44c1-947d-9f3899e55a7c";
   const PRODUCT_GRID_TABLE_ID = "c07a4b54-e177-40d9-b077-c140fd4641d9";
   const PRODUCT_CATALOG_MENU_ID = "c4059f67-16f0-4088-a639-9bdf906585de";
@@ -2668,6 +2680,9 @@
   async function saveExistingInvoicePlanViaApi(expected) {
     const formData = currentFormData();
     const baseFields = mapObject(formData.mapper?.Maps);
+    // Phiếu có sẵn ở quầy BÁN LẺ không lập được HĐĐT: không sửa để khỏi dùng
+    // phiếu đó khớp sao kê.
+    assertNotRetailRoom({ roomId: baseFields.DBANID, roomName: suffixInput("lblTENBAN")?.textContent });
     const warehouseId = String(baseFields.DKHOXUATID || "").trim();
     if (!isGuid(warehouseId)) throw new Error("Phieu hien tai thieu DKHOXUATID de lap chi tiet API.");
     const products = await fetchProductRowsForApiPlan(expected?.items, warehouseId);
@@ -2827,11 +2842,146 @@
     return { body, responseText, endpoint: new URL(endpoint).pathname, httpStatus: response.status };
   }
 
+  // ---------------------------------------------------------------------------
+  // Quầy BÁN LẺ không lập được hóa đơn điện tử, nên extension không bao giờ
+  // tạo hoặc sửa phiếu trên đó. Nhận diện theo tên phòng/khu (có dấu hay không,
+  // kể cả "BÁN LẺ 2", "KHU BÁN LẺ") và cờ quầy trong sơ đồ phòng của website.
+  // ---------------------------------------------------------------------------
+  function roomTextKey(value) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[đĐ]/g, "D")
+      .toUpperCase()
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isRetailRoomText(value) {
+    return /(^| )BAN LE( |$)/.test(roomTextKey(value));
+  }
+
+  function mappedRoomById(roomId) {
+    const id = String(roomId || "").trim().toLowerCase();
+    if (!id) return null;
+    return (roomMapCapture?.rooms || []).find(room => String(room.id || "").toLowerCase() === id) || null;
+  }
+
+  function assertNotRetailRoom({ roomId, roomName, room }) {
+    const mapped = room || mappedRoomById(roomId);
+    const retail = isRetailRoomText(roomName) ||
+      Boolean(mapped && (Number(mapped.counter) || isRetailRoomText(mapped.name) || isRetailRoomText(mapped.areaName)));
+    if (retail) {
+      const label = String(roomName || mapped?.name || roomId || "").trim();
+      throw new Error(
+        `Phòng ${label} là quầy BÁN LẺ: không lập được hóa đơn điện tử nên extension không tạo hoặc sửa phiếu trên đó.`
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Form phiếu mới của một phòng, đọc bằng API thay vì mở form trên giao diện.
+  //
+  // GET AddEdit với RecordID rỗng + DBANID/DKHUVUCID chỉ DỰNG form cho phòng,
+  // không tạo bản ghi nào (trace 02/08/2026, fixtures/api/create-invoice-init).
+  // HTML trả về chứa script `new DataTransferJs({...})` — chính là formData mà
+  // currentFormData() đọc khi form mở trên giao diện — nên tab danh sách tạo
+  // được phiếu mới mà không cần mở tab Bán hàng phụ.
+  // ---------------------------------------------------------------------------
+  const FORM_DATA_MARKER = "new DataTransferJs(";
+
+  function salesFormDataFromHtml(html) {
+    const found = [];
+    const source = String(html || "");
+    let marker = source.indexOf(FORM_DATA_MARKER);
+    while (marker >= 0) {
+      const formData = extractJsonObject(source, marker);
+      if (formData && String(formData._AddEditTableID || "") === SALES_TABLE_ID) found.push(formData);
+      marker = source.indexOf(FORM_DATA_MARKER, marker + 1);
+    }
+    return found;
+  }
+
+  // Lỗi đọc form (mạng, HTML không đúng dạng) mang cờ formUnavailable: lúc đó
+  // chưa gửi request ghi nào nên content được phép quay về cách mở tab phụ.
+  function formUnavailableError(message) {
+    const error = new Error(message);
+    error.formUnavailable = true;
+    return error;
+  }
+
+  async function loadBlankRoomForm(room) {
+    const roomId = String(room?.id || "").trim();
+    const areaId = String(room?.areaId || "").trim();
+    const roomName = String(room?.name || "").trim();
+    if (!isGuid(roomId)) throw new Error("Phòng được chọn thiếu id (DBANID) hợp lệ.");
+    assertNotRetailRoom({ roomId, roomName, room });
+    const query = new URLSearchParams({
+      TableID: SALES_TABLE_ID,
+      RecordID: "",
+      Loai: "0",
+      MaxTab: "0",
+      NOTITLE: "1",
+      DBANID: roomId,
+      DKHUVUCID: areaId,
+      is_dialog: "1"
+    });
+    let response;
+    let html = "";
+    try {
+      response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
+      });
+      html = await response.text();
+    } catch (error) {
+      throw formUnavailableError(`Không tải được form phòng ${roomName}: ${error?.message || error}`);
+    }
+    if (isLoginRedirect(response, html)) {
+      throw new Error("Phiên đăng nhập đã hết hoặc bị cơ sở khác chiếm khi mở form phòng; hãy đăng nhập lại.");
+    }
+    if (!response.ok) throw formUnavailableError(`Website từ chối mở form phòng ${roomName} (HTTP ${response.status}).`);
+    const forRoom = salesFormDataFromHtml(html)
+      .filter(formData => String(mapObject(formData.mapper?.Maps).DBANID || "").toLowerCase() === roomId.toLowerCase());
+    if (!forRoom.length) {
+      throw formUnavailableError(`Không đọc được dữ liệu form của phòng ${roomName} từ website.`);
+    }
+    const formData = forRoom[forRoom.length - 1];
+    // Phòng đang có phiên chạy thì website nạp lại phiên đó (RecordID đã có):
+    // tạo phiếu mới lúc này là ghi đè lên phiếu của khách đang hát.
+    if (isGuid(formDataRecordId(formData))) {
+      throw new Error(`Phòng ${roomName} đang có phiên chạy trên website; không tạo phiếu mới trên phòng này.`);
+    }
+    const fields = mapObject(formData.mapper?.Maps);
+    if (!isGuid(fields.DKHOXUATID)) throw new Error(`Form phòng ${roomName} thiếu kho xuất (DKHOXUATID).`);
+    return { formData, roomName, roomId, fieldCount: (formData.mapper?.Maps || []).length };
+  }
+
+  // Chỉ ĐỌC form của một phòng để người dùng kiểm tra luồng tạo phiếu không
+  // cần tab phụ trên website thật. Không gửi request ghi nào.
+  async function probeBlankRoomForm(room) {
+    const loaded = await loadBlankRoomForm(room);
+    const fields = mapObject(loaded.formData.mapper?.Maps);
+    return {
+      ok: true,
+      roomName: loaded.roomName,
+      roomId: loaded.roomId,
+      fieldCount: loaded.fieldCount,
+      recordIdBlank: !isGuid(formDataRecordId(loaded.formData)),
+      warehouseId: String(fields.DKHOXUATID || ""),
+      areaId: String(fields.DKHUVUCID || "")
+    };
+  }
+
   // Tạo phiếu mới bằng hai request DoSave giống website: mode=0 tạo phiên (server
   // cấp số phiếu), rồi mode=2 thanh toán đúng ID đó. `progress` cho lớp gọi biết
   // request đã rời trình duyệt chưa, để phân biệt lỗi an toàn với lỗi chưa rõ.
-  async function postFreshInvoiceTwoStep(expected, progress = {}) {
-    const formData = currentFormData({ allowBlankRecordId: true });
+  // `context` có formData/roomName khi form được đọc bằng API; không có thì
+  // dùng form đang mở trên giao diện (luồng tab phụ).
+  async function postFreshInvoiceTwoStep(expected, progress = {}, context = null) {
+    const formData = context?.formData || currentFormData({ allowBlankRecordId: true });
+    const roomLabel = context ? String(context.roomName || "") : String(suffixInput("lblTENBAN")?.textContent || "");
     const paymentMethod = invoiceCreationPaymentMethod(expected);
     if (isGuid(formDataRecordId(formData))) {
       throw new Error("Form hien tai da co ID; khong duoc dung flow tao phieu moi hai buoc.");
@@ -2854,6 +3004,7 @@
     const roomId = String(baseFields.DBANID || "").trim();
     const warehouseId = String(baseFields.DKHOXUATID || "").trim();
     if (!isGuid(roomId) || !isGuid(warehouseId)) throw new Error("Form phong moi thieu DBANID hoac DKHOXUATID.");
+    assertNotRetailRoom({ roomId, roomName: roomLabel });
     const products = await fetchProductRowsForApiPlan(expected.items, warehouseId);
     const sessionRows = freshSessionDetailRows(expected.items, products, invoiceDateKey);
     const calculatedGoods = sessionRows.reduce((sum, row) => sum + row.THANHTIEN, 0);
@@ -2897,7 +3048,7 @@
           Name: "LuuVet",
           Data: sessionRows.map(row => ({
             PHANLOAI: 4,
-            BAN: String(suffixInput("lblTENBAN")?.textContent || ""),
+            BAN: roomLabel,
             NOTE: `Them mat hang '${row.TENHANG}' vao bill, so luong: ${row.SLXUATCHUAQUYDOI}`,
             SOLUONG: row.SLXUATCHUAQUYDOI,
             DONGIA: row.DONGIA,
@@ -2985,13 +3136,21 @@
   async function createAndPayFreshInvoiceViaApi(expected) {
     const progress = { sessionSent: false, sessionInvoiceNo: "", sessionRecordId: "" };
     let result;
+    let roomName = "";
     try {
-      result = await postFreshInvoiceTwoStep(expected, progress);
+      // Có `room` là luồng không cần tab phụ: đọc form của phòng bằng API.
+      const context = expected?.room ? await loadBlankRoomForm(expected.room) : null;
+      roomName = context?.roomName || "";
+      result = await postFreshInvoiceTwoStep(expected, progress, context);
     } catch (error) {
       const message = String(error?.message || error || "Khong ro loi.");
       // Lỗi trước khi gửi request: chắc chắn chưa có gì trên server, content
-      // được phép gỡ dấu "đang tạo" để thử lại.
-      if (!progress.sessionSent) throw new Error(`${NEW_INVOICE_NOT_SENT_TAG}${message}`);
+      // được phép gỡ dấu "đang tạo" để thử lại. Không đọc được form phòng thì
+      // gắn thêm nhãn để content quay về cách mở tab phụ.
+      if (!progress.sessionSent) {
+        const formTag = error?.formUnavailable ? NEW_INVOICE_FORM_UNAVAILABLE_TAG : "";
+        throw new Error(`${NEW_INVOICE_NOT_SENT_TAG}${formTag}${message}`);
+      }
       // Phiên mode=0 đã được cấp số nhưng bước thanh toán hỏng: phải nêu đúng
       // số phiếu để người dùng xử lý trên website thay vì tạo thêm phiếu khác.
       if (progress.sessionInvoiceNo) {
@@ -3005,7 +3164,9 @@
     return {
       ...result,
       invoiceDateKey: normalizeDateKey(expected?.invoiceDateKey),
-      createProtocol: "mode0-then-mode2"
+      createProtocol: "mode0-then-mode2",
+      formSource: expected?.room ? "api" : "ui",
+      roomName
     };
   }
 
@@ -3412,6 +3573,7 @@
       else if (detail.action === "applyInvoicePlan") result = await applyInvoicePlan(detail);
       else if (detail.action === "saveExistingInvoicePlanViaApi") result = await saveExistingInvoicePlanViaApi(detail);
       else if (detail.action === "createAndPayFreshInvoiceViaApi") result = await createAndPayFreshInvoiceViaApi(detail);
+      else if (detail.action === "probeBlankRoomForm") result = await probeBlankRoomForm(detail.room);
       else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);
       else if (detail.action === "issueEInvoice") result = await issueEInvoice(detail);
       else if (detail.action === "readInvoiceItems") result = { items: await readInvoiceItems(detail) };
