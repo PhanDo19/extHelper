@@ -6516,6 +6516,10 @@
             Math.min(baseHour, requiredFloor, Math.min(minuteBaseHour, affordableHour)),
             Math.min(baseHour, requiredFloor) - adjustmentLimit
           ),
+      // Riêng phần SÀN PHÚT (30/50 phút, đã kẹp theo những gì phiếu kham được)
+      // của minHourAmount — tức không gồm dải "nền − 20%" của phiếu có sẵn. Phần
+      // dải là sàn mềm được nhường tỷ lệ Tiền giờ/tiền hàng; phần này thì không.
+      minuteFloorHour: Math.max(step, Math.min(baseHour, requiredFloor, minuteBaseHour, affordableHour)),
       maxHourAmount: Math.max(baseHour + adjustmentLimit, requiredFloor)
     };
   }
@@ -7070,6 +7074,27 @@
     // Valid upper range is the union of: baseline +/- 20%, or a final
     // singing charge no higher than MAX_HOUR_PRETAX_RATIO of the pre-VAT total.
     hourBounds.maxHourAmount = Math.max(hourBounds.maxHourAmount, hourPreTaxCap);
+    // Phiếu có sẵn: sàn "nền − 20%" chỉ là sàn mềm để Tiền giờ không lệch xa
+    // phiếu gốc, còn Tiền giờ ≤ maxHourToGoodsRatio lần tiền hàng là cổng cứng ở
+    // cuối. Hai thứ có thể không còn giá trị chung trên lưới giá hàng 5.000đ: ca
+    // thật Kim Giang 27/07/2026, sao kê 952.000đ (lập ở 951.999đ), phiếu có sẵn
+    // Tiền giờ ~720.000đ → sàn mềm 576.000đ, tỷ lệ đòi Tiền giờ ≤ 578.636đ;
+    // 285.000đ hàng cho giờ 580.454đ (vỡ tỷ lệ), 290.000đ cho 575.454đ (hụt sàn
+    // 546đ). Solver xếp sàn trước tỷ lệ nên luôn chọn 285.000đ rồi cổng cuối
+    // loại, Tính lại bao nhiêu lần cũng vậy — dù cổng "bù ≤ 20% HOẶC ≤ trần"
+    // vẫn chấp nhận 575.454đ. Hạ sàn mềm vừa đủ cho tỷ lệ, KHÔNG dưới sàn phút.
+    if (!scan.newInvoicePlanning) {
+      const ratioMinimumGoods = Math.ceil((targets.preTaxTarget - GOODS_PRICE_STEP) / (maxHourToGoodsRatio + 1));
+      const ratioMaximumHour = targets.preTaxTarget -
+        Math.ceil(ratioMinimumGoods / GOODS_PRICE_STEP) * GOODS_PRICE_STEP;
+      if (ratioMaximumHour > 0 && hourBounds.minHourAmount > ratioMaximumHour) {
+        const relaxedMinimum = Math.max(Math.round(Number(hourBounds.minuteFloorHour) || 0), ratioMaximumHour);
+        if (relaxedMinimum < hourBounds.minHourAmount) {
+          hourBounds.minHourAmount = relaxedMinimum;
+          hourBounds.minHourRelaxedForRatio = true;
+        }
+      }
+    }
     const minHourAmount = hourBounds.minHourAmount;
     // The goods amount must leave no more than the permitted singing charge.
     // This used to be validated only after solving, causing avoidable errors
@@ -7232,6 +7257,32 @@
     while (!attempt.solution.items && quantityScale < maxQuantityScale) {
       quantityScale += 1;
       attempt = solveAtScale(quantityScale);
+    }
+    // Tỷ lệ Tiền giờ ≤ maxHourToGoodsRatio lần tiền hàng (cổng kiểm tra cuối bên
+    // dưới). Chỉ miễn khi chính SÀN thời lượng đã đẩy tỷ lệ lên — xem giải thích
+    // ở cổng đó; tính sẵn ở đây để bước nâng trần dưới đây dùng cùng điều kiện.
+    const hourRequiredByFloor = Math.max(0, Math.round(Number(hourBounds.minHourAmount) || 0));
+    const goodsAtFloor = targets.preTaxTarget - hourRequiredByFloor;
+    const floorItselfExceedsRatio = hourRequiredByFloor > 0 &&
+      (goodsAtFloor <= 0 || hourRequiredByFloor >= goodsAtFloor * maxHourToGoodsRatio);
+    const shortOfHourRatio = candidateSolution => {
+      if (!candidateSolution?.items || floorItselfExceedsRatio) return false;
+      const goods = Math.round(Number(candidateSolution.actual) || 0);
+      return goods <= 0 || (targets.preTaxTarget - goods) - goods * maxHourToGoodsRatio > GOODS_PRICE_STEP;
+    };
+    // Bội số trần ở trên chỉ đo sức chứa theo khoảng Tiền giờ (minGoodsForHourRange),
+    // không theo tiền hàng tối thiểu mà tỷ lệ 2 lần đòi. Phiếu có sẵn nhiều giờ hát
+    // thì hai mức lệch xa: ca thật Kim Giang 27/07/2026, sao kê 952.000đ, Tiền giờ
+    // trên phiếu ~600.000đ nên mục tiêu tiền hàng ~265.000đ (5 dòng), trần ×1 ghép
+    // tối đa 285.000đ < 288.485đ tỷ lệ đòi; bội số giữ ×1 và Tính lại bao nhiêu lần
+    // cũng báo "Tiền giờ vượt 2 lần tiền hàng". Hụt tỷ lệ thì nâng tiếp (vẫn tối đa
+    // ×5) và CHỈ nhận kết quả đạt tỷ lệ, nên phiếu đang lập được không đổi.
+    for (let scale = quantityScale + 1; shortOfHourRatio(attempt.solution) && scale <= maxQuantityScale; scale += 1) {
+      const scaled = solveAtScale(scale);
+      if (scaled.solution.items && !shortOfHourRatio(scaled.solution)) {
+        attempt = scaled;
+        quantityScale = scale;
+      }
     }
     const { candidates, solverOptions, solution, rotatingPriorityRelaxed, fruitPlatterRelaxed } = attempt;
     if (!solution.items) {
@@ -7399,16 +7450,14 @@
     // Chỉ miễn khi chính SÀN là thứ đẩy tỷ lệ lên: tức ngay cả khi Tiền giờ
     // đúng bằng sàn thì tỷ lệ vẫn vượt. Nếu ở mức sàn tỷ lệ vẫn hợp lệ thì
     // Tiền giờ cao là do tổ hợp hàng, và phải chặn như trước.
-    const hourRequiredByFloor = Math.max(0, Math.round(Number(hourBounds.minHourAmount) || 0));
-    const goodsAtFloor = targets.preTaxTarget - hourRequiredByFloor;
+    // (hourRequiredByFloor, goodsAtFloor, floorItselfExceedsRatio tính sẵn ở trên,
+    // trước bước nâng trần theo tỷ lệ.)
     // So bằng >= chứ không >: ở đúng điểm hòa (sàn = 2 lần tiền hàng) thì tỷ lệ
     // chỉ "vừa đủ" khi tiền hàng rơi CHÍNH XÁC vào mức tối thiểu — điều mà lưới
     // giá mặt hàng thường không làm được. Dùng > khiến cả một dải ngay trên điểm
     // hòa bị loại oan: sao kê 495.100đ-498.000đ (preTax ~450.100-452.700) báo
     // "Tiền giờ vượt 2 lần tiền hàng" dù 494.900đ ngay dưới đó vẫn lập được với
     // tỷ lệ 2,10. Trong dải này chính SÀN mới là thứ ép tỷ lệ lên, nên phải miễn.
-    const floorItselfExceedsRatio = hourRequiredByFloor > 0 &&
-      (goodsAtFloor <= 0 || hourRequiredByFloor >= goodsAtFloor * maxHourToGoodsRatio);
     // Vượt tỷ lệ vài trăm đồng là ARTEFACT LÀM TRÒN, không phải hóa đơn lệch cơ
     // cấu: tiền hàng đi theo lưới giá mặt hàng (bước 5.000đ) nên hiếm khi rơi
     // đúng mức tối thiểu mà tỷ lệ đòi. Sao kê 495.100đ-498.000đ có tiền hàng
@@ -7420,9 +7469,18 @@
       : Number.POSITIVE_INFINITY;
     const ratioExceeded = solution.actual <= 0 || ratioOvershoot > GOODS_PRICE_STEP;
     if (ratioExceeded && !floorItselfExceedsRatio) {
+      // Nêu con số quyết định thay vì đổ chung "tồn kho/rule": cần bao nhiêu tiền
+      // hàng, và kho (đã trừ đặt chỗ của giao dịch trước trong lô) ghép được tối
+      // đa bao nhiêu ở trần số lượng/HĐ đã thử.
+      const ratioMinimumGoods = Math.ceil((targets.preTaxTarget - GOODS_PRICE_STEP) / (maxHourToGoodsRatio + 1));
+      const capacity = reachableGoodsUpperBound(candidates, activeLineLimit, solverMaxQty * quantityScale);
       return {
         status: "error",
-        reason: `Tiền giờ ${formatMoney(finalHourAmount)} vượt ${maxHourToGoodsRatio} lần tiền hàng ${formatMoney(solution.actual)}; tồn kho/rule hiện tại chưa tạo được phương án thực tế.`
+        reason: `Tiền giờ ${formatMoney(finalHourAmount)} vượt ${maxHourToGoodsRatio} lần tiền hàng ${formatMoney(solution.actual)}: ` +
+          `cần tiền hàng từ khoảng ${formatMoney(ratioMinimumGoods)}đ nhưng tồn kho/giới hạn số lượng hiện tại chỉ ghép được ` +
+          `${formatMoney(solution.actual)}đ (sức chứa ước tính ${formatMoney(capacity)}đ với tối đa ${activeLineLimit} mã` +
+          `${quantityScale > 1 ? `, đã nâng trần số lượng/HĐ ×${quantityScale}` : ""}). ` +
+          "Nhập/ánh xạ thêm hàng, hoặc lập giao dịch này ở lô riêng nếu các giao dịch trước trong lô đã giữ hết hàng."
       };
     }
     return {
@@ -8169,6 +8227,50 @@
     }
   }
 
+  // Bộ lọc bảng Batch Review, để thấy ngay giao dịch nào đang lỗi trong lô dài.
+  // "Lỗi / cần xử lý" gồm trạng thái lỗi (Lỗi, Lỗi dò hóa đơn, Cần chọn
+  // phiếu...) VÀ dòng vừa lỗi khi Lưu API/đối soát mà chưa xử lý xong — vd phiếu
+  // đã lưu nhưng đối soát thất bại vẫn mang trạng thái "Chờ lưu/đối soát".
+  const BATCH_FILTERS = [
+    { value: "all", label: "Tất cả" },
+    { value: "issues", label: "Lỗi / cần xử lý" },
+    { value: "planned", label: "Đã lưu, chờ đối soát" },
+    { value: "ready", label: "Sẵn sàng duyệt" },
+    { value: "batch_ready", label: "Đã Accept, chờ Lưu API" },
+    { value: "needs_new_invoice", label: "Cần tạo phiếu" },
+    { value: "matched", label: "Đã có HĐ / đã xử lý" }
+  ];
+  const BATCH_NORMAL_STATUSES = new Set(["ready", "planned", "batch_ready", "already_issued", "needs_new_invoice", "done"]);
+  let batchStatusFilter = "all";
+
+  // Lỗi gần nhất của dòng khi Lưu API/đối soát. Chỉ còn hiệu lực khi dòng vẫn
+  // ở đúng trạng thái lúc lỗi: lưu/đối soát lại thành công hay tính lại phương
+  // án thì trạng thái đổi và lỗi cũ tự hết.
+  function batchEntryError(entry) {
+    return entry?.lastError && entry.lastErrorStatus === entry.status ? String(entry.lastError) : "";
+  }
+
+  function batchEntryMatchesFilter(entry, filter) {
+    if (filter === "issues") return !BATCH_NORMAL_STATUSES.has(entry?.status) || Boolean(batchEntryError(entry));
+    if (filter === "matched") return ["already_issued", "done"].includes(entry?.status);
+    if (!filter || filter === "all") return true;
+    return entry?.status === filter;
+  }
+
+  // Ghi lỗi lên đúng dòng (lưu cùng phiên Batch, còn sau khi tải lại trang).
+  async function noteBatchEntryError(index, error) {
+    const entry = batchPlans[index];
+    if (!entry) return;
+    entry.lastError = String(error?.message || error || "Không rõ lỗi.");
+    entry.lastErrorStatus = entry.status;
+    entry.lastErrorAt = new Date().toISOString();
+    try {
+      await saveBatchUiSession({ panelOpen: true });
+    } catch (saveError) {
+      console.warn("[InvoiceTarget] Không lưu được lỗi của dòng Batch", saveError);
+    }
+  }
+
   function renderBatchPlans() {
     const summary = document.getElementById("it-batch-summary");
     const table = document.getElementById("it-batch-table");
@@ -8179,7 +8281,8 @@
     const alreadyIssued = batchPlans.filter(item => item.status === "already_issued");
     const needNew = batchPlans.filter(item => item.status === "needs_new_invoice");
     const done = batchPlans.filter(item => item.status === "done");
-    const issues = batchPlans.length - ready.length - planned.length - alreadyIssued.length - needNew.length - done.length;
+    // Cùng cách đếm với bộ lọc "Lỗi / cần xử lý" để hai con số khớp nhau.
+    const issues = batchPlans.filter(item => batchEntryMatchesFilter(item, "issues")).length;
     const readyTotal = ready.reduce((sum, item) => sum + Number(item.plan.targetGrand || 0), 0);
     summary.innerHTML = `<div class="it-batch-kpis">
       <div><small>Tổng giao dịch</small><strong>${batchPlans.length}</strong></div>
@@ -8190,7 +8293,11 @@
       <div class="${issues ? "error" : "ok"}"><small>Cần xử lý</small><strong>${issues}</strong></div>
       <div><small>Tổng sẵn sàng</small><strong>${formatMoney(readyTotal)}</strong></div>
     </div>`;
+    // Lọc khi dựng từng dòng (không lọc mảng trước) để data-index vẫn là chỉ số
+    // trong batchPlans mà các nút trên dòng dùng.
     const rows = batchPlans.map((entry, index) => {
+      if (!batchEntryMatchesFilter(entry, batchStatusFilter)) return "";
+      const lastError = batchEntryError(entry);
       const plan = entry.plan || {};
       const statusLabel = {
         ready: "Sẵn sàng",
@@ -8221,6 +8328,9 @@
         <td>${timeDetails}</td>
         <td class="it-money">${plan.tax == null ? "—" : formatMoney(plan.tax)}</td>
         <td><span class="it-batch-status ${escapeHtml(entry.status)}">${statusLabel}</span>
+          ${lastError ? `<br><small class="it-batch-last-error" title="${escapeHtml(entry.lastErrorAt
+            ? `Lỗi lúc ${new Date(entry.lastErrorAt).toLocaleString("vi-VN")}`
+            : "")}">⚠ ${escapeHtml(lastError)}</small>` : ""}
           ${entry.reason ? `<br><small>${escapeHtml(entry.reason)}</small>` : ""}
           ${entry.status === "needs_choice" && (entry.candidates || []).length ? `<br><select class="it-unissued-choice" data-index="${index}">
             <option value="">— Chọn phiếu chưa xuất —</option>
@@ -8260,7 +8370,12 @@
         <td>${itemDetails ? `<details><summary>${plan.items.length} mã</summary><table><thead><tr><th>Mã</th><th>Tên</th><th>SL</th><th>Giá</th><th>Tồn trước</th><th>Giới hạn/HĐ</th></tr></thead><tbody>${itemDetails}</tbody></table></details>` : "—"}</td>
       </tr>`;
     }).join("");
+    const filterOptions = BATCH_FILTERS.map(filter => {
+      const count = batchPlans.filter(entry => batchEntryMatchesFilter(entry, filter.value)).length;
+      return `<option value="${filter.value}" ${filter.value === batchStatusFilter ? "selected" : ""}>${escapeHtml(filter.label)} (${count})</option>`;
+    }).join("");
     table.innerHTML = `<div class="it-batch-actions">
+      <label class="it-batch-filter">Lọc <select id="it-batch-filter" title="Chỉ hiện giao dịch theo trạng thái">${filterOptions}</select></label>
       <label><input id="it-batch-select-all" type="checkbox" checked> Chọn tất cả phương án sẵn sàng</label>
       <button id="it-approve-batch" type="button" class="primary" ${ready.length ? "" : "disabled"}>Accept các phương án đã chọn</button>
       <button id="it-run-batch-api" type="button" class="primary" ${apiQueue.length ? "" : "disabled"}>Lưu API ${apiQueue.length} phiếu đã Accept</button>
@@ -8269,7 +8384,12 @@
         ? `Lần đọc gần nhất: ${new Date(websiteRoomRates.readAt).toLocaleString("vi-VN")}`
         : "Chưa đọc lần nào")}">Đọc giá giờ các phòng</button>
     </div>
-    <div class="it-table-wrap"><table class="it-batch-table it-batch-plan-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>Giờ vào → ra</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="it-table-wrap"><table class="it-batch-table it-batch-plan-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>Giờ vào → ra</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows ||
+      `<tr><td colspan="10">Không có giao dịch nào ở bộ lọc "${escapeHtml(BATCH_FILTERS.find(filter => filter.value === batchStatusFilter)?.label || batchStatusFilter)}".</td></tr>`}</tbody></table></div>`;
+    table.querySelector("#it-batch-filter")?.addEventListener("change", event => {
+      batchStatusFilter = event.target.value;
+      renderBatchPlans();
+    });
     table.querySelector("#it-batch-select-all")?.addEventListener("change", event => {
       table.querySelectorAll(".it-batch-select:not(:disabled)").forEach(input => { input.checked = event.target.checked; });
     });
@@ -8289,6 +8409,16 @@
     table.querySelectorAll(".it-retry-batch").forEach(button => button.addEventListener("click", buildBatchReview));
     table.querySelectorAll(".it-apply-rounded").forEach(button => button.addEventListener("click", acceptRoundedGrand));
     table.querySelectorAll(".it-reset-rounded").forEach(button => button.addEventListener("click", resetRoundedGrand));
+  }
+
+  // Lý do đối soát thất bại cho người đọc: verifyBatchSavedInvoice trả lỗi thật
+  // (đọc lại lệch phương án, tồn kho không đủ để ghi sổ...) hoặc một mã nội bộ.
+  function verificationFailureText(verification) {
+    const error = String(verification?.error || "").trim();
+    if (error === "transaction-not-done") return "sổ đối soát chưa ghi nhận phiếu.";
+    if (error === "no-pending-invoice") return "dòng này không còn phiếu chờ đối soát.";
+    if (!error) return "không rõ lỗi.";
+    return /[.!?]$/.test(error) ? error : `${error}.`;
   }
 
   async function verifyBatchSavedInvoice(event) {
@@ -8376,6 +8506,7 @@
       }
       return { verified: false, closed: false, invoiceNo: plan.invoiceNo, error: "transaction-not-done" };
     } catch (error) {
+      await noteBatchEntryError(index, error);
       setStatus(`Đối soát từ Batch Review thất bại: ${error.message} Chưa thay đổi tồn kho hoặc sao kê.`, "error");
       return { verified: false, closed: false, invoiceNo: plan?.invoiceNo || "", error: error.message };
     } finally {
@@ -8823,7 +8954,14 @@
     // đổi sang "done". Phải đọc lại theo id từ dataset hiện hành.
     const verified = findStatementTransaction(entry.transactionId);
     if (verified?.status !== "done") {
-      throw new Error(`Đã gửi API nhưng chưa đối soát được ${plan.invoiceNo}; tồn kho và sao kê chưa bị thay đổi.`);
+      // Phải kèm lý do: verifyBatchSavedInvoice có hiện lý do ở dòng trạng thái
+      // nhưng thông báo dừng lô ghi đè ngay sau đó, người dùng chỉ thấy "chưa đối
+      // soát được" mà không biết vì sao (Kim Giang 02/10/2026, HD0126070309).
+      throw new Error(
+        `Đã gửi API nhưng chưa đối soát được ${plan.invoiceNo}: ${verificationFailureText(verification)} ` +
+        `Tồn kho và sao kê chưa bị thay đổi. Phiếu đã lưu trên website: xử lý lý do trên rồi bấm "Đối soát sau lưu" ` +
+        "ở dòng này (không Lưu API lại phiếu này), sau đó Lưu API tiếp các phiếu còn lại."
+      );
     }
     if (!verification?.verified || !verification?.closed) {
       throw new Error(
@@ -9208,6 +9346,7 @@
       renderStatementAdmin();
       setStatus(`Đã lưu và đối soát ${result.invoiceNo}. Sao kê và tồn kho đã được cập nhật.`, "ok");
     } catch (error) {
+      await noteBatchEntryError(index, error);
       renderBatchPlans();
       renderStatementAdmin();
       setStatus(`Batch API dừng: ${error.message}`, "error");
@@ -9522,9 +9661,11 @@
     }
     let completed = 0;
     let savedSinceReload = 0;
+    let currentIndex = -1;
     try {
       assertRuntimeContext();
       for (const index of indexes) {
+        currentIndex = index;
         if (button?.isConnected) button.textContent = `Đang xử lý ${completed + 1}/${indexes.length}…`;
         if (batchPlans[index]?.plan?.requiresNewInvoice) {
           await saveNewBatchEntry(index);
@@ -9554,6 +9695,8 @@
         { label: `Phát hành ${completed} hóa đơn này`, action: "einvoice" }
       );
     } catch (error) {
+      // Ghi lỗi lên dòng đang xử lý để bộ lọc "Lỗi / cần xử lý" chỉ ra đúng giao dịch.
+      if (currentIndex >= 0) await noteBatchEntryError(currentIndex, error);
       renderBatchPlans();
       renderStatementAdmin();
       if (isPageOverloadError(error) && await scheduleAutoReloadResume("batch-api", error.message)) return;

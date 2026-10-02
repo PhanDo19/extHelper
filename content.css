@@ -508,6 +508,8 @@
 .it-batch-actions { position: sticky; top: var(--it-tabs-offset); z-index: 6; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px; border: 1px solid #dce4ef; border-radius: 8px 8px 0 0; background: #fff; }
 #it-panel .it-batch-actions label { display: flex; align-items: center; gap: 7px; margin: 0; }
 #it-panel .it-batch-actions input { width: auto; }
+#it-panel .it-batch-actions .it-batch-filter select { width: auto; min-width: 200px; margin-top: 0; }
+.it-batch-last-error { color: #9a241b; font-weight: 700; }
 #it-batch-table .it-table-wrap { max-height: calc(100vh - 335px); min-height: 350px; border-radius: 0 0 8px 8px; }
 .it-batch-table { min-width: 1100px; width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11px; }
 .it-batch-table > thead th { position: sticky; top: 0; z-index: 2; padding: 8px; background: #eef3f9; white-space: nowrap; }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.29.10 (2026-10-02)
+
+- **Phiếu có sẵn nhiều giờ hát không còn kẹt ở "Tiền giờ vượt 2 lần tiền hàng".** Ca thật Kim Giang 27/07/2026, sao kê 952.000đ (lập ở 951.999đ, trước VAT 865.454đ), kho dư (sức chứa ước tính 2.940.000đ): phiếu có sẵn Tiền giờ ~720.000đ nên sàn mềm "nền − 20%" là 576.000đ, trong khi tỷ lệ Tiền giờ ≤ 2 lần tiền hàng đòi Tiền giờ ≤ 578.636đ. Trên lưới giá hàng 5.000đ không có giá trị chung: 285.000đ hàng cho giờ 580.454đ (vỡ tỷ lệ), 290.000đ cho 575.454đ (hụt sàn 546đ). Solver xếp sàn mềm trước tỷ lệ nên luôn chọn 285.000đ rồi cổng cuối loại; Tính lại bao nhiêu lần cũng vậy, dù cổng "phần bù ≤ 20% HOẶC Tiền giờ ≤ trần" vẫn chấp nhận 575.454đ.
+  - Nay với phiếu có sẵn, sàn mềm nhường tỷ lệ: hạ vừa đủ để có tiền hàng trên lưới 5.000đ đạt tỷ lệ, **không bao giờ dưới sàn phút** (30/50 phút). Ca trên ra hàng 290.000đ, giờ 575.454đ. Phiếu mới và phiếu đang lập được không đổi; không tăng `CALCULATION_VERSION`. Màn xem phương án thủ công (`solveInvoice`) giữ nguyên.
+  - Thêm: tổ hợp hụt tỷ lệ thì thử tiếp bội số trần số lượng/HĐ lớn hơn (tối đa ×5, chỉ nhận kết quả đạt tỷ lệ) — cho trường hợp kho bị giới hạn số lượng/HĐ.
+  - Vẫn không lập được thì thông báo nêu rõ: cần tiền hàng từ bao nhiêu, ghép được bao nhiêu, sức chứa ước tính với bao nhiêu mã.
+
+## 1.29.9 (2026-10-02)
+
+- **Lưu API dừng vì đối soát sau lưu thất bại nay nêu lý do.** Thông báo cũ chỉ ghi "Đã gửi API nhưng chưa đối soát được HD…; tồn kho và sao kê chưa bị thay đổi" (Kim Giang, HD0126070309): lý do thật (đọc lại lệch phương án, tồn kho/kho chung không đủ để ghi sổ, không thấy phiếu trong danh sách…) có hiện ở dòng trạng thái nhưng bị thông báo dừng lô ghi đè ngay sau đó. Nay thông báo dừng kèm lý do và cách xử lý tiếp: sửa nguyên nhân, bấm **Đối soát sau lưu** ở dòng đó (không Lưu API lại phiếu đã lưu), rồi Lưu API tiếp.
+- **Bộ lọc trạng thái ở bảng Batch Review** (dropdown **Lọc**, kèm số dòng mỗi nhóm): Tất cả · Lỗi / cần xử lý · Đã lưu, chờ đối soát · Sẵn sàng duyệt · Đã Accept, chờ Lưu API · Cần tạo phiếu · Đã có HĐ / đã xử lý.
+  - Lỗi khi Lưu API (cả lô hay từng dòng) và khi Đối soát sau lưu nay được ghi lên đúng dòng (⚠ màu đỏ, giữ qua lần tải lại trang). Phiếu đã lưu mà đối soát thất bại vẫn mang trạng thái "Chờ lưu/đối soát" nhưng nằm trong nhóm **Lỗi / cần xử lý**. Lỗi tự hết khi dòng đổi trạng thái (lưu/đối soát lại thành công, tính lại phương án).
+  - Ô KPI "Cần xử lý" đếm cùng cách với bộ lọc này.
+  - Đang lọc thì nút "Chọn tất cả" / Accept chỉ tác động các dòng đang hiện; nút Lưu API vẫn chạy mọi phiếu đã Accept.
+
 ## 1.29.8 (2026-10-02)
 
 - **Đơn giá giờ hát đọc thẳng từ website theo từng phòng.** Kim Giang đổi sang giá theo phòng thay vì 600.000đ cho mọi phòng, nên phương án phiếu mới (tính 600.000đ) bị bridge chặn "đơn giá giờ trên website khác phương án", và phiếu có sẵn bị quy sai về 600.000đ. Nay:

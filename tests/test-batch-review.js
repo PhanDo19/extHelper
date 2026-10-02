@@ -734,6 +734,119 @@ if (overnightResidualPlan.invoiceDateKey !== "2026-06-30") {
   throw new Error("Phương án phiếu qua đêm phải lưu ngày nghiệp vụ theo sao kê.");
 }
 
+// --- Quy tắc Tiền giờ ≤ 2 lần tiền hàng phải được nâng trần số lượng/HĐ ----------
+// Ca thật Kim Giang 27/07/2026, sao kê 952.000đ (lập ở 951.999đ): phiếu có sẵn
+// ~600.000đ Tiền giờ nên mục tiêu tiền hàng chỉ ~265.000đ, tối đa 5 dòng. Ở trần
+// ×1 kho ghép tối đa 285.000đ, trong khi tỷ lệ 2 lần đòi ≥ 288.485đ. Bội số trần
+// chỉ đo theo khoảng Tiền giờ (~145.000đ) nên không bao giờ nâng: "Tiền giờ
+// 580.454 vượt 2 lần tiền hàng 285.000", Tính lại bao nhiêu lần cũng vậy.
+{
+  const ratioScaleCalls = [];
+  const ratioBox = {
+    InvoiceTargetSolver: solver,
+    priorityRules: [],
+    inferHourPricing: () => ({ hourlyRate: 600000, hourStep: 6000 }),
+    buildBatchCandidates: (inventory, grand, transaction, usage, options = {}) => {
+      const scale = Math.max(1, Number(options.quantityScale) || 1);
+      ratioScaleCalls.push(scale);
+      return [
+        { code: "BIA", name: "Bia Tiger lon", price: 20000, qty: 0, maxQty: 6 * scale },
+        { code: "HAT", name: "Hạt điều", price: 30000, qty: 0, maxQty: 2 * scale },
+        { code: "BANH", name: "Bánh quy", price: 35000, qty: 0, maxQty: 1 * scale },
+        { code: "KHO", name: "Khô gà", price: 25000, qty: 0, maxQty: 2 * scale },
+        { code: "KHAN", name: "Khăn ướt", price: 5000, qty: 0, maxQty: 4 * scale }
+      ];
+    },
+    formatMoney: value => String(Number(value) || 0),
+    recommendCheckOut: () => "27/07/2026 21:00"
+  };
+  vm.createContext(ratioBox);
+  vm.runInContext(batchPlanDeps, ratioBox);
+  const ratioPlan = ratioBox.calculateBatchPlan({
+    ready: true,
+    invoiceNo: "HD0126070999",
+    invoiceDateKey: "2026-07-27",
+    checkIn: "27/07/2026 20:00",
+    checkOut: "27/07/2026 21:00",
+    durationMinutes: 60,
+    currentHour: 600000,
+    currentGrand: 990000,
+    taxRate: 10
+  }, {
+    transactionDate: "2026-07-27",
+    credit: 952000,
+    acceptedGrandOverride: 951999
+  }, mandatoryFixture, new Map(), 951999);
+  if (ratioPlan.status !== "ready") {
+    throw new Error(`Tiền hàng hụt tỷ lệ 2 lần phải được nâng trần số lượng/HĐ: ${ratioPlan.reason || ""}`);
+  }
+  if (ratioPlan.goods < 288485 || ratioPlan.hour > ratioPlan.goods * 2 + 5000 || ratioPlan.goods + ratioPlan.hour + ratioPlan.tax !== 951999) {
+    throw new Error(`Phương án phải giữ Tiền giờ ≤ 2 lần tiền hàng và khớp tổng: ${JSON.stringify(ratioPlan)}`);
+  }
+  if (Math.max(...ratioScaleCalls) < 2) throw new Error("Phải thử bội số trần lớn hơn khi tiền hàng hụt tỷ lệ.");
+
+  // Kho thật sự cạn (số lượng còn lại không tăng theo bội số trần): vẫn báo lỗi,
+  // nhưng nêu rõ cần bao nhiêu tiền hàng và kho ghép được bao nhiêu.
+  const emptyBox = {
+    ...ratioBox,
+    buildBatchCandidates: () => [
+      { code: "BIA", name: "Bia Tiger lon", price: 20000, qty: 0, maxQty: 6 },
+      { code: "HAT", name: "Hạt điều", price: 30000, qty: 0, maxQty: 2 },
+      { code: "BANH", name: "Bánh quy", price: 35000, qty: 0, maxQty: 1 },
+      { code: "KHO", name: "Khô gà", price: 25000, qty: 0, maxQty: 2 },
+      { code: "KHAN", name: "Khăn ướt", price: 5000, qty: 0, maxQty: 4 }
+    ]
+  };
+  vm.createContext(emptyBox);
+  vm.runInContext(batchPlanDeps, emptyBox);
+  const emptyPlan = emptyBox.calculateBatchPlan({
+    ready: true, invoiceNo: "HD0126070999", invoiceDateKey: "2026-07-27", checkIn: "27/07/2026 20:00",
+    checkOut: "27/07/2026 21:00", durationMinutes: 60, currentHour: 600000, currentGrand: 990000, taxRate: 10
+  }, { transactionDate: "2026-07-27", credit: 952000, acceptedGrandOverride: 951999 }, mandatoryFixture, new Map(), 951999);
+  // Ca thật ĐÚNG (bản 1.29.9 báo "sức chứa ước tính 2.940.000đ" — kho dư): phiếu
+  // có sẵn Tiền giờ ~720.000đ nên sàn mềm "nền − 20%" = 576.000đ, trong khi tỷ lệ
+  // 2 lần đòi Tiền giờ ≤ 578.636đ. Trên lưới giá 5.000đ: 285.000đ hàng → giờ
+  // 580.454đ (đạt sàn, vỡ tỷ lệ); 290.000đ → 575.454đ (đạt tỷ lệ, hụt sàn 546đ).
+  // Solver xếp sàn trước tỷ lệ nên luôn chọn 285.000đ. Sàn mềm phải nhường tỷ lệ.
+  const plentyBox = {
+    ...ratioBox,
+    buildBatchCandidates: () => [
+      { code: "BIA", name: "Bia Tiger lon", price: 20000, qty: 0, maxQty: 12 },
+      { code: "HAT", name: "Hạt điều", price: 30000, qty: 0, maxQty: 4 },
+      { code: "BANH", name: "Bánh quy", price: 35000, qty: 0, maxQty: 4 },
+      { code: "KHO", name: "Khô gà", price: 25000, qty: 0, maxQty: 4 },
+      { code: "KHAN", name: "Khăn ướt", price: 5000, qty: 0, maxQty: 6 }
+    ]
+  };
+  vm.createContext(plentyBox);
+  vm.runInContext(batchPlanDeps, plentyBox);
+  const longSessionScan = {
+    ready: true, invoiceNo: "HD0126070888", invoiceDateKey: "2026-07-27", checkIn: "27/07/2026 20:00",
+    checkOut: "27/07/2026 21:12", durationMinutes: 72, currentHour: 720000, currentGrand: 1100000, taxRate: 10
+  };
+  const longSessionPlan = plentyBox.calculateBatchPlan(longSessionScan,
+    { transactionDate: "2026-07-27", credit: 952000, acceptedGrandOverride: 951999 }, mandatoryFixture, new Map(), 951999);
+  if (longSessionPlan.status !== "ready") {
+    throw new Error(`Sàn mềm nền − 20% phải nhường tỷ lệ Tiền giờ ≤ 2 lần tiền hàng: ${longSessionPlan.reason || ""}`);
+  }
+  if (longSessionPlan.goods < 286818 || longSessionPlan.hour - longSessionPlan.goods * 2 > 5000 ||
+      longSessionPlan.goods + longSessionPlan.hour + longSessionPlan.tax !== 951999) {
+    throw new Error(`Phương án phiếu nhiều giờ hát phải đạt tỷ lệ và khớp tổng: ${JSON.stringify(longSessionPlan)}`);
+  }
+  // Không được hạ dưới SÀN PHÚT: sao kê nhỏ mà sàn 30 phút tự nó vượt tỷ lệ thì
+  // giữ sàn (cổng tỷ lệ đã miễn cho trường hợp đó).
+  const floorPlan = plentyBox.calculateBatchPlan({ ...longSessionScan, currentHour: 600000 },
+    { transactionDate: "2026-07-27", credit: 600000 }, mandatoryFixture, new Map(), 600000);
+  if (floorPlan.status === "ready" && floorPlan.hour < 300000) {
+    throw new Error(`Không được hạ Tiền giờ dưới sàn 30 phút: ${JSON.stringify(floorPlan)}`);
+  }
+
+  if (emptyPlan.status !== "error" ||
+      !/^Tiền giờ 580454 vượt 2 lần tiền hàng 285000: cần tiền hàng từ khoảng 286818đ .*chỉ ghép được 285000đ \(sức chứa ước tính 285000đ với tối đa 5 mã\)/.test(emptyPlan.reason || "")) {
+    throw new Error(`Kho cạn phải báo rõ con số: ${emptyPlan.reason}`);
+  }
+}
+
 // Regression: statement 4,873,000 => pre-VAT 4,430,000 and the 35% singing
 // cap is 1,550,500. A 1,435,000 singing charge must be accepted even though
 // its 585,000 adjustment is greater than 20% of the 850,000 baseline.
