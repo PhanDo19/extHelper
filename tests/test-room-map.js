@@ -68,12 +68,13 @@ vm.createContext(contentBox);
 vm.runInContext(
   // Đơn giá giờ theo phòng: chọn phòng nay phụ thuộc đơn giá nên sandbox phải
   // có cả bảng giá lẫn cơ sở đang mở.
-  'const pageTenantSlug = "parisnhon";\n' +
+  'const pageTenantSlug = "parisnhon";\nlet websiteRoomRates = null;\n' +
   /const DEFAULT_HOURLY_RATE = \d+;/.exec(contentSource)[0] + "\n" +
   /const PARIS_NHON_ROOM_HOURLY_RATES = Object\.freeze\([^;]+\);/.exec(contentSource)[0] + "\n" +
   [
     "normalizeRoomText", "roomAreaKey", "isRetailRoomName", "parseUiDateTime",
-    "roomIsFreeForRange", "roomHourlyRate", "isIdleMapRoom", "rankIdleRoomsFromMap", "mergeRoomBookings"
+    "roomIsFreeForRange", "websiteRoomRate", "isPageTenant", "roomHourlyRate", "isIdleMapRoom", "rankIdleRoomsFromMap",
+    "mergeRoomBookings"
   ].map(name => extractFunction(contentSource, name)).join(";\n") +
   ";\nthis.isIdleMapRoom = isIdleMapRoom; this.rankIdleRoomsFromMap = rankIdleRoomsFromMap; this.roomHourlyRate = roomHourlyRate;" +
   " this.mergeRoomBookings = mergeRoomBookings;",

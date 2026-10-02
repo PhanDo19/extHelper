@@ -351,10 +351,13 @@
         roomId: String(fields.DBANID || "").trim(),
         areaId: String(fields.DKHUVUCID || "").trim(),
         warehouseId: String(fields.DKHOXUATID || "").trim(),
-        recordId: String(formDataRecordId(formData) || "").trim()
+        recordId: String(formDataRecordId(formData) || "").trim(),
+        // Đơn giá giờ ghi trên phiếu (0 = chưa có): website tính Tiền giờ của
+        // phiếu theo số này, kể cả khi phòng đã đổi giá sau đó.
+        hourlyRate: formAmount(fields.DONGIA)
       };
     } catch (_) {
-      return { roomId: "", areaId: "", warehouseId: "", recordId: "" };
+      return { roomId: "", areaId: "", warehouseId: "", recordId: "", hourlyRate: 0 };
     }
   }
 
@@ -2004,13 +2007,15 @@
     // Phòng của phiếu: content dựa vào đây để bỏ qua phiếu ở quầy BÁN LẺ
     // (không lập được HĐĐT). Cờ quầy lấy từ sơ đồ phòng nếu đã có.
     const roomName = String(suffixInput("lblTENBAN")?.textContent || "").replace(/\s+/g, " ").trim();
-    const roomId = getOpenFormRoom().roomId;
+    const openRoom = getOpenFormRoom();
+    const roomId = openRoom.roomId;
     const mappedRoom = mappedRoomById(roomId);
     return {
       ready: items.length > 0,
       mode,
       roomName,
       roomId,
+      roomRate: openRoom.hourlyRate,
       roomIsRetail: isRetailRoomText(roomName) ||
         Boolean(mappedRoom && (Number(mappedRoom.counter) || isRetailRoomText(mappedRoom.name) || isRetailRoomText(mappedRoom.areaName))),
       invoiceNo: (suffixInput("txtNAME") || {}).value || "",
@@ -2981,6 +2986,65 @@
     };
   }
 
+  // Đơn giá giờ của TỪNG phòng, đọc từ form phòng trên website (DONGIA) bằng
+  // đúng request loadBlankRoomForm dùng khi tạo phiếu: GET AddEdit + DBANID,
+  // RecordID rỗng — chỉ dựng form, không tạo bản ghi. Phòng đang có phiên thì
+  // website trả form của phiên đó; đơn giá vẫn là của phòng. Chỉ đọc.
+  // Kim Giang đổi sang giá theo từng phòng (02/10/2026) nên mặc định 600.000đ
+  // không còn đúng; xem docs/ROOM_HOURLY_RATES.md.
+  async function readRoomHourlyRates(detail) {
+    const rooms = (Array.isArray(detail?.rooms) ? detail.rooms : []).filter(room => isGuid(room?.id));
+    const results = [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(3, rooms.length) }, async () => {
+      while (next < rooms.length) results.push(await readRoomHourlyRate(rooms[next++]));
+    }));
+    return { readAt: new Date().toISOString(), rooms: results };
+  }
+
+  // Lỗi của một phòng không làm hỏng cả lượt (phòng đó dùng giá dự phòng);
+  // riêng mất đăng nhập thì dừng hẳn vì mọi phòng sau cũng sẽ lỗi.
+  async function readRoomHourlyRate(room) {
+    const roomId = String(room.id).trim();
+    const roomName = String(room?.name || "").trim();
+    const query = new URLSearchParams({
+      TableID: SALES_TABLE_ID,
+      RecordID: "",
+      Loai: "0",
+      MaxTab: "0",
+      NOTITLE: "1",
+      DBANID: roomId,
+      DKHUVUCID: String(room?.areaId || "").trim(),
+      is_dialog: "1"
+    });
+    let response;
+    let html = "";
+    try {
+      response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
+      });
+      html = await response.text();
+    } catch (error) {
+      return { id: roomId, name: roomName, rate: 0, error: String(error?.message || error) };
+    }
+    if (isLoginRedirect(response, html)) {
+      throw new Error("Phiên đăng nhập đã hết hoặc bị cơ sở khác chiếm khi đọc giá phòng; hãy đăng nhập lại.");
+    }
+    if (!response.ok) return { id: roomId, name: roomName, rate: 0, error: `HTTP ${response.status}` };
+    const formData = salesFormDataFromHtml(html)
+      .filter(item => String(mapObject(item.mapper?.Maps).DBANID || "").toLowerCase() === roomId.toLowerCase())
+      .at(-1);
+    if (!formData) return { id: roomId, name: roomName, rate: 0, error: "không đọc được form phòng" };
+    return {
+      id: roomId,
+      name: roomName,
+      rate: formAmount(mapObject(formData.mapper?.Maps).DONGIA),
+      busy: isGuid(formDataRecordId(formData))
+    };
+  }
+
   // Số tiền trong Maps của form là chuỗi thập phân ("175000.00"); không dùng
   // money() ở đây vì money() bỏ dấu chấm và đọc thành 17.500.000.
   function formAmount(value) {
@@ -3434,7 +3498,7 @@
     if (plannedRate > 0 && formRate > 0 && formRate !== plannedRate) {
       throw new Error(
         `Phòng ${String(roomLabel || "").trim() || roomId} có đơn giá giờ ${formRate} trên website nhưng phương án tính theo ` +
-        `${plannedRate}; không tạo phiếu. Hãy kiểm tra bảng đơn giá phòng (docs/ROOM_HOURLY_RATES.md).`
+        `${plannedRate}; không tạo phiếu. Bấm "Đọc giá giờ các phòng" ở Batch Review rồi tính lại phương án của giao dịch này.`
       );
     }
     const products = await fetchProductRowsForApiPlan(expected.items, warehouseId);
@@ -4011,6 +4075,7 @@
       else if (detail.action === "saveExistingInvoicePlanViaApi") result = await saveExistingInvoicePlanViaApi(detail);
       else if (detail.action === "createAndPayFreshInvoiceViaApi") result = await createAndPayFreshInvoiceViaApi(detail);
       else if (detail.action === "probeBlankRoomForm") result = await probeBlankRoomForm(detail.room);
+      else if (detail.action === "readRoomHourlyRates") result = await readRoomHourlyRates(detail);
       else if (detail.action === "readInvoiceSummary") result = await readInvoiceSummary(detail);
       else if (detail.action === "readDayRoomBookings") result = await readDayRoomBookings(detail);
       else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);

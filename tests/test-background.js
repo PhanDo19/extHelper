@@ -54,6 +54,19 @@ assert.strictEqual(validResponse.downloadId, 42);
 assert.strictEqual(downloadOptions.saveAs, false);
 assert.match(downloadOptions.url, /^data:application\/json/);
 
+// Sao lưu kho dùng chung: đúng tên content.js exportStockState đặt.
+const contentSource = require("fs").readFileSync(require("path").join(__dirname, "..", "content.js"), "utf8");
+assert(contentSource.includes("`TonKho_DungChung_${localTimestamp(exportedAt)}.json`"),
+  "Tên file sao lưu kho chung trong content.js đã đổi; cập nhật mẫu cho phép trong background.js");
+let sharedWarehouseResponse;
+listener({
+  type: "invoiceTarget.downloadStockState",
+  filename: "TonKho_DungChung_2026-10-02_163617.json",
+  content: "{\"kind\":\"invoice-target-shared-warehouse\"}"
+}, {}, response => { sharedWarehouseResponse = response; });
+assert.strictEqual(sharedWarehouseResponse.ok, true, "Xuất kho dùng chung không được bị chặn vì tên file");
+assert.strictEqual(downloadOptions.filename, "TonKho_DungChung_2026-10-02_163617.json");
+
 let traceResponse;
 assert.strictEqual(listener({
   type: "invoiceTarget.downloadStockState",

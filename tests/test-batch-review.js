@@ -32,6 +32,10 @@ const batchPlanDeps = [
   extractConst("DEFAULT_HOURLY_RATE"),
   extractConst("PARIS_NHON_ROOM_HOURLY_RATES"),
   extractFunction("normalizeRoomText"),
+  // Bảng giá đọc từ website (rỗng: dùng bảng dự phòng như trước).
+  "let websiteRoomRates = null;",
+  extractFunction("websiteRoomRate"),
+  extractFunction("isPageTenant"),
   extractFunction("roomHourlyRate"),
   extractFunction("tenantHourlyRates"),
   extractFunction("hourPricingForRate"),
@@ -1366,7 +1370,9 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
     // luồng này: context luôn "sống", không lỗi nào là quá tải.
     assertRuntimeContext: () => {},
     isPageOverloadError: () => false,
-    scheduleAutoReloadResume: async () => false
+    scheduleAutoReloadResume: async () => false,
+    // Bảng giá giờ theo phòng còn mới: không đọc lại.
+    ensureWebsiteRoomRates: async () => ""
   };
   vm.createContext(box);
   vm.runInContext(`${extractConst("MAX_BATCH_TRANSACTIONS")}; ${extractFunction("buildBatchReview")}; this.buildBatchReview = buildBatchReview;`, box);
@@ -1763,7 +1769,8 @@ const rateBox = { pageTenantSlug: "parisnhon" };
 vm.createContext(rateBox);
 vm.runInContext(
   `${extractConst("DEFAULT_HOURLY_RATE")} ${extractConst("PARIS_NHON_ROOM_HOURLY_RATES")} ` +
-  `${extractFunction("normalizeRoomText")}; ${extractFunction("tenantHourlyRates")}; ` +
+  `let websiteRoomRates = null; ${extractFunction("normalizeRoomText")}; ${extractFunction("websiteRoomRate")}; ` +
+  `${extractFunction("isPageTenant")}; ${extractFunction("roomHourlyRate")}; ${extractFunction("tenantHourlyRates")}; ` +
   `${extractFunction("hourPricingForRate")}; ${extractFunction("inferHourPricing")}; ` +
   `${extractFunction("parseUiDateTime")}; ${extractFunction("formatUiDateTime")}; ` +
   `${extractFunction("recommendCheckOut")}; ` +

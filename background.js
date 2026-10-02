@@ -58,7 +58,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "invoiceTarget.downloadStockState") return false;
   const filename = String(message.filename || "");
   const content = String(message.content || "");
-  const allowedFilename = /^TonKho_(ParisKimGiang|ParisLinhDam|ParisNhon)_[0-9_-]+\.json$/.test(filename) ||
+  // TonKho_DungChung_*: bản sao lưu kho dùng chung Kim Giang + Linh Đàm
+  // (content.js exportStockState); thiếu mẫu này thì nút xuất luôn bị chặn.
+  const allowedFilename = /^TonKho_(ParisKimGiang|ParisLinhDam|ParisNhon|DungChung)_[0-9_-]+\.json$/.test(filename) ||
     /^invoice-api-trace-[0-9TZ_-]+\.json$/.test(filename) ||
     /^invoice-api-debug-(pariskimgiang|parislinhdam|parisnhon)-[A-Za-z0-9TZ_-]+\.json$/.test(filename);
   if (!allowedFilename) {

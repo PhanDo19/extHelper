@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.29.8 (2026-10-02)
+
+- **Đơn giá giờ hát đọc thẳng từ website theo từng phòng.** Kim Giang đổi sang giá theo phòng thay vì 600.000đ cho mọi phòng, nên phương án phiếu mới (tính 600.000đ) bị bridge chặn "đơn giá giờ trên website khác phương án", và phiếu có sẵn bị quy sai về 600.000đ. Nay:
+  - Bridge `readRoomHourlyRates` đọc `DONGIA` trên form từng phòng (GET `AddEdit` + `DBANID`, `RecordID` rỗng — đúng request bước tạo phiếu đã dùng, chỉ đọc). Lỗi một phòng không hỏng cả lượt; mất đăng nhập thì dừng.
+  - Content lưu bảng theo cơ sở (`invoiceTargetRoomHourlyRates__<cơ sở>`), tự đọc lại khi Tạo Batch Review nếu bảng cũ hơn 12 giờ, và có nút **Đọc giá giờ các phòng** ở Batch Review. Đọc lỗi thì dựng Batch theo bảng cũ và nhắc.
+  - `roomHourlyRate` / `tenantHourlyRates` ưu tiên giá đọc từ website; bảng cứng Nhơn và 600.000đ chỉ còn là dự phòng cho phòng website không trả giá. Phiếu mới chỉ thử các mức có phòng thật mang giá đó và chỉ chọn phòng đúng mức.
+  - Phiếu có sẵn dùng đơn giá ghi trên chính phiếu (`scan` trả thêm `roomRate` = `DONGIA` của form đang mở); không có thì suy như trước, có tính cả 600.000đ cho phiếu lập trước khi đổi giá.
+  - Phương án phiếu mới đã Accept theo giá cũ: khi Lưu API sẽ báo không còn phòng đúng giá và nhắc **Tính lại**. Không tăng `CALCULATION_VERSION` (phương án đã Accept ở Linh Đàm/Nhơn giữ nguyên).
+  - Áp cho mọi cơ sở: nếu form phòng Linh Đàm/Nhơn trả đơn giá khác bảng cũ thì extension dùng đơn giá website. Xem `docs/ROOM_HOURLY_RATES.md`.
+
+## 1.29.7 (2026-10-02)
+
+- **Nút xuất (sao lưu) kho dùng chung không còn báo "Tên file tải xuống không hợp lệ".** Content đặt tên file `TonKho_DungChung_<thời điểm>.json` nhưng background chỉ cho tải `TonKho_ParisKimGiang|ParisLinhDam|ParisNhon_…json`, nên nút này bị chặn từ khi có kho dùng chung (9e39e36, 16/08/2026). Nay cho phép thêm tên `TonKho_DungChung_…json`; mẫu tên vẫn chặn đường dẫn và ký tự lạ như trước. Thay đổi nằm ở service worker nên phải tải lại extension.
+- Script chỉ đọc `scripts/kiem-tra-kho-chung.js`: chạy trong Console (ngữ cảnh extension) để xem kho dùng chung Kim Giang + Linh Đàm đã khởi tạo chưa, các lần trừ kho gần nhất của từng cơ sở và mã nào đang lệch kho chung.
+
 ## 1.29.6 (2026-10-02)
 
 - **Lệnh gửi kèm ID phiếu không còn chờ tới hết giờ dù bridge đã làm xong.** `request()` của content trải payload sau mã yêu cầu, nên lệnh có khóa `id` (ID phiếu) bị đè mất mã đó; bridge trả lời theo `detail.id` (tức ID phiếu) và content không nhận ra câu trả lời. Lỗi có từ khi thêm Phát hành (8916b54, 07/08/2026) và ảnh hưởng:

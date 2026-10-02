@@ -443,7 +443,7 @@
     const wantedRate = Number(hourlyRate) > 0 ? Math.round(Number(hourlyRate)) : 0;
     return (rooms || [])
       .filter(isIdleMapRoom)
-      .filter(room => !wantedRate || roomHourlyRate(room.name) === wantedRate)
+      .filter(room => !wantedRate || roomHourlyRate(room.name, undefined, room.id) === wantedRate)
       .filter(room => !checkIn || !checkOut || roomIsFreeForRange(bookings, room.name, checkIn, checkOut))
       .map((room, index) => ({ room, index, used: bookings?.has?.(bookedKey(room.name)) ? 1 : 0 }))
       .sort((left, right) => left.used - right.used || left.index - right.index)
@@ -513,6 +513,11 @@
         `${d.allRoomAreasSelected ? "đã chọn TẤT CẢ khu phòng" : "chưa thấy nút TẤT CẢ khu phòng"}.`
     ];
     if (d.plannedHourlyRate) parts.push(`Phương án tính theo phòng ${formatMoney(d.plannedHourlyRate)}đ/giờ nên chỉ nhận phòng cùng đơn giá.`);
+    // Phương án lập trước khi đọc được giá theo phòng (vd 600.000đ ở Kim Giang)
+    // không còn phòng nào khớp: phải tính lại, chờ phòng trống không giúp được.
+    if (d.plannedHourlyRate && !tenantHourlyRates().includes(Math.round(Number(d.plannedHourlyRate)))) {
+      parts.push(`Bảng giá giờ đọc từ website không còn phòng nào ${formatMoney(d.plannedHourlyRate)}đ/giờ: bấm Tính lại phương án của giao dịch này.`);
+    }
     if (d.roomMismatch) parts.push(`Form mở nhầm phòng: ${d.roomMismatch}; đã đóng form, không lập phiếu.`);
     if (d.websiteBookingsError) {
       parts.push(`Không đọc được lịch phòng của ngày trên website (${d.websiteBookingsError}); chưa mở phòng để tránh trùng giờ.`);
@@ -1258,7 +1263,7 @@
         : action === "readInvoiceItems" ? 45000
         // Lệnh ghi gửi nhiều request lên server: hết giờ sớm là báo lỗi trong khi
         // bridge vẫn đang gửi và server có thể đã lưu.
-        : ["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi", "readDayRoomBookings"].includes(action) ? 90000
+        : ["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi", "readDayRoomBookings", "readRoomHourlyRates"].includes(action) ? 90000
         // Sửa người mua: đọc phiếu + lưu + đọc lại (chỉ API). Hết giờ thì tải lại
         // trang rồi xét lại phiếu.
         : action === "buyerFixInvoice" ? 90000
@@ -6325,8 +6330,38 @@
   const DEFAULT_HOURLY_RATE = 600000;
   const PARIS_NHON_ROOM_HOURLY_RATES = Object.freeze({ "3": 800000, "6": 400000 });
 
-  function roomHourlyRate(roomName, tenantSlug) {
+  // Đơn giá ĐỌC TỪ WEBSITE theo từng phòng của cơ sở đang mở (bridge
+  // readRoomHourlyRates, đọc DONGIA trên form phòng): { readAt, rooms: [{ id,
+  // name, rate }] }. Kim Giang đổi sang giá theo từng phòng (02/10/2026) nên
+  // bảng này đứng trước mọi bảng cứng; bảng cứng/600.000đ chỉ còn là dự phòng
+  // cho phòng website không trả đơn giá (rate 0).
+  const ROOM_RATES_KEY = `invoiceTargetRoomHourlyRates__${pageTenantSlug}`;
+  // Tự đọc lại khi dựng Batch Review nếu bảng cũ hơn mốc này.
+  const ROOM_RATES_MAX_AGE_MS = 12 * 3600 * 1000;
+  let websiteRoomRates = null;
+
+  function websiteRoomRate(roomName, roomId) {
+    const id = String(roomId || "").trim().toLowerCase();
+    const name = normalizeRoomText(roomName).toLocaleUpperCase("vi-VN");
+    const found = (websiteRoomRates?.rooms || []).find(room =>
+      (id && String(room.id || "").toLowerCase() === id) ||
+      (name && normalizeRoomText(room.name).toLocaleUpperCase("vi-VN") === name));
+    return Math.max(0, Math.round(Number(found?.rate) || 0));
+  }
+
+  // Bảng giá đọc từ website là của cơ sở ĐANG MỞ: hỏi đơn giá cơ sở khác thì
+  // không dùng bảng đó.
+  function isPageTenant(tenantSlug) {
+    const current = typeof pageTenantSlug === "string" ? pageTenantSlug.toLowerCase() : "";
+    return !tenantSlug || String(tenantSlug).toLowerCase() === current;
+  }
+
+  function roomHourlyRate(roomName, tenantSlug, roomId) {
     const tenant = String(tenantSlug || (typeof pageTenantSlug === "string" ? pageTenantSlug : "")).toLowerCase();
+    if (isPageTenant(tenantSlug)) {
+      const fromWebsite = websiteRoomRate(roomName, roomId);
+      if (fromWebsite > 0) return fromWebsite;
+    }
     if (tenant !== "parisnhon") return DEFAULT_HOURLY_RATE;
     const name = normalizeRoomText(roomName).toLocaleUpperCase("vi-VN");
     const match = name.match(/(\d)\s*$/);
@@ -6338,6 +6373,14 @@
   // được thử lần lượt theo danh sách này rồi mới chốt phòng.
   function tenantHourlyRates(tenantSlug) {
     const tenant = String(tenantSlug || (typeof pageTenantSlug === "string" ? pageTenantSlug : "")).toLowerCase();
+    // Đã đọc được giá từ website: chỉ các mức có phòng thật mang giá đó (phòng
+    // website không trả giá thì theo bảng dự phòng), để phương án không chọn
+    // một mức mà không phòng nào có — lúc tạo phiếu sẽ không tìm được phòng.
+    const websiteRooms = isPageTenant(tenantSlug) ? (websiteRoomRates?.rooms || []) : [];
+    if (websiteRooms.some(room => Number(room.rate) > 0)) {
+      return [...new Set(websiteRooms.map(room => roomHourlyRate(room.name, tenantSlug, room.id)))]
+        .sort((left, right) => left - right);
+    }
     if (tenant !== "parisnhon") return [DEFAULT_HOURLY_RATE];
     return [...new Set([...Object.values(PARIS_NHON_ROOM_HOURLY_RATES), DEFAULT_HOURLY_RATE])]
       .sort((left, right) => left - right);
@@ -7690,6 +7733,13 @@
       assertRuntimeContext();
       const current = await request("scan");
       if (current?.ready) throw new Error("Hãy bấm Thoát để đóng phiếu đang mở trước khi tạo Batch Review.");
+      // Phiếu mới chọn đơn giá theo phòng: bảng giá giờ đọc từ website đã cũ thì
+      // đọc lại trước khi lập phương án (Kim Giang đổi giá theo phòng 02/10/2026).
+      const roomRateWarning = await ensureWebsiteRoomRates();
+      if (roomRateWarning) {
+        console.warn("[InvoiceTarget]", roomRateWarning);
+        setStatus(roomRateWarning, "warn");
+      }
       const limit = Math.max(1, Math.min(MAX_BATCH_TRANSACTIONS, Number(document.getElementById("it-batch-limit")?.value) || 10));
       const fromDate = document.getElementById("it-batch-from-date")?.value || "";
       const toDate = document.getElementById("it-batch-to-date")?.value || "";
@@ -8215,6 +8265,9 @@
       <button id="it-approve-batch" type="button" class="primary" ${ready.length ? "" : "disabled"}>Accept các phương án đã chọn</button>
       <button id="it-run-batch-api" type="button" class="primary" ${apiQueue.length ? "" : "disabled"}>Lưu API ${apiQueue.length} phiếu đã Accept</button>
       <button id="it-probe-direct-create" type="button" title="Chỉ đọc form của một phòng trống bằng API để kiểm tra; không lưu gì lên website">Kiểm tra tạo phiếu không cần tab phụ</button>
+      <button id="it-read-room-rates" type="button" title="Đọc lại đơn giá giờ của từng phòng trên website (chỉ đọc). ${escapeHtml(websiteRoomRates?.readAt
+        ? `Lần đọc gần nhất: ${new Date(websiteRoomRates.readAt).toLocaleString("vi-VN")}`
+        : "Chưa đọc lần nào")}">Đọc giá giờ các phòng</button>
     </div>
     <div class="it-table-wrap"><table class="it-batch-table it-batch-plan-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>Giờ vào → ra</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     table.querySelector("#it-batch-select-all")?.addEventListener("change", event => {
@@ -8223,6 +8276,7 @@
     table.querySelector("#it-approve-batch")?.addEventListener("click", approveBatchPlans);
     table.querySelector("#it-run-batch-api")?.addEventListener("click", runAcceptedBatchApi);
     table.querySelector("#it-probe-direct-create")?.addEventListener("click", probeDirectNewInvoice);
+    table.querySelector("#it-read-room-rates")?.addEventListener("click", readRoomRatesNow);
     table.querySelectorAll(".it-unissued-choice").forEach(select => select.addEventListener("change", chooseUnissuedInvoice));
     table.querySelectorAll(".it-issued-choice").forEach(select => select.addEventListener("change", chooseIssuedInvoice));
     table.querySelectorAll(".it-confirm-issued").forEach(button => button.addEventListener("click", confirmAlreadyIssued));
@@ -8901,14 +8955,14 @@
       const result = await request("probeBlankRoomForm", { room });
       // Đơn giá giờ phòng trên form so với bảng giá của extension: lệch thì lúc
       // tạo phiếu bridge sẽ dừng, nên báo trước ở đây.
-      const tableRate = roomHourlyRate(room.name);
+      const tableRate = roomHourlyRate(room.name, undefined, room.id);
       const formRate = Number(result.roomRate) || 0;
       const rateNote = formRate === 0
         ? ` Form chưa có đơn giá giờ; extension sẽ tự đặt ${formatMoney(tableRate)}đ/giờ.`
         : formRate === tableRate
           ? ` Đơn giá giờ ${formatMoney(formRate)}đ khớp bảng giá extension.`
           : ` ⚠ Đơn giá giờ trên website ${formatMoney(formRate)}đ KHÁC bảng giá extension ${formatMoney(tableRate)}đ: ` +
-            "phiếu mới ở phòng hạng này sẽ bị chặn cho tới khi sửa bảng giá (docs/ROOM_HOURLY_RATES.md).";
+            'phiếu mới ở phòng này sẽ bị chặn; bấm "Đọc giá giờ các phòng" rồi tính lại phương án.';
       setStatus(
         `Đọc được form phòng ${result.roomName} bằng API (${result.fieldCount} trường, chưa có ID phiếu, kho xuất hợp lệ).` +
         `${rateNote} Lưu API sẽ tạo phiếu mới ngay trên tab này, không mở tab phụ. Chưa có gì được ghi lên website.`,
@@ -8920,6 +8974,98 @@
         "Lưu API sẽ tự dùng cách mở tab Bán hàng phụ như trước. Chưa có gì được ghi lên website.",
         "warn"
       );
+    } finally {
+      if (button?.isConnected) button.disabled = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bảng đơn giá giờ theo phòng đọc từ website (xem websiteRoomRates).
+  // ---------------------------------------------------------------------------
+  async function loadWebsiteRoomRates() {
+    try {
+      const stored = await chrome.storage.local.get(ROOM_RATES_KEY);
+      websiteRoomRates = stored[ROOM_RATES_KEY] || null;
+    } catch (_) {
+      websiteRoomRates = null;
+    }
+  }
+
+  // Đọc lại đơn giá của mọi phòng hát (bỏ quầy BÁN LẺ) rồi lưu theo cơ sở. Chỉ
+  // đọc trên website. Lưu cả khi website không trả giá phòng nào (rate 0) để
+  // không đọc lại mỗi lần dựng Batch; khi đó extension dùng bảng dự phòng.
+  async function refreshWebsiteRoomRates() {
+    const roomMap = await loadRoomMapForSelection();
+    const rooms = roomMap.rooms.filter(room => room?.id && Number(room.counter) === 0 &&
+      !isRetailRoomName(room.name) && !isRetailRoomName(room.areaName));
+    if (!rooms.length) throw new Error("chưa đọc được sơ đồ phòng từ website.");
+    const result = await request("readRoomHourlyRates", {
+      rooms: rooms.map(room => ({ id: room.id, name: room.name, areaId: room.areaId }))
+    });
+    const order = new Map(rooms.map((room, index) => [String(room.id), index]));
+    websiteRoomRates = {
+      tenant: pageTenantSlug,
+      readAt: String(result?.readAt || new Date().toISOString()),
+      rooms: (result?.rooms || [])
+        .map(room => ({
+          id: String(room.id || ""),
+          name: normalizeRoomText(room.name),
+          rate: Math.max(0, Math.round(Number(room.rate) || 0)),
+          ...(room.error ? { error: String(room.error) } : {})
+        }))
+        .sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+    };
+    await chrome.storage.local.set({ [ROOM_RATES_KEY]: websiteRoomRates });
+    return websiteRoomRates;
+  }
+
+  // "500.000đ: VIP 1, VIP 2 · 700.000đ: VIP 5" kèm các phòng chưa đọc được giá.
+  function roomRatesSummary(table) {
+    const groups = new Map();
+    for (const room of table?.rooms || []) {
+      const rate = Math.round(Number(room.rate) || 0);
+      groups.set(rate, [...(groups.get(rate) || []), room.name]);
+    }
+    return [...groups]
+      .sort((left, right) => (left[0] || Infinity) - (right[0] || Infinity))
+      .map(([rate, names]) => `${rate
+        ? `${formatMoney(rate)}đ`
+        : `chưa đọc được giá (dùng ${formatMoney(DEFAULT_HOURLY_RATE)}đ hoặc bảng cũ)`}: ${names.join(", ")}`)
+      .join(" · ");
+  }
+
+  // Trước khi dựng Batch Review: bảng giá cũ hơn ROOM_RATES_MAX_AGE_MS thì đọc
+  // lại. Không đọc được thì vẫn dựng Batch theo bảng đang có; trả lời nhắc.
+  async function ensureWebsiteRoomRates() {
+    const age = Date.now() - Date.parse(websiteRoomRates?.readAt || "");
+    if (websiteRoomRates && age >= 0 && age < ROOM_RATES_MAX_AGE_MS) return "";
+    try {
+      await refreshWebsiteRoomRates();
+      return "";
+    } catch (error) {
+      return `Chưa đọc lại được giá giờ các phòng (${error.message}); ` +
+        (websiteRoomRates?.readAt
+          ? `dùng bảng giá đọc lúc ${new Date(websiteRoomRates.readAt).toLocaleString("vi-VN")}.`
+          : `dùng giá mặc định ${formatMoney(DEFAULT_HOURLY_RATE)}đ/giờ.`);
+    }
+  }
+
+  async function readRoomRatesNow(event) {
+    const button = event?.currentTarget || event?.target?.closest?.("button");
+    try {
+      if (button) button.disabled = true;
+      setStatus(`Đang đọc giá giờ từng phòng ${pageTenantLabel} trên website (chỉ đọc)…`, "warn");
+      const table = await refreshWebsiteRoomRates();
+      const known = table.rooms.filter(room => room.rate > 0).length;
+      setStatus(
+        known
+          ? `Đã đọc giá giờ ${known}/${table.rooms.length} phòng ${pageTenantLabel}: ${roomRatesSummary(table)}. ` +
+            "Phương án phiếu mới đã Accept theo giá cũ: bấm Tính lại trước khi Lưu API."
+          : `Website không trả đơn giá giờ cho phòng nào (${table.rooms.length} phòng); extension dùng giá mặc định/bảng cũ như trước.`,
+        known ? "ok" : "warn"
+      );
+    } catch (error) {
+      setStatus(`Không đọc được giá giờ các phòng: ${error.message}`, "error");
     } finally {
       if (button?.isConnected) button.disabled = false;
     }
@@ -9594,6 +9740,12 @@
   // tin vào phép chia; chỉ khi lệch quá xa mọi mức đã biết mới giữ số suy ra,
   // để cơ sở có bảng giá khác không bị ép sai.
   function inferHourPricing(scan) {
+    // Đơn giá ghi trên chính phiếu (DONGIA, bridge scan → roomRate) là số
+    // website dùng tính Tiền giờ của phiếu đó, kể cả khi phòng đã đổi giá sau
+    // khi phiếu được lập (Kim Giang đổi sang giá theo phòng 02/10/2026). Có thì
+    // dùng luôn; phiếu cũ không ghi DONGIA mới phải suy như dưới.
+    const formRate = Math.round(Number(scan?.roomRate) || 0);
+    if (formRate >= 1000) return hourPricingForRate(formRate);
     const duration = Number(scan.durationMinutes || 0);
     const currentHour = Number(scan.currentHour || 0);
     const billedHours = Math.round((duration / 60) * 100) / 100;
@@ -9609,7 +9761,9 @@
     // Đơn giá thật chỉ có vài mức cố định trong bảng của cơ sở, nên chọn mức
     // gần nhất là luôn đúng hơn tin vào phép chia.
     const rawRate = currentHour / billedHours;
-    const knownRates = tenantHourlyRates();
+    // Gồm cả 600.000đ: phiếu lập trước khi cơ sở đổi sang giá theo phòng vẫn
+    // tính theo giá cũ, dù hiện không phòng nào còn giá đó.
+    const knownRates = [...new Set([...tenantHourlyRates(), DEFAULT_HOURLY_RATE])];
     const closest = knownRates.reduce((best, rate) =>
       Math.abs(rate - rawRate) < Math.abs(best - rawRate) ? rate : best, knownRates[0]);
     return hourPricingForRate(closest || DEFAULT_HOURLY_RATE);
@@ -9892,6 +10046,7 @@
       await InvoiceMappingStore.loadIssueCoordination(InvoiceIssueCoordination.empty())
     );
     priorityRules = await InvoiceMappingStore.loadPriorityRules();
+    await loadWebsiteRoomRates();
     apiTemplate = await InvoiceMappingStore.loadApiTemplate();
     if (apiTemplate) {
       apiTemplate.analysis = InvoiceApiTemplate.analyze(apiTemplate);

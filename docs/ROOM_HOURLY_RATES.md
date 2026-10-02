@@ -1,4 +1,30 @@
-# Đơn giá giờ hát theo phòng — Paris Nhơn
+# Đơn giá giờ hát theo phòng
+
+## Đọc thẳng từ website (từ 1.29.8, mọi cơ sở)
+
+Kim Giang đổi sang giá theo từng phòng (02/10/2026) nên mặc định 600.000đ không
+còn đúng. Extension đọc **đơn giá `DONGIA` trên form của từng phòng** bằng đúng
+request bước tạo phiếu đang dùng (GET `AddEdit` + `DBANID`, `RecordID` rỗng: chỉ
+dựng form, không tạo bản ghi; xem `readRoomHourlyRates` trong `bridge.js`), rồi
+lưu theo cơ sở ở `invoiceTargetRoomHourlyRates__<cơ sở>`.
+
+- **Khi nào đọc:** tự đọc lại lúc bấm Tạo Batch Review nếu bảng cũ hơn 12 giờ;
+  hoặc bấm **Đọc giá giờ các phòng** ở Batch Review. Đọc lỗi thì dùng bảng cũ.
+- **Thứ tự ưu tiên:** giá đọc từ website → bảng cứng bên dưới (Nhơn) → 600.000đ.
+  Phòng website không trả giá (`DONGIA` = 0) dùng giá dự phòng.
+- **Phiếu mới:** chỉ thử các mức giá có phòng thật mang giá đó, rồi chỉ chọn
+  phòng đúng mức của phương án (như Nhơn ở dưới).
+- **Phiếu có sẵn:** dùng đơn giá ghi trên chính phiếu (`DONGIA`), vì website
+  tính Tiền giờ của phiếu theo số đó kể cả khi phòng đã đổi giá. Phiếu không
+  ghi đơn giá thì suy như cũ, có tính cả mức 600.000đ cho phiếu lập trước khi
+  đổi giá.
+- Phương án phiếu mới đã Accept theo giá cũ sẽ không tìm được phòng đúng giá;
+  thông báo nhắc **Tính lại**.
+
+Chưa xử lý giá theo khung giờ (giờ vàng, cuối tuần): bảng lấy giá form trả
+về tại lúc đọc.
+
+## Bảng cứng Paris Nhơn (dự phòng)
 
 Khảo sát trực tiếp trên `banhang.thuanvietsoft.com/parisnhon` ngày 17/09/2026:
 mở từng phòng ở màn hình Bán hàng, đặt `Ra` = `Giờ vào` + 1 giờ, đọc `Tiền giờ`
