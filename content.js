@@ -1259,6 +1259,10 @@
         // Lệnh ghi gửi nhiều request lên server: hết giờ sớm là báo lỗi trong khi
         // bridge vẫn đang gửi và server có thể đã lưu.
         : ["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi", "readDayRoomBookings"].includes(action) ? 90000
+        // Sửa người mua: đọc phiếu + lưu + đọc lại (chỉ API). Hết giờ thì tải lại
+        // trang rồi xét lại phiếu.
+        : action === "buyerFixInvoice" ? 90000
+        : action === "buyerFixScan" ? 60000
         : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm", "readInvoiceSummary"].includes(action) ? 30000
         : 5000;
       const timeout = setTimeout(
@@ -3497,6 +3501,18 @@
     return `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}`;
   }
 
+  // Đầu/cuối tháng của một ngày: khoảng mặc định cho sửa người mua/TM-CK.
+  function monthStartDateKey(value) {
+    const key = uiDateKey(value) || todayDateKey();
+    return `${key.slice(0, 8)}01`;
+  }
+
+  function monthEndDateKey(value) {
+    const [year, month] = (uiDateKey(value) || todayDateKey()).split("-").map(Number);
+    const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return `${year}-${String(month).padStart(2, "0")}-${String(last).padStart(2, "0")}`;
+  }
+
   // Lô phát hành khóa theo ĐÚNG MỘT NGÀY. Số hóa đơn là dải dùng chung hai cơ
   // sở và phải liên tục trong ngày, nên lô trộn nhiều ngày không thể xen kẽ
   // đúng với cơ sở kia: phát hành 01/07 và 02/07 cùng lúc sẽ chiếm luôn phần số
@@ -3633,11 +3649,35 @@
       ${tenantOrderControl}
       <button id="it-load-einvoice" type="button" class="primary">Tải danh sách</button>
     </div>
+    <div class="it-batch-toolbar">
+      <div><b>Sửa người mua / TM-CK</b><br><small>Chỉ phiếu extension đã tạo/cập nhật (gắn giao dịch), chưa xuất hóa đơn: đổi thanh toán thành TM/CK và người mua "${escapeHtml(DEFAULT_INVOICE_BUYER)}". Phiếu nhân viên tự lập không bị đụng tới. Tự tải lại trang và chạy tiếp; để tab này hiển thị trong lúc chạy.</small></div>
+      <label>Từ ngày<input id="it-buyer-fix-from" type="date" value="${escapeHtml(monthStartDateKey(fromDate))}"></label>
+      <label>Đến ngày<input id="it-buyer-fix-to" type="date" value="${escapeHtml(monthEndDateKey(fromDate))}"></label>
+      <button id="it-buyer-fix-start" type="button">Sửa người mua/TM-CK</button>
+      <button id="it-buyer-fix-stop" type="button" hidden>Dừng</button>
+      <small id="it-buyer-fix-progress"></small>
+    </div>
     <div id="it-einvoice-summary"></div>
     <div id="it-einvoice-table"></div>`;
     node.querySelector("#it-load-einvoice")?.addEventListener("click", () => {
       loadEInvoiceList().catch(error => setStatus(error.message, "error"));
     });
+    node.querySelector("#it-buyer-fix-start")?.addEventListener("click", () => {
+      startBuyerFixJob().catch(error => setStatus(`Không bắt đầu được sửa người mua/TM-CK: ${error.message}`, "error"));
+    });
+    node.querySelector("#it-buyer-fix-stop")?.addEventListener("click", () => {
+      buyerFixStopRequested = true;
+      setStatus("Sẽ dừng sửa người mua/TM-CK sau phiếu đang làm…", "warn");
+    });
+    loadBuyerFixJob().then(job => {
+      if (job) {
+        const from = node.querySelector("#it-buyer-fix-from");
+        const to = node.querySelector("#it-buyer-fix-to");
+        if (from) from.value = job.fromDate;
+        if (to) to.value = job.toDate;
+      }
+      renderBuyerFixProgress(job);
+    }).catch(() => {});
     // Đổi ngày phát hành thì "Đến ngày" phải bám theo ngay, để người dùng không
     // nhìn thấy một khoảng ngày mà hệ thống sẽ không dùng.
     const fromInput = node.querySelector("#it-einvoice-from-date");
@@ -9044,6 +9084,7 @@
   }
 
   function autoResumeLabel(mode) {
+    if (mode === "buyer-fix") return "sửa người mua/TM-CK";
     return mode === "batch-api" ? "Lưu API" : "Batch Review";
   }
 
@@ -9084,11 +9125,237 @@
       await new Promise(resolve => setTimeout(resolve, 1500));
       if (resume.mode === "batch-api") {
         await runAcceptedBatchApi({ target: { closest: () => document.getElementById("it-run-batch-api") } });
+      } else if (resume.mode === "buyer-fix") {
+        await runBuyerFixJob();
       } else {
         await buildBatchReview();
       }
     } catch (error) {
       setStatus(`Không tự chạy tiếp được sau khi tải lại: ${error.message}`, "error");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sửa người mua + phương thức thanh toán của phiếu đã lưu, CHƯA xuất hóa đơn
+  // (kế toán chốt 02/10/2026: TM/CK và "Bán cho người tiêu dùng"; xem
+  // bridge.js buyerFixInvoice). Thay script console scripts/sua-nguoi-mua-
+  // tmck.js: chạy thật cứ khoảng 50 phiếu lại dừng vì rớt kết nối / website
+  // đuối, và script trong Console mất khi tải lại trang. Ở đây danh sách phiếu
+  // còn lại nằm trong storage; extension tự tải lại trang sau mỗi
+  // AUTO_RELOAD_EVERY_SAVED_INVOICES phiếu và khi lỗi tải lại được, rồi chạy
+  // tiếp. Bridge đọc lại từng phiếu trước khi sửa nên phiếu đã lưu trước lần tải
+  // lại (kể cả khi mất phản hồi) ra "đã đúng" chứ không bị lưu lần hai.
+  // Lưu riêng khóa này: saveBatchUiSession ghi đè cả phiên với các khóa nó biết.
+  // ---------------------------------------------------------------------------
+  const BUYER_FIX_JOB_KEY = `invoiceTargetBuyerFixJob__${pageTenantSlug}`;
+  let buyerFixRunning = false;
+  let buyerFixStopRequested = false;
+  // Lượt lập trước khi giới hạn phạm vi (gồm cả phiếu nhân viên) thì bỏ, không chạy tiếp.
+  const BUYER_FIX_SCOPE = "extension-invoices";
+
+  // Phiếu extension đã tạo hoặc cập nhật: gắn với giao dịch (sao kê / danh sách
+  // số tiền) hoặc có trong sổ đối soát. Chỉ sửa các phiếu này — phiếu nhân viên tự
+  // lập cũng ghi TM (mặc định website) nên không lọc được theo phương thức.
+  function extensionInvoiceNos() {
+    const nos = new Set();
+    for (const item of [...(statementDataset.transactions || []), ...(verificationLedger.entries || [])]) {
+      const invoiceNo = String(item?.invoiceNo || "").trim();
+      if (invoiceNo) nos.add(invoiceNo);
+    }
+    return nos;
+  }
+
+  function buyerFixSkipKey(reason) {
+    const text = String(reason || "không rõ");
+    if (text.startsWith("người mua khác")) return "người mua khác (giữ nguyên)";
+    if (text.startsWith("dòng hàng")) return text.split(":")[0];
+    return text;
+  }
+
+  async function loadBuyerFixJob() {
+    const stored = await chrome.storage.local.get(BUYER_FIX_JOB_KEY);
+    return stored[BUYER_FIX_JOB_KEY] || null;
+  }
+
+  async function saveBuyerFixJob(job) {
+    if (job) await chrome.storage.local.set({ [BUYER_FIX_JOB_KEY]: job });
+    else await chrome.storage.local.remove(BUYER_FIX_JOB_KEY);
+  }
+
+  // Lỗi tải lại trang là hết: rớt kết nối, website đuối (danh sách/form không
+  // nạp, trang không phản hồi), form kẹt không đóng được. Lỗi dữ liệu (đọc lại
+  // thấy sai, dòng hàng sai, website từ chối lưu, mất đăng nhập) thì dừng.
+  function isBuyerFixReloadable(error) {
+    const message = String(error?.message || error || "");
+    if (/đăng nhập|đã lưu nhưng đọc lại thấy sai|sai số lượng|khác tiền hàng|tu choi luu|luu nham|không phải/i.test(message)) return false;
+    return isPageOverloadError(error) ||
+      /failed to fetch|networkerror|network error|load failed|HTTP 5\d\d|Không mở được form|Không đọc được dòng hàng|Không đọc được dữ liệu phiếu|không đóng được|Phiếu không còn trong danh sách/i
+        .test(message);
+  }
+
+  function buyerFixSummary(job) {
+    const skipped = Object.entries(job.skipped || {}).map(([reason, count]) => `${reason}: ${count}`).join(", ");
+    return `${job.fixed}/${job.total} phiếu đã sửa` + (skipped ? `; bỏ qua ${skipped}` : "");
+  }
+
+  function renderBuyerFixProgress(job, message = "") {
+    const node = document.getElementById("it-buyer-fix-progress");
+    if (node) {
+      node.textContent = job
+        ? `${message || (job.paused ? "Đang dừng" : "Đang chạy")} · ${buyerFixSummary(job)} · còn ${job.pending.length}`
+        : message;
+    }
+    const startButton = document.getElementById("it-buyer-fix-start");
+    if (startButton) startButton.textContent = job?.pending?.length ? `Chạy tiếp (${job.pending.length} phiếu)` : "Sửa người mua/TM-CK";
+    const stopButton = document.getElementById("it-buyer-fix-stop");
+    if (stopButton) stopButton.hidden = !buyerFixRunning;
+  }
+
+  async function startBuyerFixJob() {
+    if (buyerFixRunning) return;
+    assertRuntimeContext();
+    let existing = await loadBuyerFixJob();
+    if (existing && existing.scope !== BUYER_FIX_SCOPE) {
+      await saveBuyerFixJob(null);
+      existing = null;
+      setStatus("Đã bỏ lượt sửa người mua cũ (gồm cả phiếu ngoài extension); quét lại chỉ phiếu extension đã tạo/cập nhật.", "warn");
+    }
+    if (existing?.pending?.length) {
+      if (!window.confirm(`Còn ${existing.pending.length} phiếu của lượt sửa ${existing.fromDate} → ${existing.toDate} ` +
+          `(${buyerFixSummary(existing)}).\nOK: chạy tiếp lượt này. Cancel: bỏ lượt cũ để quét lại theo ngày đang chọn.`)) {
+        await saveBuyerFixJob(null);
+      } else {
+        existing.paused = false;
+        await saveBuyerFixJob(existing);
+        return runBuyerFixJob();
+      }
+    }
+    const fromDate = uiDateKey(document.getElementById("it-buyer-fix-from")?.value);
+    const toDate = uiDateKey(document.getElementById("it-buyer-fix-to")?.value);
+    if (!fromDate || !toDate || fromDate > toDate) throw new Error("Chọn Từ ngày/Đến ngày hợp lệ để sửa người mua/TM-CK.");
+    const invoiceNos = [...extensionInvoiceNos()];
+    if (!invoiceNos.length) throw new Error("Chưa có phiếu nào do extension tạo hoặc cập nhật (gắn với giao dịch).");
+    if (!await ensureInvoiceListScreen(20000)) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
+    setStatus(`Đang lấy danh sách phiếu ${fromDate} → ${toDate}…`, "warn");
+    const scanned = await request("buyerFixScan", { fromDate, toDate, invoiceNos });
+    const targets = scanned.targets || [];
+    const skippedText = Object.entries(scanned.skipped || {}).map(([reason, count]) => `${reason}: ${count}`).join(", ");
+    if (!targets.length) {
+      setStatus(`${fromDate} → ${toDate}: ${scanned.total} phiếu, không phiếu nào cần sửa` +
+        `${skippedText ? ` (bỏ qua ${skippedText})` : ""}.`, "ok");
+      return;
+    }
+    const byMethod = method => targets.filter(item => item.paymentMethod === method).length;
+    const methodText = scanned.listHasPayment
+      ? ` (TM: ${byMethod("TM")}, CK: ${byMethod("CK")}, đã TM/CK: ${byMethod("TM/CK")})`
+      : " (xét theo từng phiếu)";
+    if (!window.confirm(`Sửa ${targets.length} phiếu do extension tạo/cập nhật, chưa xuất hóa đơn, ${fromDate} → ${toDate}${methodText}?\n` +
+        `Thanh toán → "TM/CK", người mua → "${DEFAULT_INVOICE_BUYER}". Phiếu nhân viên tự lập không bị đụng tới. ` +
+        "Tiền, giờ, phòng và dòng hàng giữ nguyên.\n" +
+        `Extension tự tải lại trang sau mỗi ${AUTO_RELOAD_EVERY_SAVED_INVOICES} phiếu và khi website lỗi, rồi chạy tiếp. ` +
+        "Để tab này hiển thị trong lúc chạy.")) {
+      setStatus("Đã hủy sửa người mua/TM-CK, chưa lưu gì.", "warn");
+      return;
+    }
+    await saveBuyerFixJob({
+      scope: BUYER_FIX_SCOPE,
+      fromDate,
+      toDate,
+      total: targets.length,
+      fixed: 0,
+      skipped: {},
+      notes: [],
+      pending: targets.map(item => ({ id: item.id, invoiceNo: item.invoiceNo, dateKey: item.dateKey, ourInvoice: true })),
+      startedAt: new Date().toISOString(),
+      paused: false,
+      lastError: ""
+    });
+    return runBuyerFixJob();
+  }
+
+  async function runBuyerFixJob() {
+    if (buyerFixRunning) return;
+    let job = await loadBuyerFixJob();
+    if (job && job.scope !== BUYER_FIX_SCOPE) {
+      await saveBuyerFixJob(null);
+      renderBuyerFixProgress(null, "Đã bỏ lượt cũ; bấm lại để quét chỉ phiếu extension đã tạo/cập nhật.");
+      return;
+    }
+    if (!job?.pending?.length || job.paused) {
+      renderBuyerFixProgress(job);
+      return;
+    }
+    buyerFixRunning = true;
+    buyerFixStopRequested = false;
+    let fixedSinceReload = 0;
+    try {
+      if (!await ensureInvoiceListScreen(20000)) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
+      while (job.pending.length) {
+        if (buyerFixStopRequested) {
+          job.paused = true;
+          await saveBuyerFixJob(job);
+          setStatus(`Đã dừng sửa người mua/TM-CK: ${buyerFixSummary(job)}. Bấm "Chạy tiếp" để làm nốt ${job.pending.length} phiếu.`, "warn");
+          return;
+        }
+        const item = job.pending[0];
+        const position = job.total - job.pending.length + 1;
+        setStatus(`Sửa người mua/TM-CK ${position}/${job.total}: ${item.invoiceNo} (${item.dateKey})…`, "warn");
+        renderBuyerFixProgress(job, `Đang sửa ${item.invoiceNo}`);
+        let result;
+        try {
+          // Không gửi khóa `id`: request() trải payload sau mã yêu cầu nên `id` của
+          // phiếu sẽ đè mã đó, bridge trả lời bằng ID phiếu và content chờ mãi tới
+          // hết 90s dù phiếu đã lưu xong (chạy thật 02/10/2026, HD0126080369/0370).
+          result = await request("buyerFixInvoice", {
+            recordId: item.id,
+            invoiceNo: item.invoiceNo,
+            dateKey: item.dateKey,
+            ourInvoice: item.ourInvoice
+          });
+        } catch (error) {
+          job.lastError = `${item.invoiceNo}: ${error.message}`;
+          await saveBuyerFixJob(job);
+          if (isBuyerFixReloadable(error) &&
+              await scheduleAutoReloadResume("buyer-fix", `${item.invoiceNo}: ${error.message}`)) {
+            return;
+          }
+          job.paused = true;
+          await saveBuyerFixJob(job);
+          setStatus(`Dừng sửa người mua/TM-CK tại ${item.invoiceNo}: ${error.message} ` +
+            `(${buyerFixSummary(job)}). Xử lý xong bấm "Chạy tiếp".`, "error");
+          return;
+        }
+        job.pending.shift();
+        if (result?.status === "fixed") {
+          job.fixed += 1;
+          fixedSinceReload += 1;
+        } else {
+          const reason = String(result?.reason || "không rõ");
+          const key = buyerFixSkipKey(reason);
+          job.skipped[key] = (job.skipped[key] || 0) + 1;
+          // Phiếu bỏ qua vì dòng hàng: ghi lại để kế toán xem tay.
+          if (reason.startsWith("dòng hàng")) job.notes = [...(job.notes || []), `${item.invoiceNo}: ${reason}`].slice(-50);
+        }
+        job.lastError = "";
+        await saveBuyerFixJob(job);
+        // Có tiến triển: giới hạn số lần tải lại vì lỗi chỉ tính các lần liên tiếp.
+        if (Number(uiSession?.autoResumeAttempts) > 0) await saveBatchUiSession({ panelOpen: true, autoResumeAttempts: 0 });
+        if (job.pending.length && fixedSinceReload >= AUTO_RELOAD_EVERY_SAVED_INVOICES) {
+          await scheduleAutoReloadResume("buyer-fix", buyerFixSummary(job), { planned: true });
+          return;
+        }
+      }
+      await saveBuyerFixJob(null);
+      const notes = job.notes || [];
+      setStatus(`Xong sửa người mua/TM-CK ${job.fromDate} → ${job.toDate}: ${buyerFixSummary(job)}.` +
+        (notes.length ? ` Cần xem tay: ${notes.slice(0, 5).join("; ")}${notes.length > 5 ? "…" : ""}` : ""),
+      notes.length ? "warn" : "ok");
+      renderBuyerFixProgress(null, `Xong: ${buyerFixSummary(job)}`);
+    } catch (error) {
+      setStatus(`Không chạy được sửa người mua/TM-CK: ${error.message}`, "error");
+    } finally {
+      buyerFixRunning = false;
+      renderBuyerFixProgress(await loadBuyerFixJob().catch(() => null));
     }
   }
 

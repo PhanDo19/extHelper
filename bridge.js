@@ -3057,6 +3057,313 @@
     return 0;
   }
 
+  // ---------------------------------------------------------------------------
+  // Sửa người mua + phương thức thanh toán của phiếu đã lưu, CHƯA xuất hóa đơn
+  // (kế toán chốt 02/10/2026; từ 1.29.4 phiếu mới đã lưu đúng):
+  //   phương thức đúng "TM" hoặc "CK"             -> TM/CK
+  //   người mua mặc định cũ của website hoặc trống -> DEFAULT_INVOICE_BUYER
+  // Thay script console scripts/sua-nguoi-mua-tmck.js: chạy thật cứ khoảng 50
+  // phiếu lại dừng (rớt kết nối, website đuối sau nhiều lần mở/đóng phiếu), mà
+  // script trong Console không sống qua lần tải lại trang. Ở đây content giữ tiến
+  // độ trong storage, tự tải lại trang rồi chạy tiếp. Mỗi phiếu được đọc lại từ
+  // server trước khi sửa nên phiếu đã xong trước lần tải lại tự được bỏ qua.
+  //
+  // Chỉ đổi PHUONGTHUCTT/NGUOIMUAHANG (DIACHIKHACH khi trống); mọi trường khác
+  // lấy nguyên từ form server. Không dùng buildCurrentSavePayload: hàm đó ghi đè
+  // tiền/giờ theo phương án và chặn giảm giá, sai với phiếu nhân viên tự lập.
+  // ---------------------------------------------------------------------------
+  const BUYER_FIX_PAYMENTS = new Set(["TM", "CK"]);
+  // Phiếu extension đã tạo/cập nhật (gắn giao dịch, có trong sổ đối soát): sửa cả
+  // phiếu đã TM/CK mà người mua còn mặc định cũ (luồng sao kê trước 1.29.4).
+  const BUYER_FIX_OUR_PAYMENTS = new Set(["TM", "CK", "TM/CK", ""]);
+  // Người mua mặc định của website (extension cũng ghi người mua này trước 1.29.4).
+  const BUYER_FIX_OLD_BUYER = "Khách lẻ - Không lấy hóa đơn";
+
+  function buyerFixDecision(fields, options = {}) {
+    const buyer = String(fields?.NGUOIMUAHANG ?? "").trim();
+    const payment = String(fields?.PHUONGTHUCTT ?? "").trim().toUpperCase();
+    if (String(fields?.SOHD || "").trim()) return { skip: "đã xuất hóa đơn" };
+    if (payment === INVOICE_PAYMENT_METHOD && buyer === DEFAULT_INVOICE_BUYER) return { skip: "đã đúng" };
+    const payments = options.ourInvoice ? BUYER_FIX_OUR_PAYMENTS : BUYER_FIX_PAYMENTS;
+    if (!payments.has(payment)) return { skip: `thanh toán ${payment || "(trống)"}` };
+    const replaceable = !buyer || buyer === DEFAULT_INVOICE_BUYER ||
+      normalizedVietnameseText(buyer) === normalizedVietnameseText(BUYER_FIX_OLD_BUYER);
+    if (!replaceable) return { skip: `người mua khác: ${buyer}` };
+    const changes = {};
+    if (payment !== INVOICE_PAYMENT_METHOD) changes.PHUONGTHUCTT = INVOICE_PAYMENT_METHOD;
+    if (buyer !== DEFAULT_INVOICE_BUYER) changes.NGUOIMUAHANG = DEFAULT_INVOICE_BUYER;
+    if (!String(fields?.DIACHIKHACH ?? "").trim()) changes.DIACHIKHACH = DEFAULT_INVOICE_ADDRESS;
+    return { changes };
+  }
+
+  // Ngày nghiệp vụ theo giờ Việt Nam, không phụ thuộc múi giờ của máy.
+  function vietnamDateKey(milliseconds) {
+    return milliseconds ? new Date(milliseconds + 7 * 3600000).toISOString().slice(0, 10) : "";
+  }
+
+  // Cùng cách script chuyển phòng đã chạy trên website: Maps lấy nguyên từ form
+  // server, các mốc giờ giữ nguyên thời điểm, chỉ chuẩn hóa định dạng như request
+  // của website; TIENGIOPHONGCUOI = TIENGIO để đọc lại không bị khôi phục số cũ.
+  function buyerFixPayload(formData, detailRows, changes) {
+    const fields = mapObject(formData.mapper?.Maps);
+    const recordId = formDataRecordId(formData);
+    const checkIn = parseFormDateTime(fields.BATDAUPHONGCUOI) || parseFormDateTime(fields.BATDAU);
+    const checkOut = parseFormDateTime(fields.KETTHUC);
+    const paidAt = parseFormDateTime(fields.GIOTHANHTOAN) || checkOut;
+    const documentDate = parseFormDateTime(fields.NGAY);
+    if (!checkIn || !checkOut || !documentDate) {
+      throw new Error(`${fields.NAME}: không đọc được NGAY/giờ vào/giờ ra trên form.`);
+    }
+    const overrides = {
+      ...changes,
+      TIENGIOPHONGCUOI: formAmount(fields.TIENGIO),
+      NGAY: localMidnightIso(vietnamDateKey(documentDate)),
+      BATDAUPHONGCUOI: new Date(checkIn).toISOString(),
+      BATDAU: new Date(checkIn).toISOString(),
+      KETTHUC: new Date(checkOut).toISOString(),
+      GIOTHANHTOAN: localUsDateTime(new Date(paidAt))
+    };
+    const maps = (formData.mapper?.Maps || []).map(map => {
+      const field = String(map.Field || "").toUpperCase();
+      return { Field: map.Field, Value: Object.prototype.hasOwnProperty.call(overrides, field) ? overrides[field] : map.Value };
+    });
+    const grand = formAmount(fields.TONGCONG);
+    return {
+      mode: 2,
+      clientMap: {
+        TableID: SALES_TABLE_ID,
+        ID: recordId,
+        Maps: maps,
+        Grids: [{ Name: "detail", Data: detailRows }],
+        CustomPostTable: [{
+          Name: "LoaiQuy",
+          Data: [
+            { truong: "TRALAI", value: formAmount(fields.TRALAI) },
+            { truong: "TIENTHANHTOAN", value: formAmount(fields.TIENTHANHTOAN) || grand },
+            { truong: "KHACHDUA", value: formAmount(fields.KHACHDUA) || grand },
+            { truong: "TIENMAT", value: formAmount(fields.TIENMAT) || grand }
+          ]
+        }],
+        CustomPost: { MODEQUANLY: Number(formData.ModeQuanLy) || 30, GioClient: localServerDateTime(new Date()) }
+      },
+      TableID: SALES_TABLE_ID,
+      ID: recordId,
+      Loai: Number(formData.Loai) || 0
+    };
+  }
+
+  // Dòng hàng gửi lại phải đúng từng dòng đang có: thiếu một dòng là website xóa
+  // dòng đó. Phiếu "chỉ hát" (tiền hàng 0) không có dòng nào.
+  function buyerFixCheckRows(rows, goods, invoiceNo) {
+    if (!rows.length && goods === 0) return;
+    if (!rows.length) throw new Error(`${invoiceNo}: form không có dòng hàng.`);
+    let sum = 0;
+    for (const row of rows) {
+      const qty = Math.round(Number(row.SLXUATCHUAQUYDOI ?? row.SLXUAT) || 0);
+      const price = Math.round(Number(row.DONGIA) || 0);
+      if (!row.DMATHANGID || qty <= 0 || price <= 0 || Math.round(Number(row.THANHTIEN) || 0) !== qty * price) {
+        throw new Error(`${invoiceNo}: dòng hàng ${row.DMATHANG_CODE || row.TENHANG || "?"} sai số lượng/giá/thành tiền.`);
+      }
+      sum += qty * price;
+    }
+    if (sum !== goods) throw new Error(`${invoiceNo}: tổng dòng hàng ${sum} khác tiền hàng ${goods}.`);
+  }
+
+  function buyerFixVerify(before, after, changes) {
+    const problems = [];
+    for (const [field, value] of Object.entries(changes)) {
+      if (String(after[field] ?? "").trim() !== value) problems.push(`${field} là "${after[field] ?? ""}", chưa thành "${value}"`);
+    }
+    for (const field of ["TONGCONG", "TIENGIO", "TIENHANG", "TIENTHUE"]) {
+      if (formAmount(after[field]) !== formAmount(before[field])) {
+        problems.push(`${field} ${formAmount(after[field])} (trước ${formAmount(before[field])})`);
+      }
+    }
+    if (String(after.DBANID || "").toLowerCase() !== String(before.DBANID || "").toLowerCase()) problems.push("phòng bị đổi");
+    if (String(after.SOHD || "").trim()) problems.push("phiếu đã có số hóa đơn");
+    const sameTime = (a, b) => Boolean(a && b && Math.abs(a - b) < 60000);
+    const checkIn = fields => parseFormDateTime(fields.BATDAUPHONGCUOI) || parseFormDateTime(fields.BATDAU);
+    if (!sameTime(checkIn(after), checkIn(before)) || !sameTime(parseFormDateTime(after.KETTHUC), parseFormDateTime(before.KETTHUC))) {
+      problems.push("giờ vào/ra bị đổi");
+    }
+    return problems;
+  }
+
+  // Dòng hàng của phiếu đọc bằng API, không mở phiếu trên giao diện. Chẩn đoán trên
+  // trang thật (Linh Đàm 02/10/2026): khi mở phiếu, website chỉ gọi GET AddEdit
+  // (MaxTab=6, ModeQuanLy=30) rồi các lookup; không request nào khác trả dòng hàng,
+  // nên dòng hàng nằm sẵn trong HTML đó. Mở phiếu qua giao diện (lọc ngày, lật
+  // trang, chờ form) thì chập chờn: treo quá 90s ở phiếu nằm trang 2.
+  //
+  // Không phụ thuộc tên biến trong HTML: lấy mọi object JSON có "DMATHANGID" là
+  // GUID cùng SLXUATCHUAQUYDOI và THANHTIEN (định nghĩa cột chỉ có "field":
+  // "DMATHANGID" nên không lọt). buyerFixInvoice còn đối chiếu tổng với tiền hàng
+  // trước khi lưu và so từng dòng sau khi lưu.
+  const BUYER_FIX_ROW_KEY = /"DMATHANGID"\s*:\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/gi;
+
+  // Ngày trong JSON server ("/Date(ms)/") đổi về dạng website gửi khi lưu
+  // ("2026-07-01 00:00:00", giờ Việt Nam), như request DoSave thật đã ghi.
+  function buyerFixRowDates(row) {
+    const copy = { ...row };
+    for (const [key, value] of Object.entries(copy)) {
+      const match = typeof value === "string" ? value.match(/^\/Date\((-?\d+)(?:[+-]\d{4})?\)\/$/) : null;
+      if (match) copy[key] = new Date(Number(match[1]) + 7 * 3600000).toISOString().slice(0, 19).replace("T", " ");
+    }
+    return copy;
+  }
+
+  function buyerFixRowsFromHtml(html) {
+    const source = String(html || "");
+    const rows = new Map();
+    BUYER_FIX_ROW_KEY.lastIndex = 0;
+    let match;
+    while ((match = BUYER_FIX_ROW_KEY.exec(source))) {
+      // Object nhỏ nhất bao quanh khóa: lùi từng "{" cho tới object có DMATHANGID.
+      let brace = match.index;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        brace = source.lastIndexOf("{", brace - 1);
+        if (brace < 0) break;
+        const object = extractJsonObject(source, brace);
+        if (object && typeof object === "object" && Object.prototype.hasOwnProperty.call(object, "DMATHANGID") &&
+            object.SLXUATCHUAQUYDOI !== undefined && object.THANHTIEN !== undefined) {
+          if (isGuid(object.ID)) rows.set(String(object.ID).toLowerCase(), buyerFixRowDates(object));
+          break;
+        }
+      }
+    }
+    return [...rows.values()];
+  }
+
+  // Đọc phiếu đúng như website gọi khi mở phiếu: formData + dòng hàng (kèm ID dòng).
+  async function buyerFixReadInvoice(recordId, invoiceNo) {
+    const id = String(recordId || "").trim();
+    if (!isGuid(id)) throw new Error(`ID phiếu không hợp lệ: ${id || "trống"}.`);
+    const label = String(invoiceNo || id);
+    const query = new URLSearchParams({
+      TableID: SALES_TABLE_ID,
+      RecordID: id,
+      Loai: "0",
+      MaxTab: "6",
+      notitle: "1",
+      ModeQuanLy: "30",
+      is_dialog: "1"
+    });
+    const response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
+    });
+    const html = await response.text();
+    if (isLoginRedirect(response, html)) {
+      throw new Error("Phiên đăng nhập đã hết hoặc bị cơ sở khác chiếm khi đọc phiếu; hãy đăng nhập lại.");
+    }
+    if (!response.ok) throw new Error(`Website từ chối đọc phiếu ${label} (HTTP ${response.status}).`);
+    const formData = salesFormDataFromHtml(html)
+      .find(item => formDataRecordId(item).toLowerCase() === id.toLowerCase());
+    if (!formData) throw new Error(`Không đọc được dữ liệu phiếu ${label} từ website.`);
+    return { formData, rows: buyerFixRowsFromHtml(html) };
+  }
+
+  // So từng dòng hàng trước/sau khi lưu: cùng ID, mặt hàng, số lượng, giá, thành tiền, ngày.
+  function buyerFixRowsDiffer(before, after) {
+    const key = row => [
+      String(row.ID || "").toLowerCase(),
+      String(row.DMATHANGID || "").toLowerCase(),
+      Math.round(Number(row.SLXUATCHUAQUYDOI ?? row.SLXUAT) || 0),
+      Math.round(Number(row.DONGIA) || 0),
+      Math.round(Number(row.THANHTIEN) || 0),
+      String(row.NGAYTHUCHIEN ?? "")
+    ].join("|");
+    const left = before.map(key).sort();
+    const right = after.map(key).sort();
+    return left.length !== right.length || left.some((value, index) => value !== right[index]);
+  }
+
+  // Danh sách phiếu cần xét trong khoảng ngày. Chọn sơ bộ theo dòng danh sách
+  // (một request) thay vì đọc từng form; buyerFixInvoice đọc lại form trước khi
+  // sửa nên chọn sơ bộ thừa cũng không sao.
+  async function buyerFixScan(detail) {
+    const fromDate = normalizeDateKey(detail?.fromDate);
+    const toDate = normalizeDateKey(detail?.toDate);
+    // Chỉ phiếu extension đã tạo/cập nhật: content gửi danh sách số phiếu gắn
+    // giao dịch / có trong sổ đối soát. Phiếu nhân viên tự lập không bị đụng tới.
+    const allowed = Array.isArray(detail?.invoiceNos) ? new Set(detail.invoiceNos.map(value => String(value).trim())) : null;
+    const { rows } = await fetchEInvoiceList({ fromDate, toDate });
+    // Danh sách không mang phương thức thanh toán thì không lọc sơ bộ được: đưa
+    // mọi phiếu chưa xuất vào, buyerFixInvoice tự xét theo form từng phiếu.
+    const listHasPayment = rows.some(row => String(row.paymentMethod || "").trim());
+    const targets = [];
+    const skipped = {};
+    const skip = reason => {
+      const key = reason.startsWith("người mua khác") ? "người mua khác (giữ nguyên)" : reason;
+      skipped[key] = (skipped[key] || 0) + 1;
+    };
+    for (const row of rows) {
+      if (allowed && !allowed.has(String(row.invoiceNo).trim())) { skip("ngoài giao dịch của extension"); continue; }
+      if (row.cancelled) { skip("đã hủy"); continue; }
+      if (row.issued) { skip("đã xuất hóa đơn"); continue; }
+      const decision = listHasPayment
+        ? buyerFixDecision({ NGUOIMUAHANG: row.buyer, PHUONGTHUCTT: row.paymentMethod, DIACHIKHACH: "-" }, { ourInvoice: Boolean(allowed) })
+        : { changes: {} };
+      if (!decision.changes) { skip(decision.skip); continue; }
+      targets.push({
+        id: row.id,
+        invoiceNo: row.invoiceNo,
+        dateKey: row.dateKey,
+        grandTotal: row.grandTotal,
+        paymentMethod: String(row.paymentMethod || "").trim().toUpperCase()
+      });
+    }
+    targets.sort((left, right) => left.dateKey.localeCompare(right.dateKey) || left.invoiceNo.localeCompare(right.invoiceNo));
+    return { fromDate, toDate, total: rows.length, targets, skipped, listHasPayment };
+  }
+
+  // Sửa một phiếu. Kết quả: fixed, hoặc skipped kèm lý do (đã đúng — kể cả phiếu
+  // vừa lưu trước lần tải lại —, đã xuất, quầy BÁN LẺ, người mua thật...).
+  // Chỉ dùng API: đọc phiếu (kèm dòng hàng) -> DoSave -> đọc lại so cả đầu phiếu lẫn
+  // từng dòng hàng. Không mở form, không lọc/lật trang danh sách.
+  async function buyerFixInvoice(detail) {
+    // ID phiếu đi trong `recordId`: `id` của sự kiện là mã yêu cầu để trả lời.
+    const id = String(detail?.recordId || "").trim();
+    const invoiceNo = String(detail?.invoiceNo || "").trim();
+    const { formData, rows } = await buyerFixReadInvoice(id, invoiceNo);
+    const before = mapObject(formData.mapper?.Maps);
+    if (String(before.NAME || "").trim() !== invoiceNo) {
+      throw new Error(`Phiếu ${id} trên website là ${before.NAME || "?"}, không phải ${invoiceNo}.`);
+    }
+    const decision = buyerFixDecision(before, { ourInvoice: Boolean(detail?.ourInvoice) });
+    if (!decision.changes) return { status: "skipped", reason: decision.skip };
+    await getRoomMap().catch(() => null);
+    try {
+      assertNotRetailRoom({ roomId: before.DBANID });
+    } catch (_) {
+      return { status: "skipped", reason: "quầy BÁN LẺ" };
+    }
+    // Dòng hàng gửi lại phải đúng từng dòng đang có (thiếu dòng là website xóa
+    // dòng đó): không đọc được hoặc tổng không khớp tiền hàng thì bỏ qua phiếu,
+    // không gửi gì.
+    const goods = formAmount(before.TIENHANG);
+    try {
+      buyerFixCheckRows(rows, goods, invoiceNo);
+    } catch (error) {
+      return { status: "skipped", reason: `dòng hàng không khớp: ${error.message}` };
+    }
+    const payload = buyerFixPayload(formData, rows, decision.changes);
+    const response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit/DoSave?is_ajax=1`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json;utf-8", "X-Requested-With": "XMLHttpRequest" },
+      body: JSON.stringify(payload)
+    });
+    verifySaveResponse(await response.text(), id);
+    const reread = await buyerFixReadInvoice(id, invoiceNo);
+    const after = mapObject(reread.formData.mapper?.Maps);
+    const problems = buyerFixVerify(before, after, decision.changes);
+    if (buyerFixRowsDiffer(rows, reread.rows)) problems.push("dòng hàng sau khi lưu khác trước khi lưu");
+    if (problems.length) throw new Error(`${invoiceNo}: đã lưu nhưng đọc lại thấy sai: ${problems.join("; ")}.`);
+    return { status: "fixed", changes: Object.keys(decision.changes) };
+  }
+
   // Lịch phòng THẬT của một ngày trên website: mọi phiếu của ngày (danh sách
   // hóa đơn điện tử, gồm cả phiếu đã phát hành, bỏ phiếu đã hủy) kèm phòng và
   // giờ vào/ra đọc từ đầu phiếu. Chỉ đọc. Sơ đồ phòng chỉ cho trạng thái HÔM
@@ -3705,6 +4012,8 @@
       else if (detail.action === "readDayRoomBookings") result = await readDayRoomBookings(detail);
       else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);
       else if (detail.action === "issueEInvoice") result = await issueEInvoice(detail);
+      else if (detail.action === "buyerFixScan") result = await buyerFixScan(detail);
+      else if (detail.action === "buyerFixInvoice") result = await buyerFixInvoice(detail);
       else if (detail.action === "readInvoiceItems") result = { items: await readInvoiceItems(detail) };
       else if (detail.action === "armApiTrace") result = armApiTrace();
       else if (detail.action === "getApiTrace") result = getApiTrace();
