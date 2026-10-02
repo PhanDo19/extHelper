@@ -35,6 +35,8 @@ Nút **Lưu API N phiếu đã Accept** xử lý tuần tự, dừng ở lỗi �
 - **Phiếu có sẵn**: mở đúng phiếu, gửi `DoSave` bằng API, đóng form.
 - **Phiếu mới**: tạo ngay trên tab danh sách, không mở tab phụ. Extension chọn phòng trống đúng đơn giá của phương án theo sơ đồ phòng website trả về (không chồng giờ với phiếu khác trong ngày, không bao giờ chọn quầy `BÁN LẺ`), đọc form trống của phòng bằng `GET AddEdit` (chỉ dựng form, không tạo bản ghi), rồi gửi hai request `DoSave` (mode=0 tạo phiên, mode=2 thanh toán).
   - Không có sơ đồ phòng hoặc không đọc được form phòng (lúc đó chưa gửi request ghi nào) thì tự quay về cách cũ: mở một tab Bán hàng phụ, mở form phòng trên giao diện, gửi hai request rồi tự đóng.
+  - Sơ đồ phòng chỉ cho trạng thái hôm nay. Để phiếu lập bù cho ngày quá khứ không trùng phòng trùng giờ, cả hai cách đều đọc **lịch phòng thật của ngày đó** trên website (mọi phiếu của ngày, chỉ đọc) và gộp với các phiếu extension vừa tạo. Không đọc được lịch thì dừng, không tạo phiếu.
+  - Phiếu mới lưu đơn giá giờ phòng (`DONGIA`) đúng bằng đơn giá của phương án; form phòng có đơn giá khác thì dừng. Xem `docs/ROOM_HOURLY_RATES.md`.
   - Nút **Kiểm tra tạo phiếu không cần tab phụ** chỉ đọc form của một phòng trống để xác nhận cách mới dùng được trên website; không lưu gì.
 - Sau mỗi phiếu, tab gốc mở lại phiếu **từ danh sách trên server** và đối soát tuyệt đối với phương án. Chỉ khi khớp mới đánh dấu giao dịch `done` và trừ tồn kho.
 

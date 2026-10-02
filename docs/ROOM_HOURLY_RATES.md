@@ -51,3 +51,20 @@ Sửa bảng `PARIS_NHON_ROOM_HOURLY_RATES` trong `content.js` (khóa là số c
 phòng). Nếu website đổi sang cách đặt giá khác (ví dụ theo từng phòng riêng lẻ
 chứ không theo đuôi số), cần thay bảng này bằng bảng tra theo tên phòng đầy đủ,
 hoặc đọc đơn giá thẳng từ API sơ đồ phòng nếu về sau nó trả thêm trường giá.
+
+## Đơn giá lưu trên phiếu (`DONGIA`)
+
+Đầu phiếu có trường `DONGIA` là đơn giá giờ của phòng. Khi tạo phiếu mới (cả
+cách đọc form bằng API lẫn cách mở tab phụ), extension:
+
+- **lưu `DONGIA` bằng đúng đơn giá của phương án** (dạng `"400000.00"`), giống
+  các script chuyển phòng trong `data/` đã chạy trên trang thật. Form đọc bằng
+  API có thể chưa được giao diện điền đơn giá; để 0 thì Tiền giờ không còn khớp
+  đơn giá × thời lượng;
+- **dừng trước khi gửi** nếu form phòng có sẵn đơn giá KHÁC phương án. Đó là
+  dấu hiệu bảng giá ở đây sai cho phòng đó.
+
+Kim Giang và Linh Đàm chưa khảo sát nên dùng 600.000đ cho mọi phòng. Nếu phòng
+nào ở hai cơ sở này có đơn giá khác, phiếu mới ở phòng đó sẽ bị chặn với thông
+báo nêu đơn giá trên website — khi đó cần bổ sung bảng giá cho cơ sở. Nút
+**Kiểm tra tạo phiếu không cần tab phụ** báo trước đơn giá form trả về.

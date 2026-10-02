@@ -84,10 +84,13 @@
   }
 
   // Đĩa hoa quả bán theo suất: không có tồn kho, tối đa MỘT đĩa (bất kỳ loại)
-  // trên mỗi hóa đơn. Mỗi cơ sở dùng đúng mã web của mình; cơ sở không có
-  // trong bảng (Linh Đàm) giữ nguyên dữ liệu và tự ánh xạ.
+  // trên mỗi hóa đơn. Mỗi cơ sở dùng đúng mã web VÀ GIÁ web của mình.
   //
-  // Kim Giang: dòng TC/TCTO đã có sẵn trong file kho (tồn 0), chỉ ghi đè.
+  // Kim Giang, Linh Đàm: dòng TC/TCTO đã có sẵn trong file kho chung (tồn 0),
+  // chỉ ghi đè. Linh Đàm từng không có trong bảng: TC/TCTO tồn 0 nên bị loại
+  // khỏi tồn khả dụng, phiếu Linh Đàm không bao giờ có hoa quả và rule ưu tiên
+  // TCTO mặc định cũng bị bỏ qua. Cùng mã 1500007 nhưng giá web Linh Đàm là
+  // 450.000đ, Kim Giang 400.000đ.
   // Nhơn: file Kho HG không có hoa quả nên phải TỰ THÊM dòng; nếu không, rule
   // ưu tiên hoa quả không bao giờ có mã hàng để áp và phiếu không có hoa quả.
   const FRUIT_PLATTER_RULES = Object.freeze({
@@ -97,6 +100,14 @@
       rows: {
         TC: { webCode: "1500006", webName: "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", webUnit: "đĩa", webPrice: 350000 },
         TCTO: { webCode: "1500007", webName: "HOA QUẢ THẬP CẨM (ĐĨA TO)", webUnit: "đĩa", webPrice: 400000 }
+      }
+    },
+    parislinhdam: {
+      synthesizeMissing: false,
+      reviewNote: "Ngoại lệ kế toán: tối đa một đĩa hoa quả thập cẩm (nhỏ hoặc to) trên mỗi hóa đơn.",
+      rows: {
+        TC: { webCode: "1500006", webName: "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", webUnit: "đĩa", webPrice: 350000 },
+        TCTO: { webCode: "1500007", webName: "HOA QUẢ THẬP CẨM (ĐĨA TO)", webUnit: "đĩa", webPrice: 450000 }
       }
     },
     parisnhon: {

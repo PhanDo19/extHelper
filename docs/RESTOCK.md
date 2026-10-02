@@ -50,3 +50,50 @@ lại kèm một dòng vết trong sổ kho, để hai cơ sở không lệch nh
 
 Sổ đối soát xóa đúng các bản ghi đã hoàn, nên không thể hoàn kho hai lần cho cùng
 một giao dịch.
+
+# Đối soát lại từ website
+
+Phiếu đã đối soát có thể bị sửa ngoài extension, ví dụ chuyển phiếu khỏi quầy
+BÁN LẺ sang phòng hát và đổi số lượng một dòng hàng để tiền giờ khớp bước giá
+phòng mới (các script `data/chuyen-phong-*.js`). Sổ đối soát khi đó vẫn giữ dòng
+hàng cũ, mà sổ lại là nguồn mặt hàng khi phát hành HĐĐT và xuất file hạch toán.
+
+## Tự động ở bước phát hành
+
+Ở màn **Phát hành hóa đơn**, mỗi lần **Tải danh sách** và mỗi lần bấm **Phát
+hành**, extension so nhanh tiền hàng của từng phiếu chưa phát hành trên website
+với tổng dòng hàng trong sổ. Bước này chỉ đọc (`GET AddEdit?RecordID=…`), không
+mở phiếu, khoảng một request mỗi phiếu.
+
+- Phiếu lệch được đánh dấu ⚠ ở cột mặt hàng.
+- Khi phát hành, bước **lấy mặt hàng** của phiếu lệch đọc lại từ phiếu trên
+  website thay vì tin sổ (cần màn hình danh sách Bán hàng, extension tự chuyển).
+  Phát hành xong, sổ đối soát và tồn kho được cập nhật theo phiếu thật. Hộp xác
+  nhận phát hành nêu rõ các phiếu này.
+
+## Nút "Đối soát lại mặt hàng từ website"
+
+Ở màn **Phát hành hóa đơn**, cạnh **Thử đọc mặt hàng**. Dùng khi muốn cập nhật
+sổ ngay mà chưa phát hành.
+
+1. Mở danh sách Bán hàng, chọn ngày ở màn Phát hành rồi bấm **Tải danh sách**.
+2. Bấm **Đối soát lại mặt hàng từ website**. Extension so nhanh mọi phiếu chưa
+   phát hành, rồi chỉ mở những phiếu lệch để đọc dòng hàng thật.
+3. Hộp thoại liệt kê các phiếu có dòng hàng khác sổ. Bấm OK để cập nhật.
+
+Khi cập nhật:
+
+- Chỉ hoàn/trừ tồn đúng các mã thay đổi; mã giữ nguyên không bị đụng.
+- Sổ đối soát nhận dòng hàng của phiếu thật (tăng `revision`, ghi `resyncNote`).
+- Phương án đã duyệt của giao dịch và phòng/giờ của phiếu mới được cập nhật theo
+  phiếu thật, để lịch phòng của các phiếu mới kế tiếp trong ngày đúng phòng mới.
+- Tất cả ghi xuống storage trong **một lần**, có kiểm tra phiên bản sao kê.
+- **Phiếu trên website không bị sửa.**
+
+Không tự xử lý:
+
+| Trường hợp | Xử lý |
+|---|---|
+| Tổng tiền phiếu khác sổ | Chỉ báo; cần người kiểm tra vì phiếu không còn khớp sao kê |
+| Phiếu không còn trong danh sách Chưa xuất hóa đơn | Giữ nguyên sổ; thường là phiếu đã phát hành HĐĐT |
+| Tồn không đủ cho phần tăng thêm | Dừng cả lần cập nhật, không ghi nửa vời |

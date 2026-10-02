@@ -2970,8 +2970,114 @@
       fieldCount: loaded.fieldCount,
       recordIdBlank: !isGuid(formDataRecordId(loaded.formData)),
       warehouseId: String(fields.DKHOXUATID || ""),
-      areaId: String(fields.DKHUVUCID || "")
+      areaId: String(fields.DKHUVUCID || ""),
+      // Đơn giá giờ form trả về (0 = form chưa có, extension sẽ tự đặt).
+      roomRate: formAmount(fields.DONGIA)
     };
+  }
+
+  // Số tiền trong Maps của form là chuỗi thập phân ("175000.00"); không dùng
+  // money() ở đây vì money() bỏ dấu chấm và đọc thành 17.500.000.
+  function formAmount(value) {
+    return Math.round(Number(String(value ?? "").replace(/,/g, "")) || 0);
+  }
+
+  // Đọc số liệu đầu phiếu đã có theo ID bằng API, không mở form trên giao diện:
+  // GET AddEdit với RecordID trả HTML chứa DataTransferJs của phiếu (cách các
+  // script chuyển phòng data/chuyen-phong-*.js đã chạy trên trang thật). Chỉ
+  // đọc. Dòng hàng không nằm trong dữ liệu này nên vẫn phải mở phiếu để đọc.
+  async function readInvoiceSummary(detail) {
+    const id = String(detail?.id || "").trim();
+    const formData = await readInvoiceFormById(id, detail?.invoiceNo);
+    const fields = mapObject(formData.mapper?.Maps);
+    return {
+      id,
+      invoiceNo: String(fields.NAME || "").trim(),
+      goods: formAmount(fields.TIENHANG),
+      hour: formAmount(fields.TIENGIO),
+      tax: formAmount(fields.TIENTHUE),
+      grand: formAmount(fields.TONGCONG),
+      roomId: String(fields.DBANID || "").trim()
+    };
+  }
+
+  async function readInvoiceFormById(recordId, invoiceNo) {
+    const id = String(recordId || "").trim();
+    if (!isGuid(id)) throw new Error(`ID phiếu không hợp lệ: ${id || "trống"}.`);
+    const label = String(invoiceNo || id);
+    const query = new URLSearchParams({
+      TableID: SALES_TABLE_ID,
+      RecordID: id,
+      Loai: "0",
+      MaxTab: "0",
+      NOTITLE: "1",
+      is_dialog: "1"
+    });
+    const response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
+    });
+    const html = await response.text();
+    if (isLoginRedirect(response, html)) {
+      throw new Error("Phiên đăng nhập đã hết hoặc bị cơ sở khác chiếm khi đọc phiếu; hãy đăng nhập lại.");
+    }
+    if (!response.ok) throw new Error(`Website từ chối đọc phiếu ${label} (HTTP ${response.status}).`);
+    const formData = salesFormDataFromHtml(html)
+      .find(item => formDataRecordId(item).toLowerCase() === id.toLowerCase());
+    if (!formData) throw new Error(`Không đọc được dữ liệu phiếu ${label} từ website.`);
+    return formData;
+  }
+
+  // Thời điểm trong Maps của form có nhiều dạng: /Date(ms)/, ISO có múi giờ
+  // ("2026-07-01T12:15:00.000Z"), giờ địa phương "2026-07-01 19:15:00" và
+  // "7/1/2026 7:50:00 PM". Trả mili-giây, hoặc 0 khi không đọc được.
+  function parseFormDateTime(value) {
+    if (value == null || value === "") return 0;
+    const text = String(value).trim();
+    let match = text.match(/\/Date\((-?\d+)/);
+    if (match) return Number(match[1]);
+    if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(text)) {
+      const time = Date.parse(text);
+      return Number.isFinite(time) ? time : 0;
+    }
+    match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (match) return new Date(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +(match[6] || 0)).getTime();
+    match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i);
+    if (match) {
+      let hour = +match[4];
+      if (match[7]) hour = (hour % 12) + (match[7].toUpperCase() === "PM" ? 12 : 0);
+      return new Date(+match[3], +match[1] - 1, +match[2], hour, +match[5], +(match[6] || 0)).getTime();
+    }
+    return 0;
+  }
+
+  // Lịch phòng THẬT của một ngày trên website: mọi phiếu của ngày (danh sách
+  // hóa đơn điện tử, gồm cả phiếu đã phát hành, bỏ phiếu đã hủy) kèm phòng và
+  // giờ vào/ra đọc từ đầu phiếu. Chỉ đọc. Sơ đồ phòng chỉ cho trạng thái HÔM
+  // NAY, nên phiếu lập bù cho ngày quá khứ cần lịch này để không chồng giờ với
+  // phiếu khác cùng phòng (cách script data/chuyen-phong-01000000269.js làm).
+  async function readDayRoomBookings(detail) {
+    const dateKey = normalizeDateKey(detail?.dateKey);
+    if (!dateKey) throw new Error("Thiếu ngày để đọc lịch phòng.");
+    const list = await fetchEInvoiceList({ dateKey });
+    const rows = (list.rows || []).filter(row => row.id && !row.cancelled);
+    const bookings = [];
+    const unreadable = [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, rows.length) }, async () => {
+      while (next < rows.length) {
+        const row = rows[next++];
+        const formData = await readInvoiceFormById(row.id, row.invoiceNo);
+        const fields = mapObject(formData.mapper?.Maps);
+        const from = parseFormDateTime(fields.BATDAUPHONGCUOI) || parseFormDateTime(fields.BATDAU);
+        const to = parseFormDateTime(fields.KETTHUC);
+        const roomId = String(fields.DBANID || "").trim();
+        if (roomId && from && to) bookings.push({ invoiceNo: row.invoiceNo, roomId, from, to });
+        else unreadable.push(row.invoiceNo);
+      }
+    }));
+    return { dateKey, invoiceCount: rows.length, bookings, unreadable };
   }
 
   // Tạo phiếu mới bằng hai request DoSave giống website: mode=0 tạo phiên (server
@@ -3005,6 +3111,20 @@
     const warehouseId = String(baseFields.DKHOXUATID || "").trim();
     if (!isGuid(roomId) || !isGuid(warehouseId)) throw new Error("Form phong moi thieu DBANID hoac DKHOXUATID.");
     assertNotRetailRoom({ roomId, roomName: roomLabel });
+    // Đơn giá giờ của phòng (DONGIA ở đầu phiếu). Phương án tính Tiền giờ theo
+    // đơn giá hạng phòng, nên phiếu phải LƯU đúng đơn giá đó — để 0 (form đọc
+    // bằng API có thể chưa được giao diện điền) hoặc đơn giá khác thì Tiền giờ
+    // không còn khớp đơn giá × thời lượng. Các script chuyển phòng trong data/
+    // cũng phải tự đặt DONGIA khi đổi phòng. Form có sẵn đơn giá KHÁC phương án
+    // nghĩa là bảng giá phòng của extension sai cho phòng này: dừng trước khi gửi.
+    const plannedRate = Math.round(Number(expected?.hourlyRate) || 0);
+    const formRate = formAmount(baseFields.DONGIA);
+    if (plannedRate > 0 && formRate > 0 && formRate !== plannedRate) {
+      throw new Error(
+        `Phòng ${String(roomLabel || "").trim() || roomId} có đơn giá giờ ${formRate} trên website nhưng phương án tính theo ` +
+        `${plannedRate}; không tạo phiếu. Hãy kiểm tra bảng đơn giá phòng (docs/ROOM_HOURLY_RATES.md).`
+      );
+    }
     const products = await fetchProductRowsForApiPlan(expected.items, warehouseId);
     const sessionRows = freshSessionDetailRows(expected.items, products, invoiceDateKey);
     const calculatedGoods = sessionRows.reduce((sum, row) => sum + row.THANHTIEN, 0);
@@ -3030,7 +3150,9 @@
       NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
       DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS,
       SOHD: "",
-      MODE: 1
+      MODE: 1,
+      // Cùng định dạng chuỗi thập phân website dùng ("400000.00").
+      ...(plannedRate > 0 ? { DONGIA: plannedRate.toFixed(2) } : {})
     };
     const sessionPayload = {
       mode: 0,
@@ -3574,6 +3696,8 @@
       else if (detail.action === "saveExistingInvoicePlanViaApi") result = await saveExistingInvoicePlanViaApi(detail);
       else if (detail.action === "createAndPayFreshInvoiceViaApi") result = await createAndPayFreshInvoiceViaApi(detail);
       else if (detail.action === "probeBlankRoomForm") result = await probeBlankRoomForm(detail.room);
+      else if (detail.action === "readInvoiceSummary") result = await readInvoiceSummary(detail);
+      else if (detail.action === "readDayRoomBookings") result = await readDayRoomBookings(detail);
       else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);
       else if (detail.action === "issueEInvoice") result = await issueEInvoice(detail);
       else if (detail.action === "readInvoiceItems") result = { items: await readInvoiceItems(detail) };

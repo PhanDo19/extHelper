@@ -68,8 +68,24 @@ assert.ok(fruitStock, "Đĩa hoa quả bán theo suất phải vào tồn khả 
 assert.equal(fruitStock.availableQty, 1);
 assert.equal(fruitStock.availabilityMode, "per_invoice");
 assert.equal(fruitStock.constraintGroupMax, 1);
-// Linh Đàm không có trong bảng: giữ nguyên.
-const linhDam = engine.applyBusinessRules({ tenant: "parislinhdam", mappings: [{ stockCode: "TCTO" }] });
-assert.equal(linhDam.mappings.length, 1);
-assert.equal(linhDam.mappings[0].webPrice, undefined, "Linh Đàm phải tự ánh xạ, không mượn rule cơ sở khác.");
+// Linh Đàm (từ 01/10/2026): TC/TCTO trong kho chung tồn 0 nên trước đây bị loại
+// khỏi tồn khả dụng và phiếu Linh Đàm không bao giờ có hoa quả. Nay bán theo
+// suất như Kim Giang nhưng theo GIÁ WEB CỦA LINH ĐÀM (TCTO 450.000đ), không
+// mượn giá 400.000đ của Kim Giang; chỉ ghi đè dòng có sẵn, không tự thêm dòng.
+const linhDam = engine.applyBusinessRules({ tenant: "parislinhdam", mappings: [
+  { stockCode: "TC", availableQty: 0, status: "confirmed", webCode: "1500006" },
+  { stockCode: "TCTO", availableQty: 0, status: "confirmed", webCode: "1500007" }
+] });
+assert.equal(linhDam.mappings.length, 2, "Linh Đàm chỉ ghi đè dòng có sẵn, không tự thêm dòng.");
+const linhDamTcto = linhDam.mappings.find(row => row.stockCode === "TCTO");
+assert.equal(linhDamTcto.webPrice, 450000, "Linh Đàm phải dùng giá web của mình, không mượn giá Kim Giang.");
+for (const row of linhDam.mappings) {
+  assert.equal(row.availabilityMode, "per_invoice");
+  assert.equal(row.constraintGroup, "fruit_platter");
+  assert.equal(row.constraintGroupMax, 1);
+}
+const linhDamInventory = engine.buildInventory(linhDam);
+assert.deepEqual(linhDamInventory.map(item => `${item.webCode}:${item.webPrice}:${item.availableQty}`).sort(),
+  ["1500006:350000:1", "1500007:450000:1"], "Đĩa hoa quả Linh Đàm phải vào tồn khả dụng dù tồn kho bằng 0.");
+assert.equal(engine.applyBusinessRules(linhDam).mappings.length, 2, "Áp lại rule không được nhân đôi dòng.");
 console.log("mapping-engine: OK");

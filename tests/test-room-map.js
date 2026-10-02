@@ -73,9 +73,10 @@ vm.runInContext(
   /const PARIS_NHON_ROOM_HOURLY_RATES = Object\.freeze\([^;]+\);/.exec(contentSource)[0] + "\n" +
   [
     "normalizeRoomText", "roomAreaKey", "isRetailRoomName", "parseUiDateTime",
-    "roomIsFreeForRange", "roomHourlyRate", "isIdleMapRoom", "rankIdleRoomsFromMap"
+    "roomIsFreeForRange", "roomHourlyRate", "isIdleMapRoom", "rankIdleRoomsFromMap", "mergeRoomBookings"
   ].map(name => extractFunction(contentSource, name)).join(";\n") +
-  ";\nthis.isIdleMapRoom = isIdleMapRoom; this.rankIdleRoomsFromMap = rankIdleRoomsFromMap; this.roomHourlyRate = roomHourlyRate;",
+  ";\nthis.isIdleMapRoom = isIdleMapRoom; this.rankIdleRoomsFromMap = rankIdleRoomsFromMap; this.roomHourlyRate = roomHourlyRate;" +
+  " this.mergeRoomBookings = mergeRoomBookings;",
   contentBox
 );
 const rooms = parsed.rooms;
@@ -195,5 +196,26 @@ assert(fetchDirectSource.includes("isLoginRedirect(response, responseText)"), "M
 const getRoomMapSource = extractFunction(bridgeSource, "getRoomMap");
 assert(getRoomMapSource.indexOf("await fetchRoomMapDirect()") < getRoomMapSource.indexOf("rebuildRequestBody(roomMapCapture)"),
   "Gọi thẳng endpoint phải được thử trước khi gọi lại request đã bắt.");
+
+// Lịch phòng thật trên website (phiếu không do extension tạo) phải chặn phòng
+// chồng giờ: phiếu lập bù cho ngày quá khứ không được trùng phòng trùng giờ.
+const vip21Id = rooms.find(room => room.name === "VIP 21").id;
+const websiteBusy = [
+  // Phiếu thật trên website ở VIP 21, 17:30–18:00 ngày 01/07: chồng 17:45–18:11.
+  { roomId: vip21Id.toUpperCase(), from: new Date(2026, 6, 1, 17, 30).getTime(), to: new Date(2026, 6, 1, 18, 0).getTime() },
+  // Id lạ không có trong sơ đồ: bỏ qua, không làm hỏng lịch.
+  { roomId: "khong-co-trong-so-do", from: 1, to: 2 }
+];
+const merged = contentBox.mergeRoomBookings(noBookings, websiteBusy, rooms);
+assert.strictEqual(contentBox.rankIdleRoomsFromMap(rooms, merged, checkIn, checkOut)[0].name, "VIP 22",
+  "Phòng đã có phiếu chồng giờ trên website phải bị bỏ qua");
+assert.strictEqual(contentBox.rankIdleRoomsFromMap(rooms, noBookings, checkIn, checkOut)[0].name, "VIP 21",
+  "Không có lịch website thì vẫn như cũ");
+assert.strictEqual(noBookings.size, 0, "Gộp lịch không được sửa Map lịch của sao kê");
+const extensionOnly = new Map([["VIP 22", [{ from: new Date(2026, 6, 1, 17, 0).getTime(), to: new Date(2026, 6, 1, 18, 30).getTime() }]]]);
+const both = contentBox.mergeRoomBookings(extensionOnly, websiteBusy, rooms);
+assert.strictEqual(contentBox.rankIdleRoomsFromMap(rooms, both, checkIn, checkOut)[0].name, "VIP 23",
+  "Gộp cả lịch sao kê (VIP 22) lẫn lịch website (VIP 21)");
+assert.strictEqual(extensionOnly.get("VIP 22").length, 1, "Không sửa mảng lịch của sao kê");
 
 console.log("room map selection: OK");

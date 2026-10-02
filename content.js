@@ -512,6 +512,11 @@
     ];
     if (d.plannedHourlyRate) parts.push(`Phương án tính theo phòng ${formatMoney(d.plannedHourlyRate)}đ/giờ nên chỉ nhận phòng cùng đơn giá.`);
     if (d.roomMismatch) parts.push(`Form mở nhầm phòng: ${d.roomMismatch}; đã đóng form, không lập phiếu.`);
+    if (d.websiteBookingsError) {
+      parts.push(`Không đọc được lịch phòng của ngày trên website (${d.websiteBookingsError}); chưa mở phòng để tránh trùng giờ.`);
+    } else if (Number.isFinite(d.websiteBookings)) {
+      parts.push(`Lịch website ngày đó: ${d.websiteBookings} phiếu đã có phòng/giờ.`);
+    }
     return parts.join(" ");
   }
 
@@ -535,6 +540,42 @@
       bookings.get(key).push({ from: from.getTime(), to: to.getTime() });
     }
     return bookings;
+  }
+
+  // Lịch phòng THẬT trên website theo ngày (mọi phiếu của ngày, không chỉ phiếu
+  // do extension tạo), giữ trong lần tải trang. Phiếu extension tạo trong lúc
+  // chạy đã nằm trong sao kê (newInvoiceRoomName/CheckIn/CheckOut) nên mỗi
+  // ngày chỉ cần đọc website một lần; hết hạn sau ít phút phòng khi có người
+  // sửa tay trên website.
+  const websiteRoomBookingsCache = new Map();
+  const WEBSITE_ROOM_BOOKINGS_TTL_MS = 10 * 60 * 1000;
+
+  async function websiteRoomBookings(dateKey) {
+    const key = String(dateKey || "");
+    const cached = websiteRoomBookingsCache.get(key);
+    if (cached && Date.now() - cached.at < WEBSITE_ROOM_BOOKINGS_TTL_MS) return cached.bookings;
+    const result = await request("readDayRoomBookings", { dateKey: key });
+    const bookings = Array.isArray(result?.bookings) ? result.bookings : [];
+    websiteRoomBookingsCache.set(key, { at: Date.now(), bookings });
+    return bookings;
+  }
+
+  // Gộp lịch phòng của sao kê (khóa theo TÊN phòng) với lịch website (theo id
+  // phòng, đổi sang tên bằng sơ đồ phòng). Trùng một phiếu ở cả hai nguồn
+  // không sao: kiểm tra chồng giờ cho cùng kết quả.
+  function mergeRoomBookings(statementBookings, websiteBookings, rooms) {
+    const nameById = new Map((rooms || []).map(room => [String(room.id || "").toLowerCase(), room.name]));
+    const merged = new Map([...(statementBookings || new Map())].map(([key, slots]) => [key, [...slots]]));
+    for (const booking of websiteBookings || []) {
+      const name = nameById.get(String(booking.roomId || "").toLowerCase());
+      const from = Number(booking.from);
+      const to = Number(booking.to);
+      if (!name || !Number.isFinite(from) || !Number.isFinite(to) || !from || !to) continue;
+      const key = normalizeRoomText(name).toLocaleUpperCase("vi-VN");
+      if (!merged.has(key)) merged.set(key, []);
+      merged.get(key).push({ from, to });
+    }
+    return merged;
   }
 
   // Hai khoảng giờ chồng nhau khi khoảng này bắt đầu trước khi khoảng kia kết
@@ -661,7 +702,7 @@
 
   async function autoOpenIdleRoomInvoiceForm() {
     if (!pendingNewInvoice || !isSalesWorkspacePage()) return { opened: false, roomName: "" };
-    const bookings = roomBookingsOnDate(pendingNewInvoice.transactionDate, pendingNewInvoice.transactionId);
+    let bookings = roomBookingsOnDate(pendingNewInvoice.transactionDate, pendingNewInvoice.transactionId);
     const plannedCheckIn = pendingNewInvoice.plan?.checkIn || "";
     const plannedCheckOut = pendingNewInvoice.plan?.checkOut || "";
     const diagnostics = {
@@ -682,6 +723,18 @@
     const roomMap = await loadRoomMapForSelection();
     Object.assign(diagnostics, roomMap.diagnostics);
     if (roomMap.rooms.length) {
+      // Lịch phòng thật của ngày phiếu trên website (cần sơ đồ phòng để đổi id
+      // phòng sang tên). Không đọc được thì dừng, không mở phòng dựa trên lịch
+      // chỉ gồm phiếu do extension tạo.
+      try {
+        const dayBookings = await websiteRoomBookings(pendingNewInvoice.transactionDate);
+        bookings = mergeRoomBookings(bookings, dayBookings, roomMap.rooms);
+        diagnostics.websiteBookings = dayBookings.length;
+        diagnostics.reservedRooms = bookings.size;
+      } catch (error) {
+        diagnostics.websiteBookingsError = error.message;
+        return { opened: false, roomName: "", diagnostics };
+      }
       const plannedRate = Number(pendingNewInvoice.plan?.hourlyRate) || 0;
       const ranked = rankIdleRoomsFromMap(roomMap.rooms, bookings, plannedCheckIn, plannedCheckOut, plannedRate);
       diagnostics.mapFreeForTime = ranked.length;
@@ -818,6 +871,9 @@
       statementClientTime: transaction.requestedAt || "",
       checkIn: plan.checkIn,
       checkOut: plan.checkOut,
+      // Đơn giá giờ của hạng phòng mà phương án dựa vào; bridge lưu vào DONGIA
+      // và dừng nếu form phòng có đơn giá khác.
+      hourlyRate: Math.round(Number(plan.hourlyRate) || 0),
       paymentMethod: transaction.paymentMethod || "",
       tenantSlug: pageTenantSlug
     };
@@ -1200,8 +1256,8 @@
         : action === "readInvoiceItems" ? 45000
         // Lệnh ghi gửi nhiều request lên server: hết giờ sớm là báo lỗi trong khi
         // bridge vẫn đang gửi và server có thể đã lưu.
-        : ["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi"].includes(action) ? 90000
-        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm"].includes(action) ? 30000
+        : ["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi", "readDayRoomBookings"].includes(action) ? 90000
+        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm", "readInvoiceSummary"].includes(action) ? 30000
         : 5000;
       const timeout = setTimeout(
         () => reject(new Error(`Trang không phản hồi sau ${Math.round(timeoutMs / 1000)}s (${action}).`)),
@@ -2909,6 +2965,37 @@
           : Math.max(0, recordedQty - heldQty)
       };
     });
+    // inventory chỉ gồm mã còn tồn (buildInventory), nên mã đã xác nhận ánh xạ
+    // mà hết hàng không có trong đó. Chúng vẫn là ĐÃ ánh xạ: hiện đúng mã web và
+    // tính vào "Đã hết". Trước đây chúng rơi xuống nhánh "Chưa ánh xạ" bên dưới —
+    // Linh Đàm báo 17 mã chưa ánh xạ trong khi màn Ánh xạ ghi cả 17 "Đã xác nhận".
+    // Chép stockCodes trước khi gắn thêm: mảng của inventory là thứ solver dùng.
+    const rowsByWebCode = new Map(rows.map(row => [String(row.webCode), row]));
+    for (const mapping of mappingDataset?.mappings || []) {
+      const stockCode = String(mapping.stockCode || "");
+      const webCode = String(mapping.webCode || "").trim();
+      if (mapping.status !== "confirmed" || !webCode || mappedStockCodes.has(stockCode)) continue;
+      mappedStockCodes.add(stockCode);
+      const existing = rowsByWebCode.get(webCode);
+      if (existing) {
+        existing.stockCodes = [...(existing.stockCodes || []), stockCode];
+        continue;
+      }
+      const row = {
+        webCode,
+        webName: mapping.webName,
+        webUnit: mapping.webUnit,
+        webPrice: mapping.webPrice,
+        availableQty: 0,
+        recordedQty: 0,
+        heldQty: 0,
+        allocatableQty: 0,
+        stockCodes: [stockCode],
+        availabilityMode: "stock"
+      };
+      rows.push(row);
+      rowsByWebCode.set(webCode, row);
+    }
     for (const item of sharedWarehouse.items || []) {
       if (mappedStockCodes.has(String(item.stockCode))) continue;
       rows.push({
@@ -2929,19 +3016,33 @@
     return rows.sort((a, b) => Number(Boolean(a.needsMapping)) - Number(Boolean(b.needsMapping)) || String(a.webCode || a.stockCodes?.[0]).localeCompare(String(b.webCode || b.stockCodes?.[0])));
   }
 
+  // Màn Kho gộp theo MÃ WEB, còn màn Ánh xạ đếm theo DÒNG KHO: Linh Đàm có 109
+  // dòng ánh xạ nhưng chỉ 77 mã web (Bánh quy que gộp 7 dòng kho…). Ô đầu từng
+  // ghi "Mã đủ điều kiện" = mọi dòng của bảng, tính cả mã hết hàng và mã chưa ánh
+  // xạ, nên không khớp số nào người dùng đối chiếu được. Nay "đủ điều kiện" đúng
+  // nghĩa solver (còn tồn hoặc bán theo suất) và ghi kèm số mã web / dòng kho.
+  function stockViewCounts(rows) {
+    const mappedRows = rows.filter(item => !item.needsMapping);
+    return {
+      webCodes: mappedRows.length,
+      stockRows: mappedRows.reduce((sum, item) => sum + (item.stockCodes || []).length, 0),
+      eligible: mappedRows.filter(item => item.availabilityMode === "per_invoice" || item.recordedQty > 0).length,
+      held: rows.filter(item => item.heldQty > 0).length,
+      low: rows.filter(item => item.availabilityMode !== "per_invoice" && item.allocatableQty > 0 && item.allocatableQty <= 3).length,
+      out: mappedRows.filter(item => item.availabilityMode !== "per_invoice" && item.allocatableQty <= 0).length,
+      unmapped: rows.length - mappedRows.length
+    };
+  }
+
   function renderStockAdmin() {
-    const rows = stockViewRows();
-    const heldCodes = rows.filter(item => item.heldQty > 0).length;
-    const lowCodes = rows.filter(item => item.availabilityMode !== "per_invoice" && item.allocatableQty > 0 && item.allocatableQty <= 3).length;
-    const outCodes = rows.filter(item => item.availabilityMode !== "per_invoice" && item.allocatableQty <= 0).length;
-    const unmappedCodes = rows.filter(item => item.needsMapping).length;
+    const counts = stockViewCounts(stockViewRows());
     const kpis = document.getElementById("it-stock-kpis");
     if (kpis) {
-      kpis.innerHTML = `<div><small>Mã đủ điều kiện</small><strong>${rows.length}</strong></div>
-        <div><small>Đang giữ</small><strong>${heldCodes}</strong></div>
-        <div class="${lowCodes ? "warn" : ""}"><small>Sắp hết</small><strong>${lowCodes}</strong></div>
-        <div class="${outCodes ? "error" : ""}"><small>Đã hết</small><strong>${outCodes}</strong></div>
-        <div class="${unmappedCodes ? "warn" : ""}"><small>Chưa ánh xạ tại ${escapeHtml(pageTenantLabel)}</small><strong>${unmappedCodes}</strong></div>`;
+      kpis.innerHTML = `<div><small>Đủ điều kiện lập phương án</small><strong>${counts.eligible}</strong><span>${counts.webCodes} mã web · ${counts.stockRows} dòng kho</span></div>
+        <div><small>Đang giữ</small><strong>${counts.held}</strong></div>
+        <div class="${counts.low ? "warn" : ""}"><small>Sắp hết</small><strong>${counts.low}</strong></div>
+        <div class="${counts.out ? "error" : ""}"><small>Đã hết</small><strong>${counts.out}</strong></div>
+        <div class="${counts.unmapped ? "warn" : ""}"><small>Chưa ánh xạ tại ${escapeHtml(pageTenantLabel)}</small><strong>${counts.unmapped}</strong></div>`;
     }
     renderStockRows();
   }
@@ -3652,6 +3753,13 @@
         : recorded?.itemsError
           ? `<small class="it-blocked-note" title="${escapeHtml(recorded.itemsError)}">⚠ chưa đọc được mặt hàng</small>`
           : '<small class="it-blocked-note">chưa có trong sổ đối soát</small>';
+      // Kết quả kiểm tra nhanh sổ với website (chỉ cho phiếu chưa phát hành).
+      const freshness = !row.issued && !row.cancelled ? ledgerFreshness.get(row.id) : null;
+      const freshnessHtml = freshness?.stale
+        ? `<br><small class="it-blocked-note">⚠ Phiếu trên web đã đổi mặt hàng (tiền hàng sổ ${formatMoney(freshness.ledgerGoods)} ≠ web ${formatMoney(freshness.webGoods)}). Khi phát hành extension sẽ đọc lại mặt hàng từ web.</small>`
+        : freshness?.error
+          ? `<br><small class="it-blocked-note" title="${escapeHtml(freshness.error)}">⚠ chưa so được với web</small>`
+          : "";
       const selectable = !row.issued && !row.cancelled && statementMatch.valid;
       const outside = !isStatementInvoice(row, linked);
       const matchHtml = statementMatch.valid
@@ -3669,7 +3777,7 @@
         <td>${matchHtml}</td>
         <td>${escapeHtml(row.buyer || "—")}</td>
         <td>${statusHtml}</td>
-        <td>${itemsHtml}${row.issued
+        <td>${itemsHtml}${freshnessHtml}${row.issued
           ? `<br><button class="it-check-issued" type="button" data-id="${escapeHtml(row.id)}">Check / đồng bộ</button>`
           : ""}</td>
       </tr>`;
@@ -3678,6 +3786,7 @@
       <label><input id="it-einvoice-select-all" type="checkbox"> Chọn tất cả chưa phát hành</label>
       <span>
         <button id="it-test-read-items" type="button" title="Chỉ đọc mặt hàng của các hóa đơn đã chọn, không phát hành">Thử đọc mặt hàng</button>
+        <button id="it-resync-einvoice-day" type="button" title="Phiếu chưa phát hành bị sửa ngoài extension (chuyển phòng, đổi số lượng): đọc lại mặt hàng trên website và cập nhật sổ đối soát, tồn kho theo phần chênh. Không sửa phiếu trên website.">Đối soát lại mặt hàng từ website</button>
         <button id="it-sync-issued" type="button" title="Ghi sổ các hóa đơn đã phát hành trên website nhưng chưa có trong sổ hạch toán">Đồng bộ hóa đơn đã phát hành</button>
         <button id="it-issue-einvoices" type="button" class="primary" ${eInvoiceSelection.size && !issuingInProgress ? "" : "disabled"}>Phát hành hóa đơn đã chọn</button>
       </span>
@@ -3695,6 +3804,9 @@
     });
     table.querySelector("#it-test-read-items")?.addEventListener("click", () => {
       testReadInvoiceItems().catch(error => setStatus(error.message, "error"));
+    });
+    table.querySelector("#it-resync-einvoice-day")?.addEventListener("click", event => {
+      resyncEInvoiceDay(event).catch(error => setStatus(error.message, "error"));
     });
     table.querySelector("#it-sync-issued")?.addEventListener("click", () => {
       syncIssuedInvoices().catch(error => setStatus(error.message, "error"));
@@ -3871,7 +3983,22 @@
     }
     renderEInvoiceRows();
     const pending = eInvoiceRows.filter(row => !row.issued && !row.cancelled).length;
-    setStatus(`Đã tải ${eInvoiceRows.length} hóa đơn; ${pending} hóa đơn chưa phát hành.`, pending ? "ok" : "warn");
+    const loadedMessage = `Đã tải ${eInvoiceRows.length} hóa đơn; ${pending} hóa đơn chưa phát hành.`;
+    setStatus(loadedMessage, pending ? "ok" : "warn");
+    // Tự kiểm tra sổ đối soát với website cho các phiếu sắp phát hành, để thấy
+    // ngay phiếu nào bị sửa ngoài extension. Chỉ đọc; lỗi không chặn danh sách.
+    const toCheck = eInvoiceRows.filter(row => !row.issued && !row.cancelled && ledgerItemsForInvoiceNo(row.invoiceNo));
+    if (!toCheck.length) return;
+    setStatus(`${loadedMessage} Đang so mặt hàng trong sổ với website (${toCheck.length} phiếu)…`, "warn");
+    const stale = await checkLedgerFreshness(toCheck);
+    renderEInvoiceRows();
+    setStatus(
+      stale.length
+        ? `${loadedMessage} ⚠ ${stale.length} phiếu có mặt hàng trên web khác sổ đối soát (${stale.slice(0, 6).map(row => row.invoiceNo).join(", ")}${stale.length > 6 ? "…" : ""}). ` +
+          "Khi phát hành extension sẽ đọc lại mặt hàng từ web và cập nhật sổ, tồn kho; hoặc bấm Đối soát lại mặt hàng từ website để cập nhật ngay."
+        : `${loadedMessage} Mặt hàng trong sổ khớp website.`,
+      stale.length ? "warn" : (pending ? "ok" : "warn")
+    );
   }
 
   // Số phiếu đã gắn với một giao dịch trong sao kê. Chỉ những phiếu này mới phát
@@ -4003,13 +4130,21 @@
     // từ màn hình danh sách Bán hàng. Cảnh báo trước để người dùng biết hóa đơn
     // nào sẽ thiếu số liệu hạch toán, thay vì chặn cả lô.
     const withoutLedger = targets.filter(row => !ledgerItemsForInvoiceNo(row.invoiceNo));
-    // Nếu có phiếu chưa nằm trong sổ đối soát, bridge phải mở phiếu từ danh
-    // sách Bán hàng để đọc mặt hàng. Chủ động chuyển màn hình trước khi phát
-    // hành, thay vì để bridge ném lỗi sâu sau khi lô đã bắt đầu chạy.
-    const listReady = withoutLedger.length
+    // Sổ có thể đã cũ nếu phiếu bị sửa ngoài extension (chuyển phòng, đổi số
+    // lượng). Kiểm tra lại NGAY trước khi phát hành (chỉ đọc, không mở phiếu):
+    // phiếu lệch thì bước lấy mặt hàng đọc từ web thay vì tin sổ.
+    setStatus("Đang so mặt hàng trong sổ đối soát với website trước khi phát hành…", "warn");
+    const staleTargets = await checkLedgerFreshness(targets.filter(row => ledgerItemsForInvoiceNo(row.invoiceNo)));
+    const staleIds = new Set(staleTargets.map(row => row.id));
+    renderEInvoiceRows();
+    // Nếu có phiếu chưa nằm trong sổ đối soát (hoặc sổ lệch web), bridge phải
+    // mở phiếu từ danh sách Bán hàng để đọc mặt hàng. Chủ động chuyển màn hình
+    // trước khi phát hành, thay vì để bridge ném lỗi sâu sau khi lô đã chạy.
+    const needsWebItems = withoutLedger.length + staleTargets.length;
+    const listReady = needsWebItems
       ? { present: await ensureInvoiceListScreen() }
       : { present: true };
-    if (withoutLedger.length && !listReady.present) {
+    if (needsWebItems && !listReady.present) {
       throw new Error(
         "Chưa mở được danh sách Bán hàng để đọc mặt hàng. Hãy đóng phiếu đang mở, mở Bán hàng rồi thử phát hành lại."
       );
@@ -4028,6 +4163,11 @@
         (listReady?.present
           ? "; extension sẽ mở từng phiếu để đọc mặt hàng (chậm hơn)."
           : " và màn hình danh sách Bán hàng chưa mở, nên sẽ KHÔNG có mặt hàng để hạch toán.")
+      : "";
+    const staleWarning = staleTargets.length
+      ? `\n\n⚠ ${staleTargets.length} hóa đơn có mặt hàng trên website khác sổ đối soát ` +
+        `(${staleTargets.slice(0, 5).map(row => row.invoiceNo).join(", ")}${staleTargets.length > 5 ? "…" : ""}): ` +
+        "extension sẽ đọc lại mặt hàng từ website, rồi cập nhật sổ đối soát và tồn kho theo phiếu thật."
       : "";
     // Số hóa đơn là dải dùng chung hai cơ sở và phải liên tục trong ngày, nên lô
     // trộn nhiều ngày sẽ chiếm luôn phần số mà cơ sở kia cần cho ngày sớm hơn.
@@ -4059,7 +4199,7 @@
         `${index + 1}. ${row.invoiceNo} · ${uiDateKey(row.dateKey)} · ${formatMoney(row.grandTotal)} đ`).join("\n") +
       (orderedTargets.length > 10 ? `\n… và ${orderedTargets.length - 10} hóa đơn nữa.` : "") +
       "\n\nHóa đơn đã phát hành không thể tự hủy trong extension." +
-      outsideWarning + warning + coordinationWarning
+      outsideWarning + warning + staleWarning + coordinationWarning
     );
     if (!confirmed) return setStatus("Đã hủy thao tác phát hành.", "warn");
 
@@ -4097,7 +4237,9 @@
         showProgress(`Đang phát hành ${position}/${targets.length}: ${row.invoiceNo}…`);
         setStatus(`Đang phát hành ${row.invoiceNo} (${position}/${targets.length})…`, "warn");
         try {
-          const ledgerItems = ledgerItemsForInvoiceNo(row.invoiceNo);
+          // Sổ lệch web thì không gửi mặt hàng của sổ: bridge đọc lại từ phiếu.
+          const stale = staleIds.has(row.id);
+          const ledgerItems = stale ? null : ledgerItemsForInvoiceNo(row.invoiceNo);
           const result = await request("issueEInvoice", {
             id: row.id,
             invoiceNo: row.invoiceNo,
@@ -4126,6 +4268,21 @@
             items: result.items
           });
           await InvoiceMappingStore.saveIssuedInvoices(issuedInvoiceBook);
+          // Phiếu đã phát hành không còn trong danh sách Chưa xuất hóa đơn, nên
+          // phải cập nhật sổ đối soát và tồn kho NGAY bằng mặt hàng vừa đọc từ web.
+          if (stale) {
+            if (result.itemsError || !result.items?.length) {
+              warnings.push(`${row.invoiceNo}: sổ đối soát lệch web nhưng chưa đọc được mặt hàng (${result.itemsError || "không có dòng hàng"}); sổ và tồn kho chưa cập nhật.`);
+            } else {
+              try {
+                const updated = await resyncLedgerFromWebItems(row.invoiceNo, result.items, ledgerFreshness.get(row.id));
+                if (updated) warnings.push(`${row.invoiceNo}: đã cập nhật sổ đối soát và tồn kho theo phiếu trên web (${updated}).`);
+                ledgerFreshness.delete(row.id);
+              } catch (resyncError) {
+                warnings.push(`${row.invoiceNo}: đã phát hành nhưng chưa cập nhật được sổ đối soát/tồn kho: ${resyncError.message}`);
+              }
+            }
+          }
           Object.assign(row, {
             issued: true,
             soHoaDon: result.soHoaDon,
@@ -4158,8 +4315,12 @@
               maCQThue: actual.maCQThue,
               maTraCuu: actual.maTraCuu,
               linkTraCuu: actual.linkTraCuu,
-              itemsError: ledgerItemsForInvoiceNo(row.invoiceNo) ? "" : `Mất phản hồi khi phát hành: ${error.message}`,
-              items: ledgerItemsForInvoiceNo(row.invoiceNo) || []
+              // Sổ lệch web thì mặt hàng trong sổ là SAI: thà để trống và báo thiếu
+              // còn hơn ghi sai vào file hạch toán.
+              itemsError: !staleIds.has(row.id) && ledgerItemsForInvoiceNo(row.invoiceNo)
+                ? ""
+                : `Mất phản hồi khi phát hành${staleIds.has(row.id) ? " (sổ đối soát lệch web)" : ""}: ${error.message}`,
+              items: staleIds.has(row.id) ? [] : (ledgerItemsForInvoiceNo(row.invoiceNo) || [])
             });
             await InvoiceMappingStore.saveIssuedInvoices(issuedInvoiceBook);
             Object.assign(row, actual);
@@ -4959,6 +5120,400 @@
         button.textContent = "Hoàn kho theo khoảng ngày";
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Đối soát lại phiếu ĐÃ xử lý từ website.
+  //
+  // Phiếu có thể bị sửa ngoài extension sau khi đã ghi sổ — ví dụ chuyển phiếu
+  // khỏi quầy BÁN LẺ sang phòng hát và đổi số lượng một dòng hàng để tiền giờ
+  // khớp bước giá phòng mới (data/chuyen-phong-*.js). Sổ đối soát vẫn giữ dòng
+  // hàng cũ, mà sổ lại là nguồn mặt hàng khi phát hành HĐĐT và xuất file hạch
+  // toán. Chức năng này đọc lại phiếu thật trên website, so với sổ, rồi cập nhật
+  // sổ và tồn kho theo đúng phần chênh.
+  // ---------------------------------------------------------------------------
+
+  // Dòng hàng chênh giữa sổ và phiếu thật, theo mã hàng (cộng dồn nếu một mã
+  // nằm ở nhiều dòng). Đổi giá mà không đổi số lượng cũng tính là chênh vì ảnh
+  // hưởng file hạch toán.
+  function ledgerItemChanges(ledgerItems, actualItems) {
+    const byCode = items => {
+      const map = new Map();
+      for (const item of items || []) {
+        const code = String(item?.code || "").trim();
+        const qty = Math.round(Number(item?.qty ?? item?.newQty) || 0);
+        if (!code || qty <= 0) continue;
+        const current = map.get(code) || { qty: 0, price: 0, name: "" };
+        current.qty += qty;
+        current.price = Math.round(Number(item.price) || 0) || current.price;
+        current.name = current.name || String(item.name || "").trim();
+        map.set(code, current);
+      }
+      return map;
+    };
+    const before = byCode(ledgerItems);
+    const after = byCode(actualItems);
+    const changes = [];
+    for (const code of new Set([...before.keys(), ...after.keys()])) {
+      const old = before.get(code) || { qty: 0, price: 0, name: "" };
+      const now = after.get(code) || { qty: 0, price: 0, name: "" };
+      if (old.qty === now.qty && old.price === now.price) continue;
+      changes.push({
+        code,
+        name: now.name || old.name || code,
+        beforeQty: old.qty,
+        afterQty: now.qty,
+        beforePrice: old.price,
+        afterPrice: now.price
+      });
+    }
+    return changes.sort((left, right) => left.code.localeCompare(right.code));
+  }
+
+  function describeLedgerChange(change) {
+    const qty = change.beforeQty === change.afterQty ? `SL ${change.afterQty}` : `${change.beforeQty} → ${change.afterQty}`;
+    const price = change.beforePrice === change.afterPrice
+      ? ""
+      : ` (giá ${formatMoney(change.beforePrice)} → ${formatMoney(change.afterPrice)})`;
+    return `${change.name}: ${qty}${price}`;
+  }
+
+  // Tính sổ, tồn kho và sao kê mới cho các phiếu có chênh. Chỉ hoàn/trừ đúng
+  // các mã thay đổi: mã giữ nguyên không bị đụng, nên mã không còn ánh xạ cũng
+  // không làm hỏng cả lần ghi. Thuần túy, không ghi storage.
+  function buildLedgerResync({ mapping, statement, ledger, results }) {
+    let nextMapping = mapping;
+    const nextStatement = structuredClone(statement);
+    const transactions = new Map((nextStatement.transactions || []).map(item => [String(item.id), item]));
+    const updatedEntries = new Map();
+    const at = new Date().toISOString();
+    for (const result of results) {
+      const restoreItems = result.changes
+        .filter(change => change.beforeQty > 0)
+        .map(change => ({ code: change.code, qty: change.beforeQty }));
+      const deductItems = result.changes
+        .filter(change => change.afterQty > 0)
+        .map(change => ({ code: change.code, qty: change.afterQty }));
+      nextMapping = deductVerifiedStock(restoreVerifiedStock(nextMapping, restoreItems), deductItems);
+      const actualItems = (result.scan.items || []).map(item => ({
+        code: String(item.code || "").trim(),
+        name: String(item.name || "").trim(),
+        unit: String(item.unit || "").trim(),
+        qty: Math.round(Number(item.qty) || 0),
+        price: Math.round(Number(item.price) || 0)
+      })).filter(item => item.code && item.qty > 0);
+      const note = `Đối soát lại từ website ${at.slice(0, 10)}: ${result.changes.map(describeLedgerChange).join("; ")}.`;
+      updatedEntries.set(String(result.entry.transactionId), {
+        ...result.entry,
+        items: actualItems,
+        revision: Math.max(1, Math.floor(Number(result.entry.revision) || 1)) + 1,
+        resyncedAt: at,
+        resyncNote: note
+      });
+      const transaction = transactions.get(String(result.entry.transactionId));
+      if (!transaction) continue;
+      transaction.resyncedAt = at;
+      transaction.resyncedNote = note;
+      if (transaction.batchApprovedPlan) {
+        // Nguồn từ lúc phát hành có thể thiếu tiền giờ: thiếu thì giữ số cũ,
+        // không ghi đè bằng 0.
+        const amountOr = (value, fallback) =>
+          Number.isFinite(Number(value)) && value !== null && value !== "" ? Math.round(Number(value)) : fallback;
+        transaction.batchApprovedPlan = {
+          ...transaction.batchApprovedPlan,
+          items: structuredClone(actualItems),
+          goods: amountOr(result.scan.currentGoods, transaction.batchApprovedPlan.goods),
+          hour: amountOr(result.scan.currentHour, transaction.batchApprovedPlan.hour),
+          checkIn: result.scan.checkIn || transaction.batchApprovedPlan.checkIn,
+          checkOut: result.scan.checkOut || transaction.batchApprovedPlan.checkOut
+        };
+      }
+      // Phòng/giờ của phiếu mới dùng để tránh trùng phòng khi lập phiếu kế tiếp
+      // trong ngày: phiếu đã được chuyển phòng thì lịch phòng phải theo phòng mới.
+      if (transaction.newInvoiceRoomName && result.scan.roomName) {
+        transaction.newInvoiceRoomName = result.scan.roomName;
+        transaction.newInvoiceRoomId = result.scan.roomId || transaction.newInvoiceRoomId || "";
+        transaction.newInvoiceCheckIn = result.scan.checkIn || transaction.newInvoiceCheckIn;
+        transaction.newInvoiceCheckOut = result.scan.checkOut || transaction.newInvoiceCheckOut;
+      }
+    }
+    const nextLedger = {
+      entries: (ledger.entries || []).map(entry => updatedEntries.get(String(entry.transactionId)) || entry)
+    };
+    return { nextMapping, nextStatement, nextLedger };
+  }
+
+  // Ghi kết quả đối soát lại (sổ, tồn kho, sao kê, kho chung) trong MỘT lần.
+  // `changed`: [{ entry, scan: { items, currentGoods?, currentHour?, ... }, changes }].
+  async function commitLedgerResync(changed) {
+    // Đọc lại kho chung ngay trước khi ghi: tab/cơ sở khác có thể vừa đổi tồn.
+    const latestSharedWarehouse = InvoiceSharedWarehouse.normalize(
+      await InvoiceMappingStore.loadSharedWarehouse(InvoiceSharedWarehouse.empty())
+    );
+    const beforeMapping = InvoiceSharedWarehouse.overlayMappings(mappingDataset, latestSharedWarehouse);
+    const { nextMapping, nextStatement, nextLedger } = buildLedgerResync({
+      mapping: beforeMapping,
+      statement: statementDataset,
+      ledger: verificationLedger,
+      results: changed
+    });
+    const nextSharedWarehouse = InvoiceSharedWarehouse.reconcileMappingDelta(
+      latestSharedWarehouse,
+      beforeMapping,
+      nextMapping,
+      {
+        tenant: pageTenantSlug,
+        invoiceNo: changed.map(item => item.entry.invoiceNo).join(", "),
+        transactionId: `resync-${Date.now()}`
+      }
+    );
+    await InvoiceMappingStore.commitVerifiedInvoice(nextMapping, nextStatement, nextLedger, nextSharedWarehouse);
+    mappingDataset = nextMapping;
+    statementDataset = nextStatement;
+    verificationLedger = nextLedger;
+    sharedWarehouse = nextSharedWarehouse;
+    refreshMappingState();
+    renderStatementRows();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Kiểm tra nhanh sổ đối soát với website (chỉ đọc, không mở phiếu): so tiền
+  // hàng trên web với tổng dòng hàng trong sổ. Phiếu bị sửa ngoài extension
+  // (chuyển phòng, đổi số lượng) lệch ở đây, và khi đó bước "lấy mặt hàng" lúc
+  // phát hành phải đọc lại mặt hàng từ web thay vì tin sổ.
+  // ---------------------------------------------------------------------------
+  const ledgerFreshness = new Map();
+
+  function ledgerGoodsTotal(items) {
+    return (items || []).reduce((sum, item) =>
+      sum + Math.round(Number(item.qty ?? item.newQty) || 0) * Math.round(Number(item.price) || 0), 0);
+  }
+
+  // Trả các dòng (của danh sách phát hành) có sổ lệch web. Dòng đã phát hành,
+  // đã hủy hoặc không có trong sổ thì bỏ qua; lỗi đọc ghi lại theo từng dòng.
+  async function checkLedgerFreshness(rows) {
+    const stale = [];
+    for (const row of rows || []) {
+      if (row.issued || row.cancelled) continue;
+      const ledgerItems = ledgerItemsForInvoiceNo(row.invoiceNo);
+      if (!ledgerItems) {
+        ledgerFreshness.delete(row.id);
+        continue;
+      }
+      try {
+        const summary = await request("readInvoiceSummary", { id: row.id, invoiceNo: row.invoiceNo });
+        if (summary.invoiceNo && summary.invoiceNo !== String(row.invoiceNo)) {
+          throw new Error(`Website trả phiếu ${summary.invoiceNo} cho ${row.invoiceNo}.`);
+        }
+        const ledgerGoods = ledgerGoodsTotal(ledgerItems);
+        const freshness = {
+          stale: summary.goods !== ledgerGoods,
+          ledgerGoods,
+          webGoods: summary.goods,
+          webHour: summary.hour,
+          checkedAt: Date.now()
+        };
+        ledgerFreshness.set(row.id, freshness);
+        if (freshness.stale) stale.push(row);
+      } catch (error) {
+        ledgerFreshness.set(row.id, { error: error.message, checkedAt: Date.now() });
+      }
+    }
+    return stale;
+  }
+
+  // Phát hành xong một phiếu có sổ lệch web: bridge đã đọc mặt hàng thật từ web
+  // để ghi sổ phát hành; dùng luôn số liệu đó cập nhật sổ đối soát và tồn kho.
+  // Trả mô tả phần chênh, hoặc "" nếu không có gì để cập nhật.
+  async function resyncLedgerFromWebItems(invoiceNo, items, freshness) {
+    const entry = ledgerEntryIndex().get(String(invoiceNo || "").trim());
+    if (!entry || !items?.length) return "";
+    const changes = ledgerItemChanges(entry.items, items);
+    if (!changes.length) return "";
+    await commitLedgerResync([{
+      entry,
+      scan: {
+        items,
+        currentGoods: freshness?.webGoods ?? ledgerGoodsTotal(items),
+        currentHour: freshness?.webHour
+      },
+      changes
+    }]);
+    return changes.map(describeLedgerChange).join("; ");
+  }
+
+  // Mở phiếu từ danh sách "Chưa xuất hóa đơn" của website, đọc rồi đóng. Thử
+  // lần lượt các ngày danh sách có thể chứa phiếu; không thấy thì trả null.
+  async function readInvoiceFromServer(invoiceNo, lookupDateKeys) {
+    for (const dateKey of lookupDateKeys) {
+      const found = await request("findInvoiceCandidates", {
+        dateKey,
+        usedInvoiceNos: [],
+        invoiceNo,
+        forceRefresh: true
+      });
+      const candidate = (found.candidates || []).find(item => String(item.invoiceNo) === String(invoiceNo));
+      if (!candidate) continue;
+      await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo });
+      try {
+        const scan = await waitForOpenedInvoice(invoiceNo, candidate.dateKey || dateKey);
+        if (String(scan?.invoiceNo || "") !== String(invoiceNo)) {
+          throw new Error(`Website mở nhầm phiếu ${scan?.invoiceNo || "không xác định"} thay vì ${invoiceNo}.`);
+        }
+        return scan;
+      } finally {
+        try { await request("closeInvoiceDetail"); } catch (_) {}
+        await new Promise(resolve => setTimeout(resolve, 450));
+      }
+    }
+    return null;
+  }
+
+  // Đọc lại các phiếu đã đối soát trên website và cập nhật sổ/tồn theo phần
+  // chênh. `onlyInvoiceNos` giới hạn vào đúng các phiếu đã biết là lệch (do
+  // kiểm tra nhanh tìm ra) để khỏi mở mọi phiếu; không có thì xét cả khoảng ngày.
+  async function resyncVerifiedRange({
+    fromDate = "", toDate = "", onlyInvoiceNos = null, button = null, label = "Đối soát lại mặt hàng từ website"
+  } = {}) {
+    try {
+      assertRuntimeContext();
+      if (!onlyInvoiceNos) {
+        if (!fromDate || !toDate) throw new Error("Hãy chọn đủ Từ ngày và Đến ngày cần đối soát lại.");
+        if (fromDate > toDate) throw new Error("Từ ngày không được lớn hơn Đến ngày.");
+      }
+      const matches = ledgerEntriesInDateRange(onlyInvoiceNos ? "" : fromDate, onlyInvoiceNos ? "" : toDate)
+        .filter(({ transaction }) => transaction?.status === "done" && transaction?.invoiceNo)
+        .filter(({ transaction }) => !onlyInvoiceNos || onlyInvoiceNos.has(String(transaction.invoiceNo)));
+      if (!matches.length) {
+        return setStatus(
+          onlyInvoiceNos
+            ? "Các phiếu lệch không còn ở trạng thái đã đối soát trong sao kê; không có gì để cập nhật."
+            : `Không có giao dịch đã đối soát nào từ ${fromDate} đến ${toDate}.`,
+          "warn"
+        );
+      }
+      if (!await ensureInvoiceListScreen()) {
+        throw new Error("Chưa mở được màn hình danh sách Bán hàng để đọc lại phiếu; hãy mở danh sách rồi thử lại.");
+      }
+      if (button) button.disabled = true;
+      const changed = [];
+      const totalChanged = [];
+      const notFound = [];
+      const readErrors = [];
+      for (let index = 0; index < matches.length; index += 1) {
+        const { transaction, entry } = matches[index];
+        const invoiceNo = String(transaction.invoiceNo);
+        if (button?.isConnected) button.textContent = `Đang đọc ${index + 1}/${matches.length}…`;
+        setStatus(`Đang đọc lại phiếu ${invoiceNo} (${index + 1}/${matches.length}) từ website…`, "warn");
+        // Phiếu API mới nằm trên danh sách ở ngày sao kê hoặc ngày máy chủ lúc
+        // tạo (≈ ngày lưu/đối soát), tùy cơ sở. Hai mốc sau là ISO giờ UTC nên
+        // phải đổi về ngày giờ địa phương, không cắt chuỗi.
+        const localDateKeyOfIso = value => {
+          const time = Date.parse(String(value || ""));
+          if (!Number.isFinite(time)) return "";
+          const date = new Date(time);
+          const part = number => String(number).padStart(2, "0");
+          return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())}`;
+        };
+        const lookupDateKeys = [...new Set([
+          uiDateKey(transaction.transactionDate),
+          localDateKeyOfIso(transaction.apiSavedAt),
+          localDateKeyOfIso(entry.verifiedAt)
+        ].filter(Boolean))];
+        let scan = null;
+        try {
+          scan = await readInvoiceFromServer(invoiceNo, lookupDateKeys);
+        } catch (error) {
+          readErrors.push(`${invoiceNo}: ${error.message}`);
+          continue;
+        }
+        if (!scan?.ready) {
+          notFound.push(invoiceNo);
+          continue;
+        }
+        if (Math.round(Number(scan.currentGrand)) !== Math.round(Number(entry.grand))) {
+          totalChanged.push(`${invoiceNo}: sổ ${formatMoney(entry.grand)}đ, website ${formatMoney(scan.currentGrand)}đ`);
+          continue;
+        }
+        const changes = ledgerItemChanges(entry.items, scan.items);
+        if (changes.length) changed.push({ transaction, entry, scan, changes });
+      }
+      const extras = [
+        totalChanged.length
+          ? `${totalChanged.length} phiếu có TỔNG TIỀN khác sổ, không tự sửa: ${totalChanged.slice(0, 5).join("; ")}${totalChanged.length > 5 ? "…" : ""}.`
+          : "",
+        notFound.length
+          ? `${notFound.length} phiếu không còn trong danh sách Chưa xuất hóa đơn (có thể đã phát hành HĐĐT), giữ nguyên sổ: ${notFound.slice(0, 8).join(", ")}${notFound.length > 8 ? "…" : ""}.`
+          : "",
+        readErrors.length ? `${readErrors.length} phiếu đọc lỗi: ${readErrors.slice(0, 3).join("; ")}.` : ""
+      ].filter(Boolean).join(" ");
+      if (!changed.length) {
+        return setStatus(
+          `Đã đọc lại ${matches.length} phiếu: dòng hàng đều khớp sổ đối soát. ${extras}`.trim(),
+          totalChanged.length || readErrors.length ? "warn" : "ok"
+        );
+      }
+      const lines = changed.slice(0, 10).map(({ transaction, scan, changes }) =>
+        `• ${transaction.invoiceNo}${scan.roomName ? ` (${scan.roomName})` : ""}: ${changes.map(describeLedgerChange).join("; ")}`);
+      const confirmed = window.confirm(
+        `${changed.length}/${matches.length} phiếu có dòng hàng trên website khác sổ đối soát:\n\n` +
+        `${lines.join("\n")}${changed.length > 10 ? `\n… và ${changed.length - 10} phiếu khác` : ""}\n\n` +
+        "Cập nhật sổ đối soát và tồn kho theo website? Chỉ phần chênh được hoàn/trừ; phiếu trên website không bị sửa." +
+        `${extras ? `\n\n${extras}` : ""}`
+      );
+      if (!confirmed) return setStatus("Đã hủy; sổ đối soát và tồn kho không thay đổi.", "warn");
+      await commitLedgerResync(changed);
+      setStatus(
+        `Đã cập nhật sổ đối soát và tồn kho theo website cho ${changed.length} phiếu: ` +
+        `${changed.map(item => item.transaction.invoiceNo).join(", ")}. ${extras}`.trim(),
+        totalChanged.length || readErrors.length ? "warn" : "ok"
+      );
+    } catch (error) {
+      setStatus(`Không đối soát lại được: ${error.message} Sổ đối soát và tồn kho chưa thay đổi.`, "error");
+    } finally {
+      if (button?.isConnected) {
+        button.disabled = false;
+        button.textContent = label;
+      }
+    }
+  }
+
+  // Nút ở màn Phát hành hóa đơn: kiểm tra nhanh mọi phiếu chưa phát hành của
+  // danh sách đang tải, rồi chỉ mở các phiếu thật sự lệch sổ để đọc mặt hàng.
+  async function resyncEInvoiceDay(event) {
+    const button = event?.currentTarget || document.getElementById("it-resync-einvoice-day");
+    const label = "Đối soát lại mặt hàng từ website";
+    const candidates = eInvoiceRows.filter(row => !row.issued && !row.cancelled && ledgerItemsForInvoiceNo(row.invoiceNo));
+    if (!candidates.length) {
+      return setStatus("Không có phiếu chưa phát hành nào có trong sổ đối soát. Hãy bấm Tải danh sách trước.", "warn");
+    }
+    try {
+      if (button) button.disabled = true;
+      setStatus(`Đang so ${candidates.length} phiếu với website (chỉ đọc)…`, "warn");
+      const stale = await checkLedgerFreshness(candidates);
+      renderEInvoiceRows();
+      if (!stale.length) {
+        const errors = candidates.filter(row => ledgerFreshness.get(row.id)?.error).length;
+        return setStatus(
+          errors
+            ? `${candidates.length - errors} phiếu khớp website; ${errors} phiếu chưa so được (xem dòng có dấu ⚠).`
+            : `Mặt hàng trong sổ đối soát khớp website cho cả ${candidates.length} phiếu chưa phát hành.`,
+          errors ? "warn" : "ok"
+        );
+      }
+    } finally {
+      if (button?.isConnected) button.disabled = false;
+    }
+    await resyncVerifiedRange({
+      onlyInvoiceNos: new Set(eInvoiceRows
+        .filter(row => ledgerFreshness.get(row.id)?.stale)
+        .map(row => String(row.invoiceNo))),
+      button: document.getElementById("it-resync-einvoice-day"),
+      label
+    });
+    // Đọc lại để bảng phản ánh sổ vừa cập nhật.
+    await checkLedgerFreshness(candidates);
+    renderEInvoiceRows();
   }
 
   async function verifySavedInvoice(verifiedSnapshot) {
@@ -5963,6 +6518,9 @@
   // Các nhóm không bao giờ tự đưa vào phương án: đây là phí phát sinh thực tế
   // (đồ vỡ, phí đồ ăn ngoài, phí rượu…) chứ không phải hàng bán chủ động.
   const EXCLUDED_PRODUCT_GROUPS = new Set(["PHUPHI"]);
+  // Cơ sở áp luật "hóa đơn trên 1 triệu có đúng một đĩa hoa quả" (xem
+  // buildBatchCandidates). Đĩa bán theo suất khai trong FRUIT_PLATTER_RULES.
+  const FRUIT_GROUP_RULE_TENANTS = new Set(["parisnhon", "pariskimgiang", "parislinhdam"]);
 
   function isAutoSellableStock(stock) {
     return !EXCLUDED_PRODUCT_GROUPS.has(String(stock?.webGroup || "").toUpperCase());
@@ -6249,13 +6807,17 @@
     const rejectionCountFor = code =>
       Number(rejectionCounts[code]) || (legacyRejected.includes(code) ? 1 : 0);
     const quantityScale = Math.max(1, Math.floor(Number(options?.quantityScale) || 1));
-    // Đĩa hoa quả ở Nhơn: hóa đơn trên 1 triệu phải có đúng một đĩa, BẤT KỲ
-    // loại nào trong nhóm fruit_platter (tối đa 1 đĩa/HĐ theo ánh xạ). Đặt theo
-    // NHÓM chứ không ghim một mã để 4 loại đĩa được luân phiên như bia. Kim
-    // Giang giữ rule ưu tiên TCTO có sẵn của kế toán nên không đi qua đây.
+    // Đĩa hoa quả: hóa đơn trên 1 triệu phải có đúng một đĩa, BẤT KỲ loại nào
+    // trong nhóm fruit_platter (tối đa 1 đĩa/HĐ theo ánh xạ). Đặt theo NHÓM chứ
+    // không ghim một mã để các loại đĩa được luân phiên như bia. Trước 01/10/2026
+    // chỉ Nhơn có luật này; Kim Giang chỉ có rule ưu tiên TCTO (luân phiên, được
+    // bỏ khi không ghép được) còn Linh Đàm không có hoa quả. Rule TCTO đó vẫn
+    // chạy trước nên phiếu Kim Giang/Linh Đàm trên 1 triệu thường ra TCTO; muốn
+    // luân phiên TC/TCTO thì tắt rule TCTO trong panel.
     const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
-    const fruitGroupRule = currentTenantSlug === "parisnhon" ? { minTotal: 1000000, minQty: 1 } : null;
-    const requireFruitPlatter = Boolean(fruitGroupRule) && Number(target) > fruitGroupRule.minTotal;
+    const fruitGroupRule = FRUIT_GROUP_RULE_TENANTS.has(currentTenantSlug) ? { minTotal: 1000000, minQty: 1 } : null;
+    const requireFruitPlatter = options?.includeFruitGroupRule !== false &&
+      Boolean(fruitGroupRule) && Number(target) > fruitGroupRule.minTotal;
     return sellableStock.map(stock => {
       const code = String(stock.webCode);
       // Hình phạt "đã dùng" tăng theo BÌNH PHƯƠNG số lần dùng trong lô. Hình
@@ -6466,9 +7028,7 @@
     while (quantityScale < maxQuantityScale && capacityAtScale(quantityScale) < minGoodsForHourRange * 1.1) {
       quantityScale += 1;
     }
-    let candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage, { quantityScale });
-    const solverOptions = {
-      maxQty: solverMaxQty * quantityScale,
+    const baseSolverOptions = {
       tolerance: 0,
       preTaxTarget: targets.preTaxTarget,
       currentHour: hourBounds.baseHour,
@@ -6495,8 +7055,7 @@
       preferredLineCount: preferredLineCount(targets.goodsTarget),
       maxActiveLines: activeLineLimit
     };
-    let solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, solverOptions);
-    let rotatingPriorityRelaxed = false;
+    const maxGoodsAllowed = Math.round(Number(baseSolverOptions.maxGoodsAmount) || 0);
     // Rule luân phiên là SỞ THÍCH, không phải luật kế toán, nên phải nới khi nó
     // làm phương án bất khả thi. Hai dấu hiệu đều phải xét:
     //   1. solver không tìm được tổ hợp nào;
@@ -6514,33 +7073,78 @@
     // Nhơn hạ xuống 1 bia + 1 khăn: sàn Tiền giờ trở lại đủ 30 phút nên trần
     // tiền hàng của sao kê 440.000đ siết từ 160.000đ xuống 100.000đ, và đĩa hoa
     // quả 250.000đ đẩy tiền hàng lên 305.000đ — vượt trần, chưa vượt 400.000đ.
-    const maxGoodsAllowed = Math.round(Number(solverOptions.maxGoodsAmount) || 0);
-    const leavesNoRoomForHour = solution.items &&
-      Math.round(Number(solution.actual) || 0) > maxGoodsAllowed;
-    if (!solution.items || leavesNoRoomForHour) {
-      const requiredOnlyCandidates = buildBatchCandidates(
-        inventoryState,
-        targetGrand,
-        transaction,
-        productUsage,
-        { includeRotatingRule: false, quantityScale }
-      );
-      const requiredOnlySolution = InvoiceTargetSolver.solveQuantities(
-        requiredOnlyCandidates,
-        targets.goodsTarget,
-        solverOptions
-      );
-      // Khi nới vì lý do (2), chỉ nhận kết quả mới nếu nó THỰC SỰ chừa được
-      // Tiền giờ; nếu không thì giữ phương án cũ để thông báo lỗi vẫn nêu đúng
-      // tình trạng kho.
-      const relaxedLeavesRoom = requiredOnlySolution.items &&
-        Math.round(Number(requiredOnlySolution.actual) || 0) <= maxGoodsAllowed;
-      if (requiredOnlySolution.items && (!solution.items || relaxedLeavesRoom)) {
-        candidates = requiredOnlyCandidates;
-        solution = requiredOnlySolution;
-        rotatingPriorityRelaxed = true;
+    const solveAtScale = scale => {
+      const solverOptions = { ...baseSolverOptions, maxQty: solverMaxQty * scale };
+      let candidates = buildBatchCandidates(inventoryState, targetGrand, transaction, productUsage, { quantityScale: scale });
+      let solution = InvoiceTargetSolver.solveQuantities(candidates, targets.goodsTarget, solverOptions);
+      let rotatingPriorityRelaxed = false;
+      const leavesNoRoomForHour = solution.items &&
+        Math.round(Number(solution.actual) || 0) > maxGoodsAllowed;
+      if (!solution.items || leavesNoRoomForHour) {
+        const requiredOnlyCandidates = buildBatchCandidates(
+          inventoryState,
+          targetGrand,
+          transaction,
+          productUsage,
+          { includeRotatingRule: false, quantityScale: scale }
+        );
+        const requiredOnlySolution = InvoiceTargetSolver.solveQuantities(
+          requiredOnlyCandidates,
+          targets.goodsTarget,
+          solverOptions
+        );
+        // Khi nới vì lý do (2), chỉ nhận kết quả mới nếu nó THỰC SỰ chừa được
+        // Tiền giờ; nếu không thì giữ phương án cũ để thông báo lỗi vẫn nêu đúng
+        // tình trạng kho.
+        const relaxedLeavesRoom = requiredOnlySolution.items &&
+          Math.round(Number(requiredOnlySolution.actual) || 0) <= maxGoodsAllowed;
+        if (requiredOnlySolution.items && (!solution.items || relaxedLeavesRoom)) {
+          candidates = requiredOnlyCandidates;
+          solution = requiredOnlySolution;
+          rotatingPriorityRelaxed = true;
+        }
       }
+      // Luật 1 đĩa hoa quả cho phiếu trên 1 triệu nhường sàn giờ hát. Ở Kim Giang
+      // /Linh Đàm đĩa rẻ nhất 350.000đ: phiếu 1.000.100đ (trước VAT 909.182đ)
+      // phải chừa sàn 50 phút = 500.000đ nên tiền hàng tối đa 409.182đ, trong khi
+      // đĩa + 3 bia + 2 khăn đã 495.000đ. Ép đĩa thì phiếu báo lỗi "Tiền giờ thấp
+      // hơn sàn" — trước khi có luật này, phiếu đó vẫn lập được. Chỉ bỏ đĩa khi nó
+      // thật sự không vừa; lần thử này cũng bỏ rule luân phiên (rule TCTO ép đĩa).
+      let fruitPlatterRelaxed = false;
+      const stillNoRoom = !solution.items || Math.round(Number(solution.actual) || 0) > maxGoodsAllowed;
+      if (stillNoRoom && candidates.some(item => item.constraintGroup === "fruit_platter" && Number(item.constraintGroupMin) > 0)) {
+        const noFruitCandidates = buildBatchCandidates(
+          inventoryState,
+          targetGrand,
+          transaction,
+          productUsage,
+          { includeRotatingRule: false, includeFruitGroupRule: false, quantityScale: scale }
+        );
+        const noFruitSolution = InvoiceTargetSolver.solveQuantities(noFruitCandidates, targets.goodsTarget, solverOptions);
+        const noFruitLeavesRoom = noFruitSolution.items &&
+          Math.round(Number(noFruitSolution.actual) || 0) <= maxGoodsAllowed;
+        if (noFruitSolution.items && (!solution.items || noFruitLeavesRoom)) {
+          candidates = noFruitCandidates;
+          solution = noFruitSolution;
+          rotatingPriorityRelaxed = true;
+          fruitPlatterRelaxed = true;
+        }
+      }
+      return { candidates, solverOptions, solution, rotatingPriorityRelaxed, fruitPlatterRelaxed };
+    };
+    let attempt = solveAtScale(quantityScale);
+    // Sức chứa lý thuyết chỉ là cận trên lạc quan: nó cộng 20 dòng đắt nhất ở
+    // mức trần mà bỏ qua trần nhóm (1 đĩa hoa quả/HĐ), dòng khăn ướt bắt buộc và
+    // việc solver gộp trạng thái. Ca thật Linh Đàm 13/07/2026 (12.622.999đ): sức
+    // chứa lý thuyết 8,02 triệu ≥ 110% mức cần 6,31 triệu nên giữ ×1, nhưng ×1
+    // không ghép được và phiếu báo lỗi dù nâng trần là lập được. Không ghép được
+    // thì thử tiếp bội số lớn hơn (vẫn tối đa ×5) trước khi báo lỗi; phiếu đã
+    // ghép được ở bội số đầu không bị ảnh hưởng.
+    while (!attempt.solution.items && quantityScale < maxQuantityScale) {
+      quantityScale += 1;
+      attempt = solveAtScale(quantityScale);
     }
+    const { candidates, solverOptions, solution, rotatingPriorityRelaxed, fruitPlatterRelaxed } = attempt;
     if (!solution.items) {
       const reachableUpperBound = reachableGoodsUpperBound(candidates, activeLineLimit, solverMaxQty * quantityScale);
       const scaleNote = quantityScale > 1 ? ` (đã nâng trần số lượng/HĐ ×${quantityScale})` : "";
@@ -6755,6 +7359,7 @@
       hourAdjustmentSmall,
       hourWithinPreTaxCap,
       rotatingPriorityRelaxed,
+      fruitPlatterRelaxed,
       // Bội số trần số lượng/HĐ đã dùng (1 = trần mặc định). Ghi lại để kế
       // toán thấy phiếu lớn được lập với trần nào.
       quantityScale,
@@ -8159,13 +8764,28 @@
 
     const roomMap = await loadRoomMapForSelection();
     if (!roomMap.rooms.length) return null;
-    const bookings = roomBookingsOnDate(transaction.transactionDate, transactionId);
+    // Sơ đồ phòng chỉ cho trạng thái hôm nay; phiếu lập bù cho ngày khác phải
+    // tránh mọi phiếu thật của ngày đó trên website, không chỉ phiếu extension tạo.
+    let dayBookings;
+    try {
+      dayBookings = await websiteRoomBookings(transaction.transactionDate);
+    } catch (error) {
+      throw new Error(
+        `Không đọc được lịch phòng ngày ${transaction.transactionDate} trên website: ${error.message} ` +
+        "Chưa tạo phiếu để tránh trùng phòng trùng giờ."
+      );
+    }
+    const bookings = mergeRoomBookings(
+      roomBookingsOnDate(transaction.transactionDate, transactionId), dayBookings, roomMap.rooms
+    );
     const plannedRate = Number(plan.hourlyRate) || 0;
     const ranked = rankIdleRoomsFromMap(roomMap.rooms, bookings, plan.checkIn, plan.checkOut, plannedRate);
     if (!ranked.length) {
       throw new Error(
         "Không còn phòng hát trống phù hợp để tạo phiếu mới (không dùng quầy BÁN LẺ). " +
-        roomSearchDiagnosticsText({ ...roomMap.diagnostics, mapFreeForTime: 0, plannedHourlyRate: plannedRate })
+        roomSearchDiagnosticsText({
+          ...roomMap.diagnostics, mapFreeForTime: 0, plannedHourlyRate: plannedRate, websiteBookings: dayBookings.length
+        })
       );
     }
     const room = ranked[0];
@@ -8233,10 +8853,20 @@
       const room = roomMap.rooms.find(isIdleMapRoom);
       if (!room) throw new Error("hiện không có phòng hát trống để đọc thử.");
       const result = await request("probeBlankRoomForm", { room });
+      // Đơn giá giờ phòng trên form so với bảng giá của extension: lệch thì lúc
+      // tạo phiếu bridge sẽ dừng, nên báo trước ở đây.
+      const tableRate = roomHourlyRate(room.name);
+      const formRate = Number(result.roomRate) || 0;
+      const rateNote = formRate === 0
+        ? ` Form chưa có đơn giá giờ; extension sẽ tự đặt ${formatMoney(tableRate)}đ/giờ.`
+        : formRate === tableRate
+          ? ` Đơn giá giờ ${formatMoney(formRate)}đ khớp bảng giá extension.`
+          : ` ⚠ Đơn giá giờ trên website ${formatMoney(formRate)}đ KHÁC bảng giá extension ${formatMoney(tableRate)}đ: ` +
+            "phiếu mới ở phòng hạng này sẽ bị chặn cho tới khi sửa bảng giá (docs/ROOM_HOURLY_RATES.md).";
       setStatus(
-        `Đọc được form phòng ${result.roomName} bằng API (${result.fieldCount} trường, chưa có ID phiếu, kho xuất hợp lệ). ` +
-        "Lưu API sẽ tạo phiếu mới ngay trên tab này, không mở tab phụ. Chưa có gì được ghi lên website.",
-        "ok"
+        `Đọc được form phòng ${result.roomName} bằng API (${result.fieldCount} trường, chưa có ID phiếu, kho xuất hợp lệ).` +
+        `${rateNote} Lưu API sẽ tạo phiếu mới ngay trên tab này, không mở tab phụ. Chưa có gì được ghi lên website.`,
+        formRate && formRate !== tableRate ? "warn" : "ok"
       );
     } catch (error) {
       setStatus(

@@ -97,9 +97,14 @@ function makeBridge(responder, roomMapRooms = []) {
     [
       "shopBasePath", "extractJsonObject", "isGuid", "formDataRecordId", "mapObject", "isLoginRedirect",
       "roomTextKey", "isRetailRoomText", "mappedRoomById", "assertNotRetailRoom",
-      "salesFormDataFromHtml", "formUnavailableError", "loadBlankRoomForm", "probeBlankRoomForm"
+      "salesFormDataFromHtml", "formUnavailableError", "loadBlankRoomForm", "probeBlankRoomForm",
+      "formAmount", "readInvoiceSummary", "readInvoiceFormById", "parseFormDateTime", "readDayRoomBookings"
     ].map(name => extractTopLevelFunction(bridgeSource, name)).join("\n") +
+    "\nfunction normalizeDateKey(value) { return String(value || '').slice(0, 10); }" +
+    "\nasync function fetchEInvoiceList() { return { rows: globalThis.eInvoiceListRows || [] }; }" +
+    "\nthis.readDayRoomBookings = readDayRoomBookings; this.parseFormDateTime = parseFormDateTime;" +
     "\nthis.loadBlankRoomForm = loadBlankRoomForm; this.probeBlankRoomForm = probeBlankRoomForm;" +
+    "\nthis.readInvoiceSummary = readInvoiceSummary;" +
     "\nthis.isRetailRoomText = isRetailRoomText; this.assertNotRetailRoom = assertNotRetailRoom;",
     box
   );
@@ -154,6 +159,86 @@ const vip21 = { id: ROOM_ID, areaId: AREA_ID, name: "VIP 21", areaName: "TẦNG 
   }));
   await assert.rejects(login.loadBlankRoomForm(vip21),
     error => /Phiên đăng nhập/.test(error.message) && !error.formUnavailable);
+
+  // --- Bridge: đọc tổng phiếu đã có theo ID (kiểm tra sổ đối soát với web) ---
+  const INVOICE_ID = "faf32398-ea93-49cd-a159-d1cff7679291";
+  const invoiceHtml = `<script>var d = new DataTransferJs(${JSON.stringify({
+    _AddEditTableID: SALES_TABLE_ID,
+    _RecordID: INVOICE_ID,
+    mapper: {
+      ID: INVOICE_ID,
+      Maps: [
+        { Field: "NAME", Value: "01000000266" },
+        // Website trả số tiền dạng chuỗi thập phân.
+        { Field: "TIENHANG", Value: "175000.00" },
+        { Field: "TIENGIO", Value: 232000 },
+        { Field: "TIENTHUE", Value: "40700.00" },
+        { Field: "TONGCONG", Value: "447700.00" },
+        { Field: "DBANID", Value: ROOM_ID }
+      ]
+    }
+  })});</script>`;
+  const summaryBridge = makeBridge(() => htmlResponse(invoiceHtml));
+  const summary = await summaryBridge.readInvoiceSummary({ id: INVOICE_ID, invoiceNo: "01000000266" });
+  assert.strictEqual(summary.goods, 175000, "\"175000.00\" phải đọc là 175.000, không phải 17.500.000");
+  assert.strictEqual(summary.hour, 232000);
+  assert.strictEqual(summary.grand, 447700);
+  assert.strictEqual(summary.invoiceNo, "01000000266");
+  const summaryUrl = new URL(summaryBridge.calls[0].url);
+  assert.strictEqual(summaryUrl.searchParams.get("RecordID"), INVOICE_ID);
+  assert.strictEqual(summaryBridge.calls[0].init.method, "GET", "Đọc phiếu chỉ được dùng GET");
+  // HTML của phiếu khác → không được nhận nhầm.
+  const otherInvoice = makeBridge(() => htmlResponse(invoiceHtml.split(INVOICE_ID).join(RUNNING_ID)));
+  await assert.rejects(otherInvoice.readInvoiceSummary({ id: INVOICE_ID }), /Không đọc được dữ liệu phiếu/);
+
+  // --- Bridge: lịch phòng THẬT của một ngày trên website ----------------------
+  const local = (y, m, d, h, min) => new Date(y, m - 1, d, h, min).getTime();
+  assert.strictEqual(summaryBridge.parseFormDateTime("2026-07-01 19:15:00"), local(2026, 7, 1, 19, 15));
+  assert.strictEqual(summaryBridge.parseFormDateTime("7/1/2026 7:50:00 PM"), local(2026, 7, 1, 19, 50));
+  assert.strictEqual(summaryBridge.parseFormDateTime("2026-07-01T12:15:00.000Z"), Date.parse("2026-07-01T12:15:00.000Z"));
+  assert.strictEqual(summaryBridge.parseFormDateTime("/Date(1782926100000)/"), 1782926100000);
+  assert.strictEqual(summaryBridge.parseFormDateTime(""), 0);
+
+  const dayInvoice = (id, fields) => `<script>new DataTransferJs(${JSON.stringify({
+    _AddEditTableID: SALES_TABLE_ID, _RecordID: id,
+    mapper: { ID: id, Maps: Object.entries(fields).map(([Field, Value]) => ({ Field, Value })) }
+  })})</script>`;
+  const ID_A = "a1a1a1a1-0000-0000-0000-000000000001";
+  const ID_B = "b2b2b2b2-0000-0000-0000-000000000002";
+  const ID_C = "c3c3c3c3-0000-0000-0000-000000000003";
+  const ID_X = "d4d4d4d4-0000-0000-0000-000000000004";
+  const dayForms = {
+    [ID_A]: dayInvoice(ID_A, { DBANID: ROOM_ID, BATDAUPHONGCUOI: "2026-07-01T12:15:00.000Z", KETTHUC: "2026-07-01T12:50:00.000Z" }),
+    [ID_B]: dayInvoice(ID_B, { DBANID: OTHER_ROOM_ID, BATDAU: "2026-07-01 20:00:00", KETTHUC: "7/1/2026 9:10:00 PM" }),
+    [ID_C]: dayInvoice(ID_C, { DBANID: ROOM_ID, BATDAU: "", KETTHUC: "" })
+  };
+  const dayBridge = makeBridge(url => htmlResponse(dayForms[new URL(url).searchParams.get("RecordID")] || ""));
+  dayBridge.eInvoiceListRows = [
+    { id: ID_A, invoiceNo: "01000000266" },
+    { id: ID_B, invoiceNo: "01000000270" },
+    { id: ID_C, invoiceNo: "01000000271" },
+    { id: ID_X, invoiceNo: "01000000999", cancelled: true }
+  ];
+  const day = await dayBridge.readDayRoomBookings({ dateKey: "2026-07-01" });
+  assert.strictEqual(day.invoiceCount, 3, "Phiếu đã hủy không chiếm phòng");
+  assert.strictEqual(dayBridge.calls.length, 3, "Không đọc phiếu đã hủy");
+  const byNo = Object.fromEntries(day.bookings.map(booking => [booking.invoiceNo, booking]));
+  assert.strictEqual(byNo["01000000266"].roomId, ROOM_ID);
+  assert.strictEqual(byNo["01000000266"].from, Date.parse("2026-07-01T12:15:00.000Z"), "Ưu tiên BATDAUPHONGCUOI");
+  assert.strictEqual(byNo["01000000270"].from, local(2026, 7, 1, 20, 0));
+  assert.strictEqual(byNo["01000000270"].to, local(2026, 7, 1, 21, 10));
+  assert.strictEqual(day.unreadable.join(","), "01000000271", "Phiếu thiếu giờ phải được báo, không âm thầm bỏ");
+  assert(dayBridge.calls.every(call => call.init.method === "GET"), "Đọc lịch phòng chỉ dùng GET");
+
+  // --- Bridge: DONGIA (đơn giá giờ phòng) -------------------------------------
+  const twoStep = extractTopLevelFunction(bridgeSource, "postFreshInvoiceTwoStep");
+  const rateGuardIndex = twoStep.indexOf("formRate !== plannedRate");
+  const sentIndex = twoStep.indexOf("progress.sessionSent = true");
+  assert(rateGuardIndex > 0 && rateGuardIndex < sentIndex,
+    "Đơn giá phòng lệch phương án phải dừng TRƯỚC khi gửi request (lỗi chưa-gửi)");
+  assert(twoStep.includes("DONGIA: plannedRate.toFixed(2)"), "Phiếu mới phải lưu đúng đơn giá giờ của hạng phòng");
+  assert(extractFunction(contentSource, "submitNewInvoiceViaApi").includes("hourlyRate: Math.round(Number(plan.hourlyRate) || 0)"),
+    "Content phải gửi đơn giá giờ của phương án cho bridge");
 
   // --- Bridge: không bao giờ tạo phiếu ở quầy BÁN LẺ ------------------------
   for (const name of ["BÁN LẺ", "BAN LE", "Bán lẻ 2", "KHU BÁN LẺ"]) {
@@ -215,6 +300,12 @@ const vip21 = { id: ROOM_ID, areaId: AREA_ID, name: "VIP 21", areaName: "TẦNG 
   const directSource = extractFunction(contentSource, "saveNewBatchEntryDirect");
   assert(directSource.includes("rankIdleRoomsFromMap(roomMap.rooms, bookings, plan.checkIn, plan.checkOut, plannedRate)"));
   assert(directSource.includes("submitNewInvoiceViaApi(transaction, plan, room)"));
+  // Cả hai cách chọn phòng đều phải tránh phiếu thật của ngày đó trên website.
+  assert(directSource.includes("await websiteRoomBookings(transaction.transactionDate)") &&
+    directSource.includes("mergeRoomBookings("), "Luồng không cần tab phụ phải dùng lịch phòng thật trên website");
+  const workerRoomSource = extractFunction(contentSource, "autoOpenIdleRoomInvoiceForm");
+  assert(workerRoomSource.includes("await websiteRoomBookings(pendingNewInvoice.transactionDate)") &&
+    workerRoomSource.includes("websiteBookingsError"), "Luồng tab phụ cũng phải dùng lịch phòng thật trên website");
   assert(/if \(error\?\.formUnavailable\) \{[\s\S]*?return null;/.test(directSource));
   assert(directSource.includes("verifyBatchSavedInvoice("), "Luồng mới phải đối soát ngay trên tab danh sách");
   const runAll = extractFunction(contentSource, "runAcceptedBatchApi");
@@ -223,7 +314,9 @@ const vip21 = { id: ROOM_ID, areaId: AREA_ID, name: "VIP 21", areaName: "TẦNG 
 
   // Lệnh ghi không được hết giờ sau 5 giây trong khi bridge vẫn đang gửi.
   const requestSource = extractFunction(contentSource, "request");
-  assert(/\["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi"\]\.includes\(action\) \? 90000/.test(requestSource));
+  assert(/\["createAndPayFreshInvoiceViaApi", "saveExistingInvoicePlanViaApi"[^\]]*\]\.includes\(action\) \? 90000/.test(requestSource));
+  assert(/"readDayRoomBookings"[^\]]*\]\.includes\(action\) \? 90000/.test(requestSource),
+    "Đọc lịch phòng đọc nhiều phiếu nên cần hạn chờ dài");
 
   console.log("Tạo phiếu mới không cần tab phụ và chặn quầy BÁN LẺ: OK");
 })().catch(error => {

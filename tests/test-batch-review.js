@@ -44,6 +44,7 @@ const batchPlanDeps = [
   extractConst("SMALL_INVOICE_BEER_QTY"),
   extractConst("MAX_PRODUCT_GROUP_SHARE"),
   extractConst("EXCLUDED_PRODUCT_GROUPS"),
+  extractConst("FRUIT_GROUP_RULE_TENANTS"),
   extractFunction("websiteHourAmountForMinutes"),
   extractFunction("parseUiDateTime"),
   extractFunction("uiDateKey"),
@@ -1232,7 +1233,7 @@ const ruleBox = {
 };
 vm.createContext(ruleBox);
 vm.runInContext(
-  `${extractConst("EXCLUDED_PRODUCT_GROUPS")}; ${extractFunction("isAutoSellableStock")}; ` +
+  `${extractConst("EXCLUDED_PRODUCT_GROUPS")}; ${extractConst("FRUIT_GROUP_RULE_TENANTS")}; ${extractFunction("isAutoSellableStock")}; ` +
   // candidateFromStock gắn nhóm bắt buộc suy ra từ tên hàng.
   `${extractFunction("normalizedProductName")}; ${extractFunction("isBeerStock")}; ` +
   `${extractFunction("isWetTowelStock")}; ${extractConst("MANDATORY_GROUPS")}; ` +
@@ -1947,6 +1948,68 @@ if (countByRule(nhonHugePlan, realStockBox.isBeerStock) < 3 || countByRule(nhonH
   throw new Error("Phiếu 14 triệu vẫn phải có ≥3 bia + ≥2 khăn ướt.");
 }
 
+// --- Sức chứa lý thuyết đủ nhưng không ghép được: phải thử bội số trần lớn hơn --
+//
+// Ca thật Linh Đàm 13/07/2026: sao kê 12.623.000đ (chọn 12.622.999đ cho đúng
+// VAT), tiền hàng phải ≥ 6.311.500đ để Tiền giờ không vượt trần 45%. Bội số trần
+// chỉ được chọn theo sức chứa LÝ THUYẾT (20 dòng đắt nhất × trần/HĐ, bỏ qua trần
+// nhóm như 1 đĩa hoa quả/HĐ); số đó đủ nên giữ ×1, solver không ghép nổi và phiếu
+// báo "Kho có sức chứa lý thuyết… nhưng không ghép được". Ở đây 10 đĩa hoa quả
+// đẩy sức chứa lý thuyết lên ~7,09 triệu nhưng chỉ được dùng 1 đĩa, nên ở ×1 thực
+// tế chỉ ghép được ~3,9 triệu.
+{
+  const stock = (webCode, webName, webUnit, webPrice, webGroup) =>
+    ({ webCode, webName, webUnit, webPrice, webGroup, availableQty: 500, constraintGroup: "", constraintGroupMax: null });
+  const fruitPlatters = Array.from({ length: 10 }, (_, index) => ({
+    webCode: `15000${String(index + 10)}`, webName: `HOA QUẢ ĐĨA ${index + 1}`, webUnit: "đĩa", webPrice: 400000,
+    webGroup: "HOAQUA", availableQty: 1, availabilityMode: "per_invoice",
+    constraintGroup: "fruit_platter", constraintGroupMax: 1
+  }));
+  const linhDamStock = [
+    stock("1100025", "Bia Tiger Crystal", "chai", 45000, "BIA - NƯỚC NGỌT"),
+    stock("1100024", "Bia chai Saigon Special 330ml", "chai", 30000, "BIA - NƯỚC NGỌT"),
+    stock("1100011", "NƯỚC YẾN", "lon", 90000, "BIA - NƯỚC NGỌT"),
+    stock("1100026", "Yến chưng", "hũ", 90000, "BIA - NƯỚC NGỌT"),
+    stock("1100019", "Thức uống bổ sung ION POCARI", "chai", 30000, "BIA - NƯỚC NGỌT"),
+    stock("1100021", "Trà thảo mộc Wanglaoji 310ml", "lon", 25000, "BIA - NƯỚC NGỌT"),
+    stock("1000004", "BÒ KHÔ MIẾNG", "gói", 90000, "DOKHO"),
+    stock("1000025", "Bò miếng to 60g", "gói", 90000, "DOKHO"),
+    stock("1000026", "Mơ Hồng Lam 5 60g", "gói", 70000, "DOKHO"),
+    stock("1000038", "Loacker Bánh Xốp Kem 45g", "gói", 60000, "DOKHO"),
+    stock("1000046", "DOSI Tóp mỡ cuộn cháy tỏi", "gói", 50000, "DOKHO"),
+    stock("1000044", "DOSI Da Heo Cháy Tỏi", "gói", 40000, "DOKHO"),
+    stock("1000036", "Khăn ướt V1020", "Cái", 5000, "DOKHO"),
+    ...fruitPlatters
+  ];
+  const previousTenant = realStockBox.pageTenantSlug;
+  realStockBox.pageTenantSlug = "parislinhdam";
+  let plan;
+  try {
+    plan = realStockBox.calculateBatchPlan({
+      ready: true, newInvoicePlanning: true, invoiceNo: "", invoiceDateKey: "2026-07-13",
+      currentGoods: 0, currentHour: 0, currentTax: 0, taxRate: 10, currentGrand: 0,
+      checkIn: "13/07/2026 20:00", checkOut: "13/07/2026 20:00", durationMinutes: 1, items: []
+    }, { id: "ld-12623000", transactionDate: "2026-07-13", credit: 12623000 }, linhDamStock, new Map(), 12622999);
+  } finally {
+    realStockBox.pageTenantSlug = previousTenant;
+  }
+  if (plan.status !== "ready") {
+    throw new Error(`Linh Đàm 12.622.999đ phải lập được bằng cách nâng trần số lượng/HĐ: ${plan.reason || plan.status}`);
+  }
+  if (!(plan.quantityScale > 1)) throw new Error(`Phải nâng bội số trần khi ×1 không ghép được, nhận ×${plan.quantityScale}`);
+  if (plan.goods < 6311500) throw new Error(`Tiền hàng ${plan.goods} phải ≥ 6.311.500đ để Tiền giờ không vượt trần 45%`);
+  if (plan.goods + plan.hour + plan.tax !== 12622999) throw new Error(`Tổng phải khớp 12.622.999đ, nhận ${plan.goods + plan.hour + plan.tax}`);
+  if (plan.items.length > 20) throw new Error(`Không vượt 20 dòng: ${plan.items.length}`);
+  for (const item of plan.items) {
+    if (item.qty > item.maxQty) throw new Error(`${item.name} vượt trần đã nâng: ${item.qty} > ${item.maxQty}`);
+  }
+  const platters = plan.items.filter(item => /^HOA QUẢ ĐĨA/.test(item.name)).reduce((sum, item) => sum + item.qty, 0);
+  if (platters > 1) throw new Error(`Nâng bội số không được vượt trần nhóm 1 đĩa hoa quả/HĐ: ${platters}`);
+  if (countByRule(plan, realStockBox.isBeerStock) < 3 || countByRule(plan, realStockBox.isWetTowelStock) < 2) {
+    throw new Error("Phiếu Linh Đàm 12,6 triệu vẫn phải có ≥3 bia + ≥2 khăn ướt.");
+  }
+}
+
 // --- Hoa quả theo NHÓM và luân phiên mã trong lô (kho thật Nhơn) ---------------
 //
 // Ảnh chụp Batch Review 16/09/2026: mọi phiếu đều Tiger + Bưởi da xanh (đĩa nhỏ)
@@ -1979,6 +2042,81 @@ if (bigFruitPlan.status !== "ready" || fruitItems(bigFruitPlan).length !== 1) {
 const underMillionPlan = realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
   { id: "fruit-800k", transactionDate: "2026-07-05", credit: 800000 }, nhonFruitInventory, new Map());
 if (underMillionPlan.status !== "ready") throw new Error(`Phiếu 800.000đ phải lập được: ${underMillionPlan.reason}`);
+
+// --- Luật hoa quả ở Kim Giang và Linh Đàm (01/10/2026) -------------------------
+//
+// Phiếu trên 1 triệu có đúng một đĩa (TC hoặc TCTO), như Nhơn. Linh Đàm trước đây
+// không có hoa quả: TC/TCTO tồn 0 nên bị loại khỏi tồn khả dụng. Đĩa rẻ nhất ở
+// hai cơ sở này là 350.000đ, nên phiếu vừa qua 1 triệu không đủ chỗ cho đĩa + 3
+// bia + 2 khăn mà vẫn giữ sàn 50 phút: khi đó bỏ đĩa chứ không báo lỗi.
+{
+  const KG_LD_FRUIT = new Set(["1500006", "1500007"]);
+  const row = (stockCode, webCode, webName, webPrice, webGroup, qty) => ({
+    stockCode, stockName: webName, stockUnit: "", stockQty: qty, conversion: 1, availableQty: qty, salePrice: webPrice,
+    webCode, webName, webUnit: "", webPrice, webGroup, status: "confirmed"
+  });
+  const sharedStock = () => [
+    row("Bia crystal330", "1100025", "Bia Tiger Crystal", 45000, "BIA - NƯỚC NGỌT", 371),
+    row("HEINEKENCTN250", "1100027", "Bia Heineken", 45000, "BIA - NƯỚC NGỌT", 8594),
+    row("BIACORONA", "1100002", "BIA CORONA EXTRA (250ml)", 65000, "BIA - NƯỚC NGỌT", 9464),
+    row("KHANV1020", "1000060", "Khăn ướt", 5000, "DOKHO", 58256),
+    row("QUYDAU", "1000001", "Bánh quy que", 40000, "DOKHO", 653),
+    row("bomiengto60g", "1000025", "Bò miếng to 60g", 90000, "DOKHO", 1904),
+    row("BANHXOPKEM", "1000038", "Loacker Bánh Xốp Kem 45g", 60000, "DOKHO", 3790),
+    row("DOSITOPMO", "1000046", "DOSI Tóp mỡ cuộn cháy tỏi", 50000, "DOKHO", 1600),
+    row("YENMIXVI", "1100026", "Yến chưng", 90000, "BIA - NƯỚC NGỌT", 740),
+    row("SWEAT350", "1100019", "Thức uống bổ sung ION POCARI SWEAT chai 350ML", 30000, "BIA - NƯỚC NGỌT", 1617),
+    // Tồn 0 trong kho chung: chỉ vào được phương án khi bán theo suất.
+    row("TC", "1500006", "HOA QUẢ THẬP CẨM (Đĩa nhỏ)", 350000, "HOAQUA", 0),
+    row("TCTO", "1500007", "HOA QUẢ THẬP CẨM (ĐĨA TO)", 450000, "HOAQUA", 0)
+  ];
+  const tctoRule = { id: "rule-tcto", code: "TCTO", webCode: "1500007", minTotal: 1000000, priority: 1, mode: "rotate", minQty: 1, maxQty: 1, enabled: true };
+  const previousTenant = realStockBox.pageTenantSlug;
+  const previousRules = realStockBox.priorityRules;
+  try {
+    for (const tenant of ["pariskimgiang", "parislinhdam"]) {
+      const dataset = mappingEngineForStock.applyBusinessRules({ tenant, mappings: sharedStock() }, tenant);
+      const inventory = mappingEngineForStock.buildInventory(dataset);
+      const platterPrice = code => inventory.find(item => item.webCode === code)?.webPrice;
+      if (platterPrice("1500006") !== 350000 || platterPrice("1500007") !== (tenant === "parislinhdam" ? 450000 : 400000)) {
+        throw new Error(`${tenant}: đĩa hoa quả phải vào tồn khả dụng theo giá web của cơ sở, nhận TC ${platterPrice("1500006")}, TCTO ${platterPrice("1500007")}`);
+      }
+      realStockBox.pageTenantSlug = tenant;
+      for (const rules of [[], [tctoRule]]) {
+        realStockBox.priorityRules = rules;
+        const label = `${tenant}${rules.length ? " + rule TCTO" : ""}`;
+        const planFor = credit => realStockBox.calculateBatchPlan(newNhonScan("2026-07-05"),
+          { id: `${tenant}-fruit-${credit}`, transactionDate: "2026-07-05", credit }, inventory, new Map());
+        const platters = plan => (plan.items || []).filter(item => KG_LD_FRUIT.has(String(item.code)));
+        for (const credit of [1100000, 2200000, 5500000]) {
+          const plan = planFor(credit);
+          if (plan.status !== "ready") throw new Error(`${label} ${credit}: phải lập được: ${plan.reason}`);
+          if (platters(plan).length !== 1 || platters(plan)[0].qty !== 1) {
+            throw new Error(`${label} ${credit}: trên 1 triệu phải có đúng một đĩa: ${plan.items.map(item => `${item.name} x${item.qty}`).join(", ")}`);
+          }
+          if (plan.goods + plan.hour + plan.tax !== credit) throw new Error(`${label} ${credit}: tổng phải khớp sao kê.`);
+        }
+        // Vừa qua 1 triệu: đĩa không vừa với sàn 50 phút → bỏ đĩa, không báo lỗi.
+        for (const credit of [1000100, 1050500]) {
+          const plan = planFor(credit);
+          if (plan.status !== "ready") throw new Error(`${label} ${credit}: không được báo lỗi vì luật hoa quả: ${plan.reason}`);
+          if (platters(plan).length) throw new Error(`${label} ${credit}: không đủ chỗ cho đĩa thì phải bỏ đĩa.`);
+          if (!plan.fruitPlatterRelaxed) throw new Error(`${label} ${credit}: phải ghi lại là đã nới luật hoa quả.`);
+          if (Math.round(Number(plan.durationMinutes) || 0) < realStockBox.minimumSingingMinutes(credit)) {
+            throw new Error(`${label} ${credit}: bỏ đĩa để giữ sàn giờ hát, nhận ${plan.durationMinutes} phút.`);
+          }
+        }
+        const underMillion = planFor(900000);
+        if (underMillion.status !== "ready" || underMillion.fruitPlatterRelaxed) {
+          throw new Error(`${label} 900.000đ: dưới 1 triệu không áp luật hoa quả: ${underMillion.reason || "đã nới"}`);
+        }
+      }
+    }
+  } finally {
+    realStockBox.pageTenantSlug = previousTenant;
+    realStockBox.priorityRules = previousRules;
+  }
+}
 
 // --- Nhơn dưới 500.000đ: món bắt buộc hạ xuống 1 bia + 1 khăn ----------------
 //

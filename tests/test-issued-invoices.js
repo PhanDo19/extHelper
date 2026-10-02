@@ -240,8 +240,16 @@ const issueFlow = contentSource.slice(
   contentSource.indexOf("async function issueSelectedEInvoices"),
   contentSource.indexOf("async function exportIssuedInvoices"));
 assert.match(issueFlow, /withoutLedger/);
-assert.match(issueFlow, /withoutLedger\.length\s*\?\s*\{ present: await ensureInvoiceListScreen\(\) \}/);
-assert.match(issueFlow, /withoutLedger\.length && !listReady\.present/);
+// Phiếu thiếu trong sổ HOẶC sổ lệch web (bị sửa ngoài extension) đều phải đọc
+// mặt hàng từ phiếu, nên đều cần màn hình danh sách Bán hàng.
+assert.match(issueFlow, /const staleTargets = await checkLedgerFreshness\(/);
+assert.match(issueFlow, /const needsWebItems = withoutLedger\.length \+ staleTargets\.length;/);
+assert.match(issueFlow, /needsWebItems\s*\?\s*\{ present: await ensureInvoiceListScreen\(\) \}/);
+assert.match(issueFlow, /needsWebItems && !listReady\.present/);
+assert.match(issueFlow, /const ledgerItems = stale \? null : ledgerItemsForInvoiceNo\(row\.invoiceNo\);/,
+  "Sổ lệch web thì không được gửi mặt hàng của sổ cho bước phát hành");
+assert.match(issueFlow, /resyncLedgerFromWebItems\(row\.invoiceNo, result\.items/,
+  "Phát hành xong phiếu lệch sổ phải cập nhật sổ đối soát và tồn kho theo web");
 
 // Bridge phải dùng knownItems trước, chỉ đọc lại khi không có.
 const issueBridge = bridgeSource.slice(

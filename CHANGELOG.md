@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.29.3 (2026-10-01)
+
+- **Hóa đơn lớn không còn báo "Kho có sức chứa lý thuyết… nhưng không ghép được" khi nâng trần số lượng/HĐ là lập được.** Bội số trần (×1…×5) chỉ được chọn theo sức chứa lý thuyết: 20 dòng đắt nhất ở mức trần, bỏ qua trần nhóm (1 đĩa hoa quả/HĐ), dòng khăn ướt bắt buộc và việc solver gộp trạng thái. Ca thật Linh Đàm 13/07/2026, sao kê 12.623.000đ (chọn 12.622.999đ): sức chứa lý thuyết 8.020.000đ ≥ 110% mức cần 6.311.500đ nên giữ ×1, solver không ghép được và phiếu báo lỗi. Nay không ghép được thì thử tiếp bội số lớn hơn (vẫn tối đa ×5) trước khi báo lỗi. Phiếu đã lập được ở bội số đầu không đổi; không tăng `CALCULATION_VERSION` nên phương án đã Accept được giữ nguyên. Phiếu đang báo lỗi: tải lại extension và trang rồi bấm **Thử dò lại** ở dòng đó.
+- **Màn Kho không còn báo "Chưa ánh xạ" cho mã đã xác nhận nhưng hết hàng.** Bảng Kho lấy danh sách mã đã ánh xạ từ `inventory`, mà `inventory` chỉ gồm mã còn tồn; mã tồn 0 vì thế bị coi là chưa ánh xạ. Linh Đàm báo "Chưa ánh xạ: 17" trong khi màn Ánh xạ ghi cả 17 mã "Đã xác nhận". Nay mã đã xác nhận mà hết hàng hiện đúng mã web, tồn 0 và tính vào "Đã hết"; dòng kho hết hàng dùng chung mã web với dòng còn hàng (CAMEL1913 → 1400018) được gắn vào "Nguồn kho" của mã đó. Chỉ thay đổi hiển thị, không đổi tồn hay dữ liệu lập phương án.
+- **Ô KPI đầu màn Kho ghi đúng nghĩa.** "Mã đủ điều kiện" từng đếm mọi dòng của bảng (mã web, kể cả mã hết hàng và mã chưa ánh xạ), nên không khớp số dòng ở màn Ánh xạ: Linh Đàm có 109 dòng ánh xạ nhưng màn Kho hiện 77, vì màn Kho gộp theo mã web. Nay ô này là **"Đủ điều kiện lập phương án"** (mã còn tồn hoặc bán theo suất — đúng số mã solver dùng được, 61) kèm dòng phụ "77 mã web · 109 dòng kho". "Đã hết" chỉ đếm mã đã ánh xạ; mã chưa ánh xạ chỉ nằm ở ô riêng.
+- **Luật hoa quả áp cho cả Kim Giang và Linh Đàm** (trước đây chỉ Nhơn): hóa đơn trên 1.000.000đ có đúng một đĩa hoa quả, loại nào cũng được (TC 350.000đ hoặc TCTO).
+  - **Linh Đàm** nay bán TC/TCTO theo suất (tối đa 1 đĩa/HĐ, không trừ tồn) như Kim Giang. Trước đây TC/TCTO tồn 0 trong kho chung nên bị loại khỏi tồn khả dụng: phiếu Linh Đàm không bao giờ có hoa quả, và rule ưu tiên TCTO mặc định cũng bị bỏ qua mà không báo. Giá theo danh mục web Linh Đàm: TCTO **450.000đ** (Kim Giang 400.000đ).
+  - Rule ưu tiên TCTO (nếu còn trong panel) vẫn chạy trước, nên phiếu trên 1 triệu thường ra TCTO; tắt rule đó nếu muốn luân phiên TC/TCTO.
+  - Đĩa rẻ nhất 350.000đ nên phiếu vừa qua 1 triệu (khoảng 1.000.001–1.095.000đ) không đủ chỗ cho đĩa + 3 bia + 2 khăn mà vẫn giữ sàn 50 phút. Khi đó phương án bỏ đĩa (`fruitPlatterRelaxed`) thay vì báo "Tiền giờ thấp hơn sàn".
+  - Phương án đã Accept không đổi. Giao dịch chưa Accept: dựng lại Batch Review để có hoa quả.
+
+## 1.29.2 (2026-10-01)
+
+- **Phiếu mới lưu đúng đơn giá giờ của phòng (`DONGIA`).** Trước đây extension không đặt trường này mà lấy nguyên từ form; form đọc bằng API (cách không cần tab phụ) có thể chưa được giao diện điền và để 0, khiến Tiền giờ không khớp đơn giá × thời lượng. Bước đối soát sau lưu không so `DONGIA` nên lỗi này sẽ lọt. Nay `DONGIA` = đơn giá của phương án (như các script chuyển phòng đã làm trên trang thật), và nếu form phòng có sẵn đơn giá KHÁC phương án thì dừng trước khi gửi request. Áp dụng cho cả cách mở tab phụ. Nút kiểm tra hiện đơn giá form trả về.
+- **Chọn phòng cho phiếu mới theo lịch phòng thật của ngày đó trên website.** Sơ đồ phòng chỉ cho trạng thái hôm nay và extension chỉ biết phòng/giờ của phiếu do chính nó tạo, nên phiếu lập bù cho ngày quá khứ có thể trùng phòng trùng giờ với phiếu khác trên website. Nay bridge đọc mọi phiếu của ngày (`readDayRoomBookings`: danh sách hóa đơn điện tử + đầu phiếu từng phiếu, chỉ đọc, bỏ phiếu đã hủy) và gộp vào lịch phòng; đọc một lần mỗi ngày trong 10 phút. Không đọc được lịch thì dừng, không mở phòng. Áp dụng cho cả hai cách tạo phiếu mới.
+
+## 1.29.1 (2026-10-01)
+
+- **Sổ đối soát tự khớp lại với phiếu trên website ở bước phát hành.** Phiếu bị sửa ngoài extension sau khi ghi sổ — như 9 phiếu Paris Nhơn 01/07/2026 được chuyển khỏi quầy BÁN LẺ bằng script `data/chuyen-phong-*.js`, trong đó 01000000269 còn đổi số lượng một dòng hàng — làm sổ lệch phiếu thật, mà sổ là nguồn mặt hàng ("lấy mặt hàng") khi phát hành HĐĐT và xuất file hạch toán.
+  - **Tự động:** Tải danh sách phát hành và bấm Phát hành đều so nhanh tiền hàng trên web với tổng dòng hàng trong sổ (`readInvoiceSummary`: `GET AddEdit?RecordID=…`, chỉ đọc, không mở phiếu). Phiếu lệch được đánh dấu trên bảng; khi phát hành, bước lấy mặt hàng đọc lại từ phiếu thay vì tin sổ, rồi cập nhật sổ đối soát và tồn kho theo phiếu thật. Hộp xác nhận phát hành nêu rõ các phiếu này.
+  - **Nút "Đối soát lại mặt hàng từ website"** ở màn Phát hành hóa đơn: cập nhật ngay không cần phát hành, chỉ mở những phiếu lệch. Hiện danh sách chênh lệch để xác nhận; cập nhật sổ, tồn kho (chỉ đúng các mã thay đổi), phương án đã duyệt và phòng/giờ của phiếu trong một lần ghi. Phiếu lệch tổng tiền chỉ được báo, không tự sửa. Xem `docs/RESTOCK.md`.
+  - Phiếu mất phản hồi khi phát hành mà sổ lệch web: không ghi mặt hàng sai của sổ vào sổ phát hành, để trống và báo thiếu.
+
 ## 1.29.0 (2026-09-30)
 
 - **Tạo phiếu mới không cần mở tab Bán hàng phụ.** Lưu API chọn phòng theo sơ đồ phòng của website, đọc form trống của phòng bằng `GET AddEdit` (RecordID rỗng: chỉ dựng form, không tạo bản ghi — trace 02/08/2026), rồi gửi hai request `DoSave` và đối soát ngay trên tab danh sách. Bỏ được một lần tải trang đầy đủ và thời gian chờ tab phụ cho mỗi phiếu mới.
