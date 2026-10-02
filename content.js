@@ -6,7 +6,9 @@
   const SAVE_CAPTURED = "invoice-target-mvp:save-request-captured";
   const SAVE_BLOCKED = "invoice-target-mvp:save-blocked";
   const RUNTIME_WARNING = "invoice-target-mvp:runtime-warning";
-  const DEFAULT_INVOICE_BUYER = "Kh\u00e1ch l\u1ebb - Kh\u00f4ng l\u1ea5y h\u00f3a \u0111\u01a1n";
+  // Phai trung voi DEFAULT_INVOICE_BUYER trong bridge.js (nguoi mua bridge ghi
+  // len phieu); o day chi dung de dien so phat hanh khi website khong tra ve.
+  const DEFAULT_INVOICE_BUYER = "B\u00e1n cho ng\u01b0\u1eddi ti\u00eau d\u00f9ng";
   // Moi chi nhanh co bo ma web rieng nen du lieu mac dinh phai chon theo chi
   // nhanh dang mo, khong duoc dung chung bo cua pariskimgiang.
   const pageTenantSlug = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
@@ -3775,7 +3777,7 @@
           outside ? '<br><small class="it-blocked-note">ngoài giao dịch</small>' : ""}</td>
         <td class="it-money">${formatMoney(row.grandTotal)}</td>
         <td>${matchHtml}</td>
-        <td>${escapeHtml(row.buyer || "—")}</td>
+        <td>${escapeHtml(row.buyer || "—")}${row.paymentMethod ? `<br><small>TT: ${escapeHtml(row.paymentMethod)}</small>` : ""}</td>
         <td>${statusHtml}</td>
         <td>${itemsHtml}${freshnessHtml}${row.issued
           ? `<br><button class="it-check-issued" type="button" data-id="${escapeHtml(row.id)}">Check / đồng bộ</button>`

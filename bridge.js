@@ -2029,20 +2029,25 @@
     };
   }
 
-  // Giao dich tu sao ke ngan hang khong mang phuong thuc rieng nen ghi TM/CK.
-  // Dong trong danh sach so tien cua ke toan mang san CK hoac TM va duoc giu
-  // nguyen, o moi co so (ke toan chot 29/09/2026).
+  // Moi phieu extension luu deu ghi PHUONGTHUCTT = TM/CK, ca phieu tu sao ke
+  // ngan hang lan dong CK/TM trong danh sach so tien cua ke toan (ke toan chot
+  // 02/10/2026; truoc do dong CK/TM giu nguyen CK hoac TM). Hoa don dien tu lay
+  // phuong thuc tu phieu nen phieu phai ghi dung TM/CK ngay khi luu: buoc phat
+  // hanh chi gui ID, khong doi duoc. CK/TM cua dong nguon van giu trong du lieu
+  // extension. Phuong thuc la van bi chan de lo loi truyen du lieu.
   const INVOICE_PAYMENT_METHOD = "TM/CK";
   const CREATION_PAYMENT_METHODS = new Set(["CK", "TM", INVOICE_PAYMENT_METHOD]);
   function invoiceCreationPaymentMethod(expected) {
     const requested = String(expected?.paymentMethod || "").trim().toUpperCase();
-    if (!requested) return INVOICE_PAYMENT_METHOD;
-    if (!CREATION_PAYMENT_METHODS.has(requested)) {
+    if (requested && !CREATION_PAYMENT_METHODS.has(requested)) {
       throw new Error(`Phuong thuc thanh toan khi tao phieu khong hop le: ${requested}.`);
     }
-    return requested;
+    return INVOICE_PAYMENT_METHOD;
   }
-  const DEFAULT_INVOICE_BUYER = "Kh\u00e1ch l\u1ebb - Kh\u00f4ng l\u1ea5y h\u00f3a \u0111\u01a1n";
+  // Nguoi mua tren phieu (va hoa don dien tu) cho khach khong lay hoa don.
+  // Website mac dinh "Khach le - Khong lay hoa don"; ke toan chot 02/10/2026
+  // ghi "Ban cho nguoi tieu dung".
+  const DEFAULT_INVOICE_BUYER = "B\u00e1n cho ng\u01b0\u1eddi ti\u00eau d\u00f9ng";
   const DEFAULT_INVOICE_ADDRESS = "Kh\u00e1ch kh\u00f4ng cung c\u1ea5p th\u00f4ng tin";
   // Tiền tố lỗi tạo phiếu mới khi request CHƯA được gửi. content.js dựa vào nó
   // để biết có được gỡ dấu "đang tạo phiếu" hay không; phải giữ khớp hai bên.
@@ -2446,7 +2451,7 @@
       KHACHDUA: grand,
       TIENTHANHTOAN: grand,
       TRALAI: 0,
-      // Phieu tu phuong an deu la khach chuyen khoan roi doi soat qua sao ke.
+      // Luon TM/CK, ke ca dong CK/TM cua danh sach so tien (invoiceCreationPaymentMethod).
       PHUONGTHUCTT: paymentMethod,
       NGUOIMUAHANG: String(expected?.buyerName || DEFAULT_INVOICE_BUYER).trim() || DEFAULT_INVOICE_BUYER,
       DIACHIKHACH: String(expected?.buyerAddress || DEFAULT_INVOICE_ADDRESS).trim() || DEFAULT_INVOICE_ADDRESS

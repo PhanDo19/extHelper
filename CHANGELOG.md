@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.29.4 (2026-10-02)
+
+- **Mọi phiếu extension lưu đều ghi phương thức thanh toán `TM/CK`** (kế toán chốt 02/10/2026), kể cả dòng CK/TM của danh sách số tiền. Trước đây dòng CK/TM giữ nguyên `CK` hoặc `TM` khi lưu, và hóa đơn điện tử ra theo đó: tài liệu ghi "khi phát hành dùng TM/CK" nhưng bước phát hành chỉ gửi ID phiếu (`kiemTraThongTin` → `phatHanhHoaDon`), không đổi được phương thức. CK/TM của dòng nguồn vẫn giữ trong dữ liệu extension.
+- **Người mua ghi "Bán cho người tiêu dùng"** thay cho "Khách lẻ - Không lấy hóa đơn" (mặc định của website), ở cả luồng sửa phiếu có sẵn lẫn tạo phiếu mới. Địa chỉ giữ "Khách không cung cấp thông tin".
+- Màn Phát hành hóa đơn hiện phương thức thanh toán dưới tên người mua để soát trước khi phát hành.
+- Phiếu đã lưu trước bản này vẫn mang `CK`/`TM` và "Khách lẻ - Không lấy hóa đơn" trên website; phải sửa (lưu lại) trước khi phát hành, vì hóa đơn điện tử lấy nguyên thông tin từ phiếu.
+
 ## 1.29.3 (2026-10-01)
 
 - **Hóa đơn lớn không còn báo "Kho có sức chứa lý thuyết… nhưng không ghép được" khi nâng trần số lượng/HĐ là lập được.** Bội số trần (×1…×5) chỉ được chọn theo sức chứa lý thuyết: 20 dòng đắt nhất ở mức trần, bỏ qua trần nhóm (1 đĩa hoa quả/HĐ), dòng khăn ướt bắt buộc và việc solver gộp trạng thái. Ca thật Linh Đàm 13/07/2026, sao kê 12.623.000đ (chọn 12.622.999đ): sức chứa lý thuyết 8.020.000đ ≥ 110% mức cần 6.311.500đ nên giữ ×1, solver không ghép được và phiếu báo lỗi. Nay không ghép được thì thử tiếp bội số lớn hơn (vẫn tối đa ×5) trước khi báo lỗi. Phiếu đã lập được ở bội số đầu không đổi; không tăng `CALCULATION_VERSION` nên phương án đã Accept được giữ nguyên. Phiếu đang báo lỗi: tải lại extension và trang rồi bấm **Thử dò lại** ở dòng đó.

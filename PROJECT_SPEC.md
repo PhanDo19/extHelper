@@ -38,7 +38,9 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 - Xóa/đặt 0 toàn bộ hàng cũ, thêm mã web trong phương án, đọc lại tổng và so sánh mục tiêu.
 - Nếu mã/giá web thay đổi hoặc không thêm được, dừng và hoàn tác.
 - Không tự bấm Lưu HĐ hoặc Hủy HĐ.
-- Payload `DoSave` do extension dựng phải đặt `PHUONGTHUCTT = "TM/CK"` cho giao dịch từ sao kê ngân hàng, ở cả luồng sửa phiếu có sẵn lẫn tạo phiếu mới. Giao dịch từ danh sách số tiền CK/TM của kế toán giữ đúng `CK` hoặc `TM` của dòng đó, ở **mọi cơ sở**. Payload bắt được từ nút Lưu của website giữ nguyên phương thức của website.
+- Payload `DoSave` do extension dựng phải đặt `PHUONGTHUCTT = "TM/CK"` cho **mọi** giao dịch (sao kê ngân hàng lẫn dòng CK/TM của danh sách số tiền), ở cả luồng sửa phiếu có sẵn lẫn tạo phiếu mới, ở mọi cơ sở (kế toán chốt 02/10/2026). CK/TM của dòng nguồn chỉ giữ trong dữ liệu extension. Hóa đơn điện tử lấy phương thức từ phiếu nên phải đúng ngay khi lưu.
+- Người mua (`NGUOIMUAHANG`) của phiếu extension lưu là **"Bán cho người tiêu dùng"** (thay cho mặc định "Khách lẻ - Không lấy hóa đơn" của website); địa chỉ giữ "Khách không cung cấp thông tin".
+- Payload bắt được từ nút Lưu của website giữ nguyên phương thức và người mua của website.
 
 ## Phát hành hóa đơn điện tử
 

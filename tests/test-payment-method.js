@@ -4,8 +4,9 @@ const fs = require("fs");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "bridge.js"), "utf8");
 
-// Luồng sao kê cũ mặc định là TM/CK; luồng danh sách tiền của Paris Nhơn sẽ
-// truyền CK hoặc TM khi tạo phiếu và bước phát hành vẫn dùng TM/CK.
+// Mọi phiếu extension lưu đều ghi PHUONGTHUCTT = TM/CK, kể cả dòng CK/TM của
+// danh sách số tiền (kế toán chốt 02/10/2026). Hóa đơn điện tử lấy phương thức
+// từ phiếu; bước phát hành chỉ gửi ID nên không đổi được về sau.
 assert.match(source, /const INVOICE_PAYMENT_METHOD = "TM\/CK";/);
 assert.match(source, /const CREATION_PAYMENT_METHODS = new Set\(\["CK", "TM", INVOICE_PAYMENT_METHOD\]\);/);
 assert.match(source, /function invoiceCreationPaymentMethod\(expected\)/);
@@ -65,13 +66,12 @@ const check = new Function("fields", "expected", "INVOICE_PAYMENT_METHOD", `
 assert.strictEqual(check({ PHUONGTHUCTT: "TM/CK" }, { expectsPaymentMethod: true }, "TM/CK"), "ok");
 assert.throws(() => check({ PHUONGTHUCTT: "TM" }, { expectsPaymentMethod: true }, "TM/CK"), /sai phuong thuc/);
 assert.throws(() => check({}, { expectsPaymentMethod: true }, "TM/CK"), /sai phuong thuc/);
-assert.strictEqual(check({ PHUONGTHUCTT: "CK" }, { expectsPaymentMethod: true, paymentMethod: "CK" }, "TM/CK"), "ok");
-assert.throws(() => check({ PHUONGTHUCTT: "TM/CK" }, { expectsPaymentMethod: true, paymentMethod: "CK" }, "TM/CK"), /sai phuong thuc/);
 // Payload của website không bị chặn.
 assert.strictEqual(check({ PHUONGTHUCTT: "TM" }, {}, "TM/CK"), "ok");
 
-// CK/TM từ danh sách số tiền áp dụng cho MỌI cơ sở (kế toán chốt 29/09/2026);
-// giao dịch sao kê ngân hàng không mang phương thức nên vẫn ra TM/CK.
+// Dòng CK hay TM của danh sách số tiền, hay giao dịch sao kê không mang phương
+// thức, đều lưu thành TM/CK ở MỌI cơ sở (kế toán chốt 02/10/2026; trước đó dòng
+// CK/TM giữ nguyên CK hoặc TM nên hóa đơn điện tử ra "CK"/"TM").
 const methodStart = source.indexOf("function invoiceCreationPaymentMethod(expected)");
 let methodEnd = -1;
 for (let index = source.indexOf("{", methodStart), depth = 0; index < source.length; index += 1) {
@@ -84,17 +84,31 @@ const invoiceCreationPaymentMethod = new Function(
   `${source.slice(methodStart, methodEnd)}; return invoiceCreationPaymentMethod;`
 )("TM/CK", new Set(["CK", "TM", "TM/CK"]), { pathname: "/pariskimgiang/BanHang" });
 for (const tenantSlug of ["pariskimgiang", "parislinhdam", "parisnhon"]) {
-  assert.strictEqual(invoiceCreationPaymentMethod({ paymentMethod: "CK", tenantSlug }), "CK",
-    `${tenantSlug} phải được lập phiếu CK`);
-  assert.strictEqual(invoiceCreationPaymentMethod({ paymentMethod: "tm", tenantSlug }), "TM",
-    `${tenantSlug} phải được lập phiếu TM`);
+  assert.strictEqual(invoiceCreationPaymentMethod({ paymentMethod: "CK", tenantSlug }), "TM/CK",
+    `${tenantSlug}: dòng CK vẫn lưu TM/CK`);
+  assert.strictEqual(invoiceCreationPaymentMethod({ paymentMethod: "tm", tenantSlug }), "TM/CK",
+    `${tenantSlug}: dòng TM vẫn lưu TM/CK`);
   assert.strictEqual(invoiceCreationPaymentMethod({ tenantSlug }), "TM/CK",
     `${tenantSlug}: giao dịch sao kê không có phương thức vẫn ra TM/CK`);
 }
 assert.throws(() => invoiceCreationPaymentMethod({ paymentMethod: "THE" }), /khong hop le/,
   "Phương thức lạ vẫn bị chặn");
 
+// Người mua của khách không lấy hóa đơn: "Bán cho người tiêu dùng" (kế toán chốt
+// 02/10/2026), thay cho mặc định "Khách lẻ - Không lấy hóa đơn" của website, ở
+// cả luồng cập nhật và luồng tạo phiếu mới.
+const buyerDeclaration = source.match(/const DEFAULT_INVOICE_BUYER = "([^"]+)";/);
+assert(buyerDeclaration, "Phải khai báo người mua mặc định");
+assert.strictEqual(JSON.parse(`"${buyerDeclaration[1]}"`), "Bán cho người tiêu dùng");
+assert.strictEqual(
+  [...source.matchAll(/NGUOIMUAHANG: String\(expected\?\.buyerName \|\| DEFAULT_INVOICE_BUYER\)/g)].length,
+  2,
+  "Phải gắn người mua ở cả luồng cập nhật và luồng tạo phiếu mới"
+);
+
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+assert.strictEqual(contentSource.match(/const DEFAULT_INVOICE_BUYER = "([^"]+)";/)?.[1], buyerDeclaration[1],
+  "Người mua dự phòng trong content.js phải trùng bridge.js");
 assert(!/Danh sách số tiền hiện chỉ dùng cho Paris Nhơn/.test(contentSource),
   "Nhập danh sách số tiền CK/TM không còn giới hạn ở Nhơn");
 assert(!/pageTenantSlug === "parisnhon"[^\n]*it-import-invoice-amount/.test(contentSource) &&

@@ -101,7 +101,7 @@ nhận; sau khi kế toán chọn số làm tròn mới được phép Accept v�
 |---|---|---|
 | Nguồn ngày | `Transaction date` đầy đủ | Chỉ ngày trong tháng (cột B) |
 | Chống trùng | `Số bút toán` | file + dòng nguồn (giữ được hai dòng trùng tiền) |
-| Phương thức TT | Luôn `TM/CK` | Theo cột có số: CK hoặc TM |
+| Phương thức TT | Luôn `TM/CK` | Luôn `TM/CK` (từ 02/10/2026; CK/TM chỉ giữ trong dữ liệu extension) |
 | Món hàng bắt buộc | ≥3 bia + ≥2 khăn (Nhơn dưới 500.000đ: ≥1 bia + ≥1 khăn) | Một món ≤ 50.000đ |
 | Rà tay >20 triệu | Có | Không áp dụng |
 | Điều phối phát hành | Có | Không |
@@ -124,9 +124,10 @@ sinh toàn bộ phiếu sai ngày.
    `cashInvoiceMode` để `calculateBatchPlan` biết: chỉ áp 2 bia, bỏ luật nhóm
    bắt buộc, linh động tiền giờ dưới 200k.
 
-4. **Phương thức thanh toán** — riêng Paris Nhơn, lúc tạo/lưu phiếu
-   `PHUONGTHUCTT` đặt theo cột có số (`CK` hoặc `TM`). Khi phát hành hóa đơn
-   điện tử dùng `TM/CK`. Luồng sao kê cũ của các cơ sở khác giữ `TM/CK` khi tạo.
+4. **Phương thức thanh toán** — mọi phiếu lưu `PHUONGTHUCTT = TM/CK` (kế toán
+   chốt 02/10/2026). Trước đó phiếu ghi đúng `CK`/`TM` của dòng và hóa đơn điện
+   tử ra theo đó, vì bước phát hành chỉ gửi ID phiếu, không đổi được phương thức.
+   Người mua ghi "Bán cho người tiêu dùng".
 
 5. **Slot giờ/phòng** — một ngày có tới 17 phiếu. `newInvoiceCheckInMinutes` và
    `roomBookingsOnDate` hiện cấp slot theo thứ tự lập; phải kiểm sức chứa (12
