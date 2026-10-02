@@ -1277,7 +1277,11 @@
         else reject(new Error(event.detail.error || "Không rõ lỗi."));
       };
       window.addEventListener(RESPONSE, listener);
-      window.dispatchEvent(new CustomEvent(REQUEST, { detail: { id, action, ...(payload || {}) } }));
+      // Payload có `id` (ID phiếu: issueEInvoice, readInvoiceSummary,
+      // readInvoiceItems) thì đè `id` ở đây, và bridge từng trả lời bằng ID phiếu
+      // nên không khớp mã chờ: mỗi lệnh hết giờ dù bridge đã làm xong. `requestId`
+      // đặt sau cùng nên không bị đè; bridge trả lời theo khóa này.
+      window.dispatchEvent(new CustomEvent(REQUEST, { detail: { id, action, ...(payload || {}), requestId: id } }));
     });
   }
 
@@ -9303,8 +9307,8 @@
         renderBuyerFixProgress(job, `Đang sửa ${item.invoiceNo}`);
         let result;
         try {
-          // Không gửi khóa `id`: request() trải payload sau mã yêu cầu nên `id` của
-          // phiếu sẽ đè mã đó, bridge trả lời bằng ID phiếu và content chờ mãi tới
+          // ID phiếu đi trong `recordId`, không dùng khóa `id` của sự kiện: trước khi
+          // request() có requestId, `id` của phiếu đè mã yêu cầu và content chờ tới
           // hết 90s dù phiếu đã lưu xong (chạy thật 02/10/2026, HD0126080369/0370).
           result = await request("buyerFixInvoice", {
             recordId: item.id,

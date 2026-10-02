@@ -353,8 +353,11 @@ assert.strictEqual(plainClone(null), null);
 // Mọi phản hồi phải đi qua respond(); dispatch không được nằm trong khối try
 // của handler, và luôn có nhánh dự phòng khi vẫn không gửi được.
 assert.match(bridgeSource, /function respond\(payload\)/);
-assert.match(bridgeSource, /respond\(\{ id: detail\.id, ok: true, result \}\)/);
-assert.match(bridgeSource, /respond\(\{ id: detail\.id, ok: false/);
+// Trả lời theo mã yêu cầu (requestId), không theo detail.id mà ID phiếu có thể đè
+// (xem test-request-bus.js).
+assert.match(bridgeSource, /const replyId = detail\.requestId \|\| detail\.id;/);
+assert.match(bridgeSource, /respond\(\{ id: replyId, ok: true, result \}\)/);
+assert.match(bridgeSource, /respond\(\{ id: replyId, ok: false/);
 const respondFn = bridgeSource.slice(bridgeSource.indexOf("function respond(payload)"));
 assert.match(respondFn.slice(0, 900), /catch \(error\)[\s\S]{0,300}dispatchEvent/,
   "respond phải có nhánh dự phòng khi dispatchEvent thất bại");

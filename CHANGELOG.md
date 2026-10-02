@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.29.6 (2026-10-02)
+
+- **Lệnh gửi kèm ID phiếu không còn chờ tới hết giờ dù bridge đã làm xong.** `request()` của content trải payload sau mã yêu cầu, nên lệnh có khóa `id` (ID phiếu) bị đè mất mã đó; bridge trả lời theo `detail.id` (tức ID phiếu) và content không nhận ra câu trả lời. Lỗi có từ khi thêm Phát hành (8916b54, 07/08/2026) và ảnh hưởng:
+  - **Phát hành** (`issueEInvoice`): theo code, mỗi hóa đơn chờ hết 30s (90s nếu phải đọc mặt hàng) rồi mới được xác nhận bằng cách đọc lại danh sách, kèm cảnh báo "mất phản hồi nhưng hóa đơn ĐÃ phát hành". Nay đi đúng nhánh thành công, ghi sổ bằng số liệu bridge trả về.
+  - **So sổ đối soát với website** (`readInvoiceSummary`, chạy trước khi phát hành và ở nút "Đối soát lại mặt hàng từ website"): mỗi phiếu chờ hết 30s rồi bị đánh dấu "chưa so được", nên phiếu lệch sổ chưa bao giờ được phát hiện.
+  - **Đọc mặt hàng từ phiếu** (`readInvoiceItems`): chờ hết 45s.
+  - Sửa người mua/TM-CK (`buyerFixInvoice`, 1.29.5) đã tránh lỗi bằng `recordId`.
+- Cách sửa: content gửi thêm `requestId` (đặt sau cùng nên không bị đè), bridge trả lời theo `requestId` (không có thì dùng `id` như cũ). Handler vẫn đọc ID phiếu ở `detail.id`, không đổi. Test `test-request-bus.js` chạy thật `request()` của content với bộ lắng nghe của bridge.
+
 ## 1.29.5 (2026-10-02)
 
 - **Sửa người mua/TM-CK cho phiếu đã lưu ngay trong extension, tự tải lại trang và chạy tiếp.** Màn Phát hành hóa đơn có khối "Sửa người mua / TM-CK" (Từ ngày/Đến ngày riêng, vì lô phát hành khóa một ngày). Phiếu chưa xuất hóa đơn ghi `TM` hoặc `CK` được đổi thành `TM/CK` và người mua "Bán cho người tiêu dùng" (địa chỉ mặc định nếu trống); tiền, giờ, phòng, dòng hàng giữ nguyên, đọc lại từng phiếu để xác nhận. Bỏ qua phiếu đã xuất, đã hủy, quầy BÁN LẺ, có người mua thật.

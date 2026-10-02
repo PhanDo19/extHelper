@@ -3987,6 +3987,9 @@
 
   window.addEventListener(REQUEST, async event => {
     const detail = event.detail || {};
+    // Trả lời theo mã yêu cầu: `detail.id` có thể đã bị ID phiếu trong payload đè
+    // (content.js request). Content cũ không gửi requestId thì dùng id như trước.
+    const replyId = detail.requestId || detail.id;
     let result;
     try {
       if (detail.action === "scan") result = scan();
@@ -4023,10 +4026,10 @@
       // để nó tự điều hướng về màn hình danh sách trước khi đối soát sau lưu.
       else if (detail.action === "hasInvoiceList") result = { present: Boolean(invoiceListElement()) };
       else throw new Error("Thao tác không được hỗ trợ.");
-      respond({ id: detail.id, ok: true, result });
+      respond({ id: replyId, ok: true, result });
     } catch (error) {
       console.error("[InvoiceTarget bridge]", error);
-      respond({ id: detail.id, ok: false, error: String(error?.message || error || "Không rõ lỗi.") });
+      respond({ id: replyId, ok: false, error: String(error?.message || error || "Không rõ lỗi.") });
     }
   });
 })();
