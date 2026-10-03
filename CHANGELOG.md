@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.29.11 (2026-10-03)
+
+- **Phiếu mới lập ở mức tổng đã làm tròn ("Lập ở …") không còn bị hủy mỗi lần Lưu API.** Sao kê không biểu diễn được theo VAT 10% của website (ca thật Kim Giang: 1.282.000đ, chỉ lập được 1.281.999đ hoặc 1.282.001đ) thì người dùng chọn "Lập ở …" và phương án lập ở mức đó; API tạo phiếu cũng gửi đúng mức đó. Nhưng bước kiểm tra phương án phiếu mới (`newInvoicePlanValidationError`) lại so tổng với sao kê gốc, nên lệch đúng 1đ → "Tiền hàng + tiền giờ + VAT chưa khớp sao kê" → phương án bị hủy kèm luôn mức đã chọn → giao dịch quay về "không biểu diễn chính xác", vòng lặp không bao giờ tạo được phiếu. Nay so với mức đã chọn (không có mức đã chọn thì vẫn so với sao kê như trước). Phiếu có sẵn không bị ảnh hưởng (không qua bước này).
+- **Dòng "Cần tạo phiếu" chỉ cần chọn mức "Lập ở …" thì hướng dẫn tạo bằng API**, không còn mời "Mở tab Bán hàng mới": khi chưa có phương án, tab phụ không có gì để áp dụng và đứng yên. Chọn mức → Accept → Lưu API: phiếu mới được tạo bằng API ngay tại tab danh sách. Các lỗi khác vẫn giữ nút mở tab phụ để làm tay.
+- Lỗi khi Lưu API/đối soát gắn lên dòng theo **mã giao dịch** thay vì vị trí dòng: Batch Review vừa dựng lại (vd sau khi hủy phương án) thì thứ tự dòng đổi và lỗi từng có thể gắn nhầm sang giao dịch khác.
+
 ## 1.29.10 (2026-10-02)
 
 - **Phiếu có sẵn nhiều giờ hát không còn kẹt ở "Tiền giờ vượt 2 lần tiền hàng".** Ca thật Kim Giang 27/07/2026, sao kê 952.000đ (lập ở 951.999đ, trước VAT 865.454đ), kho dư (sức chứa ước tính 2.940.000đ): phiếu có sẵn Tiền giờ ~720.000đ nên sàn mềm "nền − 20%" là 576.000đ, trong khi tỷ lệ Tiền giờ ≤ 2 lần tiền hàng đòi Tiền giờ ≤ 578.636đ. Trên lưới giá hàng 5.000đ không có giá trị chung: 285.000đ hàng cho giờ 580.454đ (vỡ tỷ lệ), 290.000đ cho 575.454đ (hụt sàn 546đ). Solver xếp sàn mềm trước tỷ lệ nên luôn chọn 285.000đ rồi cổng cuối loại; Tính lại bao nhiêu lần cũng vậy, dù cổng "phần bù ≤ 20% HOẶC Tiền giờ ≤ trần" vẫn chấp nhận 575.454đ.

@@ -630,7 +630,13 @@
     if (!plan?.requiresNewInvoice) return "";
     if (plan.calculationVersion !== CALCULATION_VERSION) return "Phương án được tính bằng công thức cũ.";
     if (!Array.isArray(plan.items) || !plan.items.length) return "Phương án chưa có mặt hàng.";
-    const grand = Math.round(Number(transaction?.credit || plan.targetGrand || 0));
+    // Sao kê không biểu diễn được theo VAT 10% của website thì phương án lập ở
+    // mức người dùng đã chọn ("Lập ở …", acceptedGrandOverride) và API tạo phiếu
+    // cũng gửi đúng mức đó (plan.targetGrand). Phải so với mức đã chọn: trước
+    // đây so với sao kê gốc nên phương án lệch đúng 1đ bị hủy kèm luôn mức đã
+    // chọn, giao dịch quay về "không biểu diễn được" và không bao giờ tạo được
+    // phiếu (Kim Giang 03/10/2026, sao kê 1.282.000đ).
+    const grand = Math.round(Number(transaction?.acceptedGrandOverride || transaction?.credit || plan.targetGrand || 0));
     const goods = Math.round(Number(plan.goods || 0));
     const hour = Math.round(Number(plan.hour || 0));
     const hourFromTime = Math.round(Number(plan.hourFromTime || 0));
@@ -8258,8 +8264,12 @@
   }
 
   // Ghi lỗi lên đúng dòng (lưu cùng phiên Batch, còn sau khi tải lại trang).
-  async function noteBatchEntryError(index, error) {
-    const entry = batchPlans[index];
+  // Tìm theo mã giao dịch, không theo vị trí: lỗi có thể đến sau khi Batch
+  // Review vừa dựng lại (vd phương án phiếu mới bị hủy rồi tính lại) và thứ tự
+  // dòng đã đổi, ghi theo vị trí là gắn nhầm sang giao dịch khác.
+  async function noteBatchEntryError(transactionId, error) {
+    const id = String(transactionId || "");
+    const entry = id ? batchPlans.find(item => String(item.transactionId) === id) : null;
     if (!entry) return;
     entry.lastError = String(error?.message || error || "Không rõ lỗi.");
     entry.lastErrorStatus = entry.status;
@@ -8341,7 +8351,14 @@
             ${(entry.candidates || []).map(candidate => `<option value="${escapeHtml(candidate.invoiceNo)}" ${String(candidate.invoiceNo) === String(entry.plan?.invoiceNo || "") ? "selected" : ""}>${escapeHtml(candidate.invoiceNo)} · ${formatMoney(candidate.grandTotal)}</option>`).join("")}
           </select>` : ""}
           ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<br><button class="it-confirm-issued" type="button" data-index="${index}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
-          ${entry.status === "needs_new_invoice" ? `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>` : ""}
+          ${entry.status === "needs_new_invoice"
+            // Tổng chỉ cần làm tròn 1đ thì chọn "Lập ở …" là có phương án và tạo
+            // được bằng API ngay trên tab này. Mở tab phụ khi chưa có phương án
+            // thì tab đó không có gì để áp dụng và đứng yên.
+            ? ((entry.plan?.reachableAlternatives || []).length
+              ? `<br><small>Chọn một mức "Lập ở …" bên dưới để tính phương án, rồi Accept và Lưu API: phiếu mới được tạo bằng API ngay tại tab này, không mở tab phụ.</small>`
+              : `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>`)
+            : ""}
           ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<br><button class="it-save-new-api" type="button" data-index="${index}">Tạo, lưu API và đối soát</button>` : ""}
           ${entry.status === "batch_ready" && !plan.requiresNewInvoice
             ? `<br><button class="it-save-api" type="button" data-index="${index}">Lưu API & đối soát</button>`
@@ -8506,7 +8523,7 @@
       }
       return { verified: false, closed: false, invoiceNo: plan.invoiceNo, error: "transaction-not-done" };
     } catch (error) {
-      await noteBatchEntryError(index, error);
+      await noteBatchEntryError(entry.transactionId, error);
       setStatus(`Đối soát từ Batch Review thất bại: ${error.message} Chưa thay đổi tồn kho hoặc sao kê.`, "error");
       return { verified: false, closed: false, invoiceNo: plan?.invoiceNo || "", error: error.message };
     } finally {
@@ -9336,6 +9353,7 @@
   async function saveAcceptedBatchPlanViaApi(event) {
     const button = event.target.closest("button");
     const index = Number(button?.dataset.index);
+    const transactionId = String(batchPlans[index]?.transactionId || "");
     try {
       if (button) {
         button.disabled = true;
@@ -9346,7 +9364,7 @@
       renderStatementAdmin();
       setStatus(`Đã lưu và đối soát ${result.invoiceNo}. Sao kê và tồn kho đã được cập nhật.`, "ok");
     } catch (error) {
-      await noteBatchEntryError(index, error);
+      await noteBatchEntryError(transactionId, error);
       renderBatchPlans();
       renderStatementAdmin();
       setStatus(`Batch API dừng: ${error.message}`, "error");
@@ -9661,11 +9679,11 @@
     }
     let completed = 0;
     let savedSinceReload = 0;
-    let currentIndex = -1;
+    let currentTransactionId = "";
     try {
       assertRuntimeContext();
       for (const index of indexes) {
-        currentIndex = index;
+        currentTransactionId = String(batchPlans[index]?.transactionId || "");
         if (button?.isConnected) button.textContent = `Đang xử lý ${completed + 1}/${indexes.length}…`;
         if (batchPlans[index]?.plan?.requiresNewInvoice) {
           await saveNewBatchEntry(index);
@@ -9696,7 +9714,7 @@
       );
     } catch (error) {
       // Ghi lỗi lên dòng đang xử lý để bộ lọc "Lỗi / cần xử lý" chỉ ra đúng giao dịch.
-      if (currentIndex >= 0) await noteBatchEntryError(currentIndex, error);
+      if (currentTransactionId) await noteBatchEntryError(currentTransactionId, error);
       renderBatchPlans();
       renderStatementAdmin();
       if (isPageOverloadError(error) && await scheduleAutoReloadResume("batch-api", error.message)) return;

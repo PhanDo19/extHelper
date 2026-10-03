@@ -228,6 +228,18 @@ const exactNewInvoicePlan = {
 if (sandbox.newInvoicePlanValidationError(exactNewInvoicePlan, { credit: 1004000 })) {
   throw new Error("Phương án phiếu mới khớp đúng bước giờ không được phép bị hủy.");
 }
+// Sao kê không biểu diễn được theo VAT 10% (ca thật Kim Giang 03/10/2026:
+// 1.282.000đ, chỉ lập được 1.281.999đ/1.282.001đ): người dùng chọn "Lập ở …",
+// phương án lập ở mức đó. Kiểm tra phải so với mức đã chọn, không với sao kê
+// gốc — trước đây phương án bị hủy kèm mức đã chọn ở mỗi lần Lưu API.
+const roundedNewInvoicePlan = { ...exactNewInvoicePlan, targetGrand: 1003999, hour: 512726 };
+if (sandbox.newInvoicePlanValidationError(roundedNewInvoicePlan, { credit: 1004000, acceptedGrandOverride: 1003999 })) {
+  throw new Error(`Phương án lập ở mức đã chọn không được bị hủy: ${sandbox.newInvoicePlanValidationError(
+    roundedNewInvoicePlan, { credit: 1004000, acceptedGrandOverride: 1003999 })}`);
+}
+if (sandbox.newInvoicePlanValidationError(roundedNewInvoicePlan, { credit: 1004000 }) !== "Tiền hàng + tiền giờ + VAT chưa khớp sao kê.") {
+  throw new Error("Không có mức đã chọn thì phương án lệch sao kê vẫn phải bị chặn.");
+}
 // Phiếu nhỏ (dưới 300.000đ): đúng MỘT món giá thấp, phần còn lại vào Tiền giờ.
 // Không bị chặn bởi sàn giờ 30 phút của hóa đơn thường.
 const smallValidatedPlan = {
