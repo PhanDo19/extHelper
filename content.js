@@ -3655,23 +3655,35 @@
             index + 1}. ${escapeHtml(TENANT_LABELS[slug] || slug)}</option>`).join("")
       }</select></label>`
       : "";
-    node.innerHTML = `<div class="it-batch-toolbar">
-      <div><b>Phát hành hóa đơn điện tử</b><br><small>Chọn các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small></div>
+    // Tiêu đề + một hàng điều khiển; mô tả dài trước đây bị ép vào một cột hẹp
+    // bên trái nên mỗi khối cao 5-6 dòng. Công cụ phụ (sửa người mua) thu gọn
+    // thành mục mở ra được, tự mở khi đang có lượt chạy dở.
+    node.innerHTML = `<div class="it-section-head">
+      <b>Phát hành hóa đơn điện tử</b>
+      <small>Chọn hóa đơn rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small>
+    </div>
+    <div class="it-controls-row">
       <label title="Lô phát hành luôn đúng một ngày để số hóa đơn liên tục và xen kẽ được với cơ sở kia.">Ngày phát hành<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
       <label class="it-locked-date" title="Lô phát hành khóa theo đúng một ngày nên Đến ngày luôn bằng Ngày phát hành.">Đến ngày<input id="it-einvoice-to-date" type="date" value="${escapeHtml(toDate)}" readonly tabindex="-1"></label>
-      <button id="it-einvoice-prev-day" type="button" title="Lùi một ngày">‹ Ngày trước</button>
-      <button id="it-einvoice-next-day" type="button" title="Sang ngày kế">Ngày sau ›</button>
+      <div class="it-day-nav">
+        <button id="it-einvoice-prev-day" type="button" title="Lùi một ngày">‹ Ngày trước</button>
+        <button id="it-einvoice-next-day" type="button" title="Sang ngày kế">Ngày sau ›</button>
+      </div>
       ${tenantOrderControl}
       <button id="it-load-einvoice" type="button" class="primary">Tải danh sách</button>
     </div>
-    <div class="it-batch-toolbar">
-      <div><b>Sửa người mua / TM-CK</b><br><small>Chỉ phiếu extension đã tạo/cập nhật (gắn giao dịch), chưa xuất hóa đơn: đổi thanh toán thành TM/CK và người mua "${escapeHtml(DEFAULT_INVOICE_BUYER)}". Phiếu nhân viên tự lập không bị đụng tới. Tự tải lại trang và chạy tiếp; để tab này hiển thị trong lúc chạy.</small></div>
-      <label>Từ ngày<input id="it-buyer-fix-from" type="date" value="${escapeHtml(monthStartDateKey(fromDate))}"></label>
-      <label>Đến ngày<input id="it-buyer-fix-to" type="date" value="${escapeHtml(monthEndDateKey(fromDate))}"></label>
-      <button id="it-buyer-fix-start" type="button">Sửa người mua/TM-CK</button>
-      <button id="it-buyer-fix-stop" type="button" hidden>Dừng</button>
-      <small id="it-buyer-fix-progress"></small>
-    </div>
+    <details class="it-tool-section" id="it-buyer-fix-section">
+      <summary><b>Sửa người mua / TM-CK</b><small id="it-buyer-fix-progress"></small></summary>
+      <div class="it-tool-body">
+        <small>Chỉ phiếu extension đã tạo/cập nhật (gắn giao dịch), chưa xuất hóa đơn: đổi thanh toán thành TM/CK và người mua "${escapeHtml(DEFAULT_INVOICE_BUYER)}". Phiếu nhân viên tự lập không bị đụng tới. Tự tải lại trang và chạy tiếp; để tab này hiển thị trong lúc chạy.</small>
+        <div class="it-controls-row">
+          <label>Từ ngày<input id="it-buyer-fix-from" type="date" value="${escapeHtml(monthStartDateKey(fromDate))}"></label>
+          <label>Đến ngày<input id="it-buyer-fix-to" type="date" value="${escapeHtml(monthEndDateKey(fromDate))}"></label>
+          <button id="it-buyer-fix-start" type="button">Sửa người mua/TM-CK</button>
+          <button id="it-buyer-fix-stop" type="button" hidden>Dừng</button>
+        </div>
+      </div>
+    </details>
     <div id="it-einvoice-summary"></div>
     <div id="it-einvoice-table"></div>`;
     node.querySelector("#it-load-einvoice")?.addEventListener("click", () => {
@@ -3690,6 +3702,9 @@
         const to = node.querySelector("#it-buyer-fix-to");
         if (from) from.value = job.fromDate;
         if (to) to.value = job.toDate;
+        // Đang có lượt chạy dở thì mở sẵn để thấy nút "Chạy tiếp".
+        const section = node.querySelector("#it-buyer-fix-section");
+        if (section && job.pending?.length) section.open = true;
       }
       renderBuyerFixProgress(job);
     }).catch(() => {});
@@ -3803,10 +3818,9 @@
       // hóa đơn nào sẽ thiếu số liệu hạch toán trước khi bấm phát hành.
       const preview = recorded?.items?.length ? recorded.items : ledgerItemsForInvoiceNo(row.invoiceNo);
       const source = recorded?.items?.length ? "đã ghi sổ" : preview ? "sổ đối soát" : "";
+      const detailId = detailRowId("it-einvoice-detail", row.id);
       const itemsHtml = preview?.length
-        ? `<details><summary>${preview.length} mã${source ? ` · ${source}` : ""}</summary><table><thead><tr><th>Mã</th><th>Tên</th><th>SL</th></tr></thead><tbody>${
-          preview.map(item => `<tr><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.name)}</td><td>${formatMoney(item.qty)}</td></tr>`).join("")
-        }</tbody></table></details>`
+        ? `${detailToggleHtml(detailId, `${preview.length} mã`)}${source ? `<small class="it-muted"> · ${escapeHtml(source)}</small>` : ""}`
         : recorded?.itemsError
           ? `<small class="it-blocked-note" title="${escapeHtml(recorded.itemsError)}">⚠ chưa đọc được mặt hàng</small>`
           : '<small class="it-blocked-note">chưa có trong sổ đối soát</small>';
@@ -3837,19 +3851,29 @@
         <td>${itemsHtml}${freshnessHtml}${row.issued
           ? `<br><button class="it-check-issued" type="button" data-id="${escapeHtml(row.id)}">Check / đồng bộ</button>`
           : ""}</td>
-      </tr>`;
+      </tr>${preview?.length
+        ? itemsDetailRowHtml(detailId, preview, 7, {
+          leadingCells: 1,
+          note: source === "đã ghi sổ" ? "Mặt hàng đã ghi sổ phát hành." : "Mặt hàng theo sổ đối soát (sẽ dùng khi phát hành)."
+        })
+        : ""}`;
     }).join("");
     table.innerHTML = `<div class="it-batch-actions">
-      <label><input id="it-einvoice-select-all" type="checkbox"> Chọn tất cả chưa phát hành</label>
-      <span>
+      <div class="it-actions-group">
+        <label><input id="it-einvoice-select-all" type="checkbox"> Chọn tất cả chưa phát hành</label>
+      </div>
+      <div class="it-actions-group it-actions-tools">
         <button id="it-test-read-items" type="button" title="Chỉ đọc mặt hàng của các hóa đơn đã chọn, không phát hành">Thử đọc mặt hàng</button>
-        <button id="it-resync-einvoice-day" type="button" title="Phiếu chưa phát hành bị sửa ngoài extension (chuyển phòng, đổi số lượng): đọc lại mặt hàng trên website và cập nhật sổ đối soát, tồn kho theo phần chênh. Không sửa phiếu trên website.">Đối soát lại mặt hàng từ website</button>
-        <button id="it-sync-issued" type="button" title="Ghi sổ các hóa đơn đã phát hành trên website nhưng chưa có trong sổ hạch toán">Đồng bộ hóa đơn đã phát hành</button>
+        <button id="it-resync-einvoice-day" type="button" title="Phiếu chưa phát hành bị sửa ngoài extension (chuyển phòng, đổi số lượng): đọc lại mặt hàng trên website và cập nhật sổ đối soát, tồn kho theo phần chênh. Không sửa phiếu trên website.">Đối soát lại mặt hàng</button>
+        <button id="it-sync-issued" type="button" title="Ghi sổ các hóa đơn đã phát hành trên website nhưng chưa có trong sổ hạch toán">Đồng bộ HĐ đã phát hành</button>
+      </div>
+      <div class="it-actions-group">
         <button id="it-issue-einvoices" type="button" class="primary" ${eInvoiceSelection.size && !issuingInProgress ? "" : "disabled"}>Phát hành hóa đơn đã chọn</button>
-      </span>
+      </div>
     </div>
     <div id="it-einvoice-progress"></div>
-    <div class="it-table-wrap"><table class="it-batch-table it-einvoice-table"><thead><tr><th></th><th>Phiếu</th><th>Tổng cộng</th><th>Giao dịch liên kết</th><th>Người mua</th><th>Trạng thái</th><th>Mặt hàng đã ghi</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    <div class="it-table-wrap"><table class="it-batch-table it-einvoice-table"><thead><tr><th></th><th>Phiếu</th><th>Tổng cộng</th><th>Giao dịch liên kết</th><th>Người mua</th><th>Trạng thái</th><th>Mặt hàng</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    bindDetailToggles(table);
     table.querySelector("#it-einvoice-select-all")?.addEventListener("change", event => {
       table.querySelectorAll(".it-einvoice-select").forEach(input => { input.checked = event.target.checked; });
       updateEInvoiceSelection();
@@ -8281,6 +8305,89 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Dòng chi tiết mặt hàng dùng chung cho bảng Batch Review và bảng Phát hành.
+  //
+  // Bảng mặt hàng nằm trong DÒNG RIÊNG rộng hết bảng ngay dưới dòng chính, không
+  // lồng trong một ô: bảng lồng trước đây rộng tối thiểu 480px trong cột 92px nên
+  // mở "N mã" ra là phải kéo thanh cuộn ngang mới thấy số lượng/giá (phản hồi
+  // 03/10/2026). Dòng đang mở được nhớ qua các lần vẽ lại bảng.
+  // ---------------------------------------------------------------------------
+  const openDetailRows = new Set();
+
+  function detailRowId(prefix, key) {
+    return `${prefix}-${String(key || "").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+  }
+
+  function detailToggleHtml(detailId, label) {
+    const open = openDetailRows.has(detailId);
+    return `<button type="button" class="it-detail-toggle" data-detail-toggle="${escapeHtml(detailId)}" aria-expanded="${open}">` +
+      `${escapeHtml(label)} <span aria-hidden="true">${open ? "▴" : "▾"}</span></button>`;
+  }
+
+  // `leadingCells` ô trống đầu dòng (cột chọn) để bảng con thẳng hàng với nội dung.
+  function itemsDetailRowHtml(detailId, items, totalColumns, options = {}) {
+    const list = Array.isArray(items) ? items : [];
+    const leadingCells = Math.max(0, Number(options.leadingCells) || 0);
+    const quantity = item => Math.round(Number(item.qty ?? item.newQty) || 0);
+    const hasPrice = list.some(item => Number(item.price) > 0);
+    const hasStock = Boolean(options.showStock);
+    let total = 0;
+    const rows = list.map(item => {
+      const qty = quantity(item);
+      const price = Math.round(Number(item.price) || 0);
+      total += qty * price;
+      return `<tr class="${qty > 0 ? "" : "it-detail-unused"}">
+        <td class="it-detail-code">${escapeHtml(item.code)}</td>
+        <td>${escapeHtml(item.name || "")}</td>
+        <td class="it-num">${formatMoney(qty)}</td>
+        ${hasPrice ? `<td class="it-num">${formatMoney(price)}</td><td class="it-num"><b>${formatMoney(qty * price)}</b></td>` : ""}
+        ${hasStock ? `<td class="it-num">${item.stockQty ?? "—"}</td><td class="it-num">${item.maxQty ?? "—"}</td>` : ""}
+      </tr>`;
+    }).join("");
+    const head = `<tr><th>Mã</th><th>Tên hàng</th><th class="it-num">SL</th>${
+      hasPrice ? '<th class="it-num">Đơn giá</th><th class="it-num">Thành tiền</th>' : ""}${
+      hasStock ? '<th class="it-num">Tồn trước</th><th class="it-num">Giới hạn/HĐ</th>' : ""}</tr>`;
+    const foot = hasPrice
+      ? `<tfoot><tr><td colspan="4">Tổng tiền hàng</td><td class="it-num"><b>${formatMoney(total)}</b></td>${hasStock ? "<td></td><td></td>" : ""}</tr></tfoot>`
+      : "";
+    return `<tr class="it-detail-row" id="${escapeHtml(detailId)}"${openDetailRows.has(detailId) ? "" : " hidden"}>` +
+      `${"<td></td>".repeat(leadingCells)}<td colspan="${Math.max(1, totalColumns - leadingCells)}">` +
+      `${options.note ? `<small class="it-detail-note">${escapeHtml(options.note)}</small>` : ""}` +
+      `<table class="it-detail-table"><thead>${head}</thead><tbody>${rows}</tbody>${foot}</table></td></tr>`;
+  }
+
+  function bindDetailToggles(container) {
+    container?.querySelectorAll?.("[data-detail-toggle]").forEach(button => {
+      button.addEventListener("click", () => {
+        const detailId = button.dataset.detailToggle;
+        const row = container.querySelector(`#${CSS.escape(detailId)}`);
+        if (!row) return;
+        row.hidden = !row.hidden;
+        if (row.hidden) openDetailRows.delete(detailId);
+        else openDetailRows.add(detailId);
+        button.setAttribute("aria-expanded", String(!row.hidden));
+        const arrow = button.querySelector("span");
+        if (arrow) arrow.textContent = row.hidden ? "▾" : "▴";
+      });
+    });
+  }
+
+  // "27/07/2026 20:00" → giờ vào/ra gọn: cùng ngày thì "27/07 20:00 → 20:58",
+  // qua đêm thì ghi cả hai ngày. Chuỗi đầy đủ vẫn nằm ở tooltip.
+  function shortSessionText(checkIn, checkOut) {
+    const part = value => {
+      const match = String(value || "").match(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{1,2}:\d{2})/);
+      return match ? { day: `${match[1]}/${match[2]}`, time: match[3] } : null;
+    };
+    const start = part(checkIn);
+    const end = part(checkOut);
+    if (!start || !end) return `${checkIn || "?"} → ${checkOut || "?"}`;
+    return start.day === end.day
+      ? `${start.day} ${start.time} → ${end.time}`
+      : `${start.day} ${start.time} → ${end.day} ${end.time}`;
+  }
+
   function renderBatchPlans() {
     const summary = document.getElementById("it-batch-summary");
     const table = document.getElementById("it-batch-table");
@@ -8320,89 +8427,115 @@
         done: "Đã xử lý",
         error: "Lỗi"
       }[entry.status] || entry.status;
-      const itemDetails = (plan.items || []).map(item =>
-        `<tr><td>${escapeHtml(item.code)}</td><td>${escapeHtml(item.name || "")}</td><td>${item.qty}</td><td>${formatMoney(item.price)}</td><td>${item.stockQty ?? item.maxQty ?? "—"}</td><td>${item.maxQty ?? "—"}</td></tr>`
-      ).join("");
-      const timeDetails = plan.checkIn && plan.checkOut
-        ? `<small class="it-batch-time"><b>${escapeHtml(plan.checkIn)}</b> → <b>${escapeHtml(plan.checkOut)}</b>` +
-          `<br>${Math.round(Number(plan.durationMinutes) || 0)} phút · theo giờ ${formatMoney(plan.hourFromTime)}đ` +
-          `${Number(plan.hourAdjustment) ? ` · bù ${Number(plan.hourAdjustment) > 0 ? "+" : ""}${formatMoney(plan.hourAdjustment)}đ` : ""}</small>`
-        : "—";
+      const detailId = detailRowId("it-batch-detail", entry.transactionId);
+      const planItems = Array.isArray(plan.items) ? plan.items : [];
+      const usedItems = planItems.filter(item => Math.round(Number(item.qty ?? item.newQty) || 0) > 0).length;
+      const timeTitle = plan.checkIn && plan.checkOut
+        ? `${plan.checkIn} → ${plan.checkOut} · ${Math.round(Number(plan.durationMinutes) || 0)} phút · theo giờ ` +
+          `${formatMoney(plan.hourFromTime)}đ${Number(plan.hourAdjustment)
+            ? ` · bù ${Number(plan.hourAdjustment) > 0 ? "+" : ""}${formatMoney(plan.hourAdjustment)}đ`
+            : ""}`
+        : "";
+      // Hàng / Giờ / VAT gộp một ô (trước là ba cột tiền + một cột giờ vào/ra
+      // bị bẻ 5-6 dòng): dòng thấp hơn, đọc cơ cấu một chỗ.
+      const planCell = plan.goods == null
+        ? '<span class="it-muted">Chưa có phương án</span>'
+        : `<div class="it-plan-breakdown">
+            <span>Hàng</span><b>${formatMoney(plan.goods)}</b>
+            <span>Giờ</span><b>${formatMoney(plan.hour)}</b>
+            <span>VAT</span><b>${formatMoney(plan.tax)}</b>
+          </div>
+          ${timeTitle ? `<small class="it-plan-time" title="${escapeHtml(timeTitle)}">${escapeHtml(shortSessionText(plan.checkIn, plan.checkOut))} · ${Math.round(Number(plan.durationMinutes) || 0)}′</small>` : ""}
+          ${planItems.length ? detailToggleHtml(detailId, `${usedItems || planItems.length} mã`) : ""}`;
+      const overrideGrand = Math.round(Number(entry.transaction.acceptedGrandOverride) || 0);
       return `<tr class="it-batch-row ${escapeHtml(entry.status)}">
         <td><input class="it-batch-select" type="checkbox" data-index="${index}" ${entry.status === "ready" ? "checked" : "disabled"}></td>
-        <td class="it-batch-transaction"><b>${escapeHtml(entry.transaction.transactionDate)}</b><small title="${escapeHtml(entry.transaction.description || "")}">${escapeHtml(entry.transaction.description || "")}</small></td>
-        <td>${escapeHtml(plan.invoiceNo || entry.transaction.invoiceNo || "—")}</td>
-        <td class="it-money">${formatMoney(entry.transaction.credit)}</td>
-        <td class="it-money">${plan.goods == null ? "—" : formatMoney(plan.goods)}</td>
-        <td class="it-money">${plan.hour == null ? "—" : formatMoney(plan.hour)}</td>
-        <td>${timeDetails}</td>
-        <td class="it-money">${plan.tax == null ? "—" : formatMoney(plan.tax)}</td>
-        <td><span class="it-batch-status ${escapeHtml(entry.status)}">${statusLabel}</span>
-          ${lastError ? `<br><small class="it-batch-last-error" title="${escapeHtml(entry.lastErrorAt
+        <td class="it-batch-transaction">
+          <div class="it-transaction-head"><b>${escapeHtml(entry.transaction.transactionDate)}</b><strong>${formatMoney(entry.transaction.credit)}</strong></div>
+          ${overrideGrand && overrideGrand !== Math.round(Number(entry.transaction.credit) || 0)
+            ? `<small class="it-override-note">lập ở ${formatMoney(overrideGrand)}đ</small>` : ""}
+          <small title="${escapeHtml(entry.transaction.description || "")}">${escapeHtml(entry.transaction.description || "")}</small>
+        </td>
+        <td>${plan.invoiceNo || entry.transaction.invoiceNo
+          ? `<b>${escapeHtml(plan.invoiceNo || entry.transaction.invoiceNo)}</b>`
+          : plan.requiresNewInvoice || entry.status === "needs_new_invoice" ? '<span class="it-new-invoice-tag">Phiếu mới</span>' : "—"}</td>
+        <td class="it-plan-cell">${planCell}</td>
+        <td class="it-batch-status-cell"><span class="it-batch-status ${escapeHtml(entry.status)}">${statusLabel}</span>
+          ${lastError ? `<div class="it-batch-last-error" title="${escapeHtml(entry.lastErrorAt
             ? `Lỗi lúc ${new Date(entry.lastErrorAt).toLocaleString("vi-VN")}`
-            : "")}">⚠ ${escapeHtml(lastError)}</small>` : ""}
-          ${entry.reason ? `<br><small>${escapeHtml(entry.reason)}</small>` : ""}
-          ${entry.status === "needs_choice" && (entry.candidates || []).length ? `<br><select class="it-unissued-choice" data-index="${index}">
+            : "")}">⚠ ${escapeHtml(lastError)}</div>` : ""}
+          ${entry.reason ? `<small class="it-batch-reason">${escapeHtml(entry.reason)}</small>` : ""}
+        </td>
+        <td class="it-row-actions">
+          ${entry.status === "needs_choice" && (entry.candidates || []).length ? `<select class="it-unissued-choice" data-index="${index}">
             <option value="">— Chọn phiếu chưa xuất —</option>
             ${(entry.candidates || []).map(candidate => `<option value="${escapeHtml(candidate.invoiceNo)}">${escapeHtml(candidate.invoiceNo)} · ${formatMoney(candidate.grandTotal)}</option>`).join("")}
           </select>` : ""}
-          ${entry.status === "already_issued" && (entry.candidates || []).length > 1 ? `<br><select class="it-issued-choice" data-index="${index}">
+          ${entry.status === "already_issued" && (entry.candidates || []).length > 1 ? `<select class="it-issued-choice" data-index="${index}">
             <option value="">— Chọn HĐ đã xuất —</option>
             ${(entry.candidates || []).map(candidate => `<option value="${escapeHtml(candidate.invoiceNo)}" ${String(candidate.invoiceNo) === String(entry.plan?.invoiceNo || "") ? "selected" : ""}>${escapeHtml(candidate.invoiceNo)} · ${formatMoney(candidate.grandTotal)}</option>`).join("")}
           </select>` : ""}
-          ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<br><button class="it-confirm-issued" type="button" data-index="${index}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
+          ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<button class="it-confirm-issued it-act-main" type="button" data-index="${index}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
+          ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<button class="it-save-new-api it-act-main" type="button" data-index="${index}">Tạo, lưu API và đối soát</button>` : ""}
+          ${entry.status === "batch_ready" && !plan.requiresNewInvoice
+            ? `<button class="it-save-api it-act-main" type="button" data-index="${index}">Lưu API & đối soát</button>`
+            : ""}
+          ${entry.status === "planned"
+            ? `<button class="it-verify-batch it-act-main" type="button" data-index="${index}">Đối soát sau lưu${plan.requiresNewInvoice ? " & cập nhật kho" : ""}</button>`
+            : ""}
+          ${entry.status === "lookup_error" ? `<button class="it-retry-batch it-act-main" type="button">Thử dò lại</button>` : ""}
+          ${(entry.plan?.reachableAlternatives || []).length ? entry.plan.reachableAlternatives.map(value => {
+            const diff = value - Number(entry.transaction.credit || 0);
+            return `<button class="it-apply-rounded it-act-main" type="button" data-index="${index}" data-grand="${value}" ` +
+              `title="Lập hóa đơn ở ${formatMoney(value)}đ và ghi chú phần lệch ${diff > 0 ? "+" : ""}${formatMoney(diff)}đ">` +
+              `Lập ở ${formatMoney(value)}đ (${diff > 0 ? "+" : ""}${formatMoney(diff)}đ)</button>`;
+          }).join("") : ""}
           ${entry.status === "needs_new_invoice"
             // Tổng chỉ cần làm tròn 1đ thì chọn "Lập ở …" là có phương án và tạo
             // được bằng API ngay trên tab này. Mở tab phụ khi chưa có phương án
             // thì tab đó không có gì để áp dụng và đứng yên.
             ? ((entry.plan?.reachableAlternatives || []).length
-              ? `<br><small>Chọn một mức "Lập ở …" bên dưới để tính phương án, rồi Accept và Lưu API: phiếu mới được tạo bằng API ngay tại tab này, không mở tab phụ.</small>`
-              : `<br><button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>`)
-            : ""}
-          ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<br><button class="it-save-new-api" type="button" data-index="${index}">Tạo, lưu API và đối soát</button>` : ""}
-          ${entry.status === "batch_ready" && !plan.requiresNewInvoice
-            ? `<br><button class="it-save-api" type="button" data-index="${index}">Lưu API & đối soát</button>`
+              ? `<small class="it-action-hint">Chọn mức "Lập ở …" → Accept → Lưu API: phiếu mới được tạo bằng API ngay tại tab này, không mở tab phụ.</small>`
+              : `<button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>`)
             : ""}
           ${["batch_ready", "planned"].includes(entry.status) && !plan.requiresNewInvoice
-            ? `<br><button class="it-apply-accepted" type="button" data-index="${index}">${entry.status === "planned" ? "Mở và áp dụng lại phương án" : "Mở và áp dụng phương án"}</button>`
+            ? `<button class="it-apply-accepted" type="button" data-index="${index}">${entry.status === "planned" ? "Mở và áp dụng lại phương án" : "Mở và áp dụng phương án"}</button>`
             : ""}
           ${["batch_ready", "planned"].includes(entry.status)
-            ? `<br><button class="it-recalculate-accepted" type="button" data-index="${index}" title="${entry.status === "planned" ? "Bỏ dữ liệu đang chờ lưu trên form, hoàn reservation và tính phương án khác" : "Bỏ phương án hiện tại, hoàn reservation tồn kho và tính một tổ hợp khác"}">Tính toán lại</button>`
+            ? `<button class="it-recalculate-accepted" type="button" data-index="${index}" title="${entry.status === "planned" ? "Bỏ dữ liệu đang chờ lưu trên form, hoàn reservation và tính phương án khác" : "Bỏ phương án hiện tại, hoàn reservation tồn kho và tính một tổ hợp khác"}">Tính toán lại</button>`
             : ""}
-          ${entry.status === "planned"
-            ? `<br><button class="it-verify-batch" type="button" data-index="${index}">Đối soát sau lưu${plan.requiresNewInvoice ? " & cập nhật kho" : ""}</button>`
-            : ""}
-          ${entry.status === "lookup_error" ? `<br><button class="it-retry-batch" type="button">Thử dò lại</button>` : ""}
-          ${(entry.plan?.reachableAlternatives || []).length ? `<br>${entry.plan.reachableAlternatives.map(value => {
-            const diff = value - Number(entry.transaction.credit || 0);
-            return `<button class="it-apply-rounded" type="button" data-index="${index}" data-grand="${value}" ` +
-              `title="Lập hóa đơn ở ${formatMoney(value)}đ và ghi chú phần lệch ${diff > 0 ? "+" : ""}${formatMoney(diff)}đ">` +
-              `Lập ở ${formatMoney(value)}đ (${diff > 0 ? "+" : ""}${formatMoney(diff)}đ)</button>`;
-          }).join(" ")}` : ""}
           ${entry.transaction.acceptedGrandOverride && !["planned", "done"].includes(entry.status)
-            ? `<br><button class="it-reset-rounded" type="button" data-index="${index}" ` +
+            ? `<button class="it-reset-rounded" type="button" data-index="${index}" ` +
               `title="Xóa mức tổng điều chỉnh và tính lại từ đúng số tiền sao kê">Dùng lại tổng sao kê ${formatMoney(entry.transaction.credit)}đ</button>`
             : ""}
         </td>
-        <td>${itemDetails ? `<details><summary>${plan.items.length} mã</summary><table><thead><tr><th>Mã</th><th>Tên</th><th>SL</th><th>Giá</th><th>Tồn trước</th><th>Giới hạn/HĐ</th></tr></thead><tbody>${itemDetails}</tbody></table></details>` : "—"}</td>
-      </tr>`;
+      </tr>${planItems.length ? itemsDetailRowHtml(detailId, planItems, 6, { leadingCells: 1, showStock: true }) : ""}`;
     }).join("");
     const filterOptions = BATCH_FILTERS.map(filter => {
       const count = batchPlans.filter(entry => batchEntryMatchesFilter(entry, filter.value)).length;
       return `<option value="${filter.value}" ${filter.value === batchStatusFilter ? "selected" : ""}>${escapeHtml(filter.label)} (${count})</option>`;
     }).join("");
+    // Thanh thao tác ba nhóm: lọc/chọn · hai bước chính (Accept, Lưu API) · công
+    // cụ kiểm tra phụ (nút nhỏ) — trước đây sáu điều khiển cùng cỡ nằm một hàng.
     table.innerHTML = `<div class="it-batch-actions">
-      <label class="it-batch-filter">Lọc <select id="it-batch-filter" title="Chỉ hiện giao dịch theo trạng thái">${filterOptions}</select></label>
-      <label><input id="it-batch-select-all" type="checkbox" checked> Chọn tất cả phương án sẵn sàng</label>
-      <button id="it-approve-batch" type="button" class="primary" ${ready.length ? "" : "disabled"}>Accept các phương án đã chọn</button>
-      <button id="it-run-batch-api" type="button" class="primary" ${apiQueue.length ? "" : "disabled"}>Lưu API ${apiQueue.length} phiếu đã Accept</button>
-      <button id="it-probe-direct-create" type="button" title="Chỉ đọc form của một phòng trống bằng API để kiểm tra; không lưu gì lên website">Kiểm tra tạo phiếu không cần tab phụ</button>
-      <button id="it-read-room-rates" type="button" title="Đọc lại đơn giá giờ của từng phòng trên website (chỉ đọc). ${escapeHtml(websiteRoomRates?.readAt
-        ? `Lần đọc gần nhất: ${new Date(websiteRoomRates.readAt).toLocaleString("vi-VN")}`
-        : "Chưa đọc lần nào")}">Đọc giá giờ các phòng</button>
+      <div class="it-actions-group">
+        <label class="it-batch-filter">Lọc <select id="it-batch-filter" title="Chỉ hiện giao dịch theo trạng thái">${filterOptions}</select></label>
+        <label><input id="it-batch-select-all" type="checkbox" checked> Chọn tất cả sẵn sàng</label>
+      </div>
+      <div class="it-actions-group">
+        <button id="it-approve-batch" type="button" class="primary" ${ready.length ? "" : "disabled"}>Accept ${ready.length} phương án</button>
+        <button id="it-run-batch-api" type="button" class="primary" ${apiQueue.length ? "" : "disabled"}>Lưu API ${apiQueue.length} phiếu đã Accept</button>
+      </div>
+      <div class="it-actions-group it-actions-tools">
+        <button id="it-probe-direct-create" type="button" title="Chỉ đọc form của một phòng trống bằng API để kiểm tra; không lưu gì lên website">Kiểm tra tạo phiếu</button>
+        <button id="it-read-room-rates" type="button" title="Đọc lại đơn giá giờ của từng phòng trên website (chỉ đọc). ${escapeHtml(websiteRoomRates?.readAt
+          ? `Lần đọc gần nhất: ${new Date(websiteRoomRates.readAt).toLocaleString("vi-VN")}`
+          : "Chưa đọc lần nào")}">Đọc giá giờ các phòng</button>
+      </div>
     </div>
-    <div class="it-table-wrap"><table class="it-batch-table it-batch-plan-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Sao kê</th><th>Tiền hàng</th><th>Tiền giờ</th><th>Giờ vào → ra</th><th>VAT</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody>${rows ||
-      `<tr><td colspan="10">Không có giao dịch nào ở bộ lọc "${escapeHtml(BATCH_FILTERS.find(filter => filter.value === batchStatusFilter)?.label || batchStatusFilter)}".</td></tr>`}</tbody></table></div>`;
+    <div class="it-table-wrap"><table class="it-batch-table it-batch-plan-table"><thead><tr><th></th><th>Giao dịch</th><th>Phiếu</th><th>Phương án</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>${rows ||
+      `<tr><td colspan="6">Không có giao dịch nào ở bộ lọc "${escapeHtml(BATCH_FILTERS.find(filter => filter.value === batchStatusFilter)?.label || batchStatusFilter)}".</td></tr>`}</tbody></table></div>`;
+    bindDetailToggles(table);
     table.querySelector("#it-batch-filter")?.addEventListener("change", event => {
       batchStatusFilter = event.target.value;
       renderBatchPlans();

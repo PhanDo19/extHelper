@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.29.12 (2026-10-03)
+
+- **Giao diện Batch Review và Phát hành gọn hơn, không còn phải kéo thanh cuộn ngang.** Chỉ đổi cách hiển thị; logic lập phương án, Lưu API, phát hành giữ nguyên.
+  - **Mặt hàng mở ở dòng riêng rộng hết bảng**: bấm "N mã ▾" để mở dòng chi tiết ngay dưới (Mã · Tên · SL · Đơn giá · Thành tiền, Batch thêm Tồn trước · Giới hạn/HĐ, kèm dòng tổng tiền hàng). Trước đây bảng con rộng tối thiểu 480px nằm trong cột 92px nên phải kéo ngang mới thấy số lượng/giá. Dòng đang mở vẫn mở sau khi bảng vẽ lại.
+  - **Bảng Batch còn 6 cột** (trước 10): Giao dịch (ngày + số tiền + diễn giải, mức "lập ở …" nếu có) · Phiếu (hoặc nhãn "Phiếu mới") · Phương án (Hàng / Giờ / VAT thẳng cột và giờ vào–ra một dòng, chi tiết ở tooltip) · Trạng thái (nhãn, lỗi ⚠ nổi bật, lý do chữ nhỏ) · **Thao tác** (nút nhỏ xếp dọc, nút bước chính tô màu). Bỏ `min-width` 1.100px.
+  - 7 ô KPI tự xếp một hàng; thanh thao tác chia nhóm Lọc/chọn · Accept, Lưu API · công cụ kiểm tra (nút nhỏ, dạt phải).
+  - **Màn Phát hành**: tiêu đề + một hàng điều khiển; mục "Sửa người mua / TM-CK" thu gọn (tiến độ hiện ngay trên tiêu đề, tự mở khi đang có lượt chạy dở); nút công cụ nhỏ; bỏ `min-width` 900–940px.
+
 ## 1.29.11 (2026-10-03)
 
 - **Phiếu mới lập ở mức tổng đã làm tròn ("Lập ở …") không còn bị hủy mỗi lần Lưu API.** Sao kê không biểu diễn được theo VAT 10% của website (ca thật Kim Giang: 1.282.000đ, chỉ lập được 1.281.999đ hoặc 1.282.001đ) thì người dùng chọn "Lập ở …" và phương án lập ở mức đó; API tạo phiếu cũng gửi đúng mức đó. Nhưng bước kiểm tra phương án phiếu mới (`newInvoicePlanValidationError`) lại so tổng với sao kê gốc, nên lệch đúng 1đ → "Tiền hàng + tiền giờ + VAT chưa khớp sao kê" → phương án bị hủy kèm luôn mức đã chọn → giao dịch quay về "không biểu diễn chính xác", vòng lặp không bao giờ tạo được phiếu. Nay so với mức đã chọn (không có mức đã chọn thì vẫn so với sao kê như trước). Phiếu có sẵn không bị ảnh hưởng (không qua bước này).

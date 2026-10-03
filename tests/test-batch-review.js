@@ -1651,7 +1651,7 @@ const baseTransaction = {
       !source.includes('title="${escapeHtml(entry.transaction.description || "")}"')) {
     throw new Error("Cột giao dịch Batch Review phải được thu gọn nhưng vẫn xem được diễn giải đầy đủ.");
   }
-  if (!source.includes('class="it-verify-batch"') || !source.includes("verifyBatchSavedInvoice") ||
+  if (!source.includes('class="it-verify-batch') || !source.includes("verifyBatchSavedInvoice") ||
       !source.includes('await request("openInvoiceCandidate"') ||
       !source.includes("await verifySavedInvoice(reopened)") ||
       !source.includes('if (currentBankTransaction?.status === "done")') ||

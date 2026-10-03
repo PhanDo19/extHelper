@@ -50,7 +50,7 @@ assert(!resetRoundedGrand.includes("await buildBatchReview();"),
   "Xóa mức tổng điều chỉnh không được tính lại toàn bộ Batch Review");
 assert(content.includes("Các phương án khác được giữ nguyên"), "UI phải xác nhận rõ tính lại một hóa đơn không ảnh hưởng cả Batch");
 assert(content.includes('actual === expected'), "Batch Review must wait for the requested invoice, not a stale form");
-assert(content.includes('class="it-save-new-api"'), "Phiếu mới đã Accept phải dùng nút chạy trọn flow API");
+assert(content.includes('class="it-save-new-api'), "Phiếu mới đã Accept phải dùng nút chạy trọn flow API");
 assert(content.includes('saveNewAcceptedBatchPlanViaApi'), "Thiếu handler tạo, lưu và đối soát phiếu mới");
 assert(content.includes('bước này chưa phải là lưu thành công'), "Không được báo thành công ngay sau khi chỉ mở tab worker");
 for (const id of [
