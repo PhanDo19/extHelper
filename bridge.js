@@ -354,10 +354,13 @@
         recordId: String(formDataRecordId(formData) || "").trim(),
         // Đơn giá giờ ghi trên phiếu (0 = chưa có): website tính Tiền giờ của
         // phiếu theo số này, kể cả khi phòng đã đổi giá sau đó.
-        hourlyRate: formAmount(fields.DONGIA)
+        hourlyRate: formAmount(fields.DONGIA),
+        // Đọc được dữ liệu form: roomId rỗng lúc này nghĩa là phiếu THẬT SỰ không
+        // gắn phòng, khác với không đọc được form.
+        formRead: true
       };
     } catch (_) {
-      return { roomId: "", areaId: "", warehouseId: "", recordId: "", hourlyRate: 0 };
+      return { roomId: "", areaId: "", warehouseId: "", recordId: "", hourlyRate: 0, formRead: false };
     }
   }
 
@@ -1808,6 +1811,9 @@
       roomRate: openRoom.hourlyRate,
       roomIsRetail: isRetailRoomText(roomName) ||
         Boolean(mappedRoom && (Number(mappedRoom.counter) || isRetailRoomText(mappedRoom.name) || isRetailRoomText(mappedRoom.areaName))),
+      // Phiếu bán hàng không qua phòng hát (đọc được form mà không có DBANID, không
+      // tên phòng). Ca thật Nhơn 01000000142.
+      roomMissing: Boolean(openRoom.formRead && !roomId && !roomName),
       invoiceNo: (suffixInput("txtNAME") || {}).value || "",
       currentGoods: valueOf("numTIENHANG"),
       currentHour: valueOf("numTIENGIO"),
@@ -2483,6 +2489,15 @@
     // Phiếu có sẵn ở quầy BÁN LẺ không lập được HĐĐT: không sửa để khỏi dùng
     // phiếu đó khớp sao kê.
     assertNotRetailRoom({ roomId: baseFields.DBANID, roomName: suffixInput("lblTENBAN")?.textContent });
+    // Phiếu không gắn phòng hát (bán hàng không qua phòng): không có đơn giá giờ
+    // và giờ vào/ra nên không mang được Tiền giờ của phương án. Ca thật Nhơn
+    // 01000000142 (21/08/2026).
+    if (!isGuid(String(baseFields.DBANID || "").trim())) {
+      throw new Error(
+        `Phiếu ${baseFields.NAME || ""} không gắn phòng hát (không có đơn giá giờ, giờ vào/ra): ` +
+        "không dùng để khớp sao kê. Bấm Tính toán lại giao dịch này để chọn phiếu khác hoặc lập phiếu mới."
+      );
+    }
     const warehouseId = String(baseFields.DKHOXUATID || "").trim();
     if (!isGuid(warehouseId)) throw new Error("Phieu hien tai thieu DKHOXUATID de lap chi tiet API.");
     const products = await fetchProductRowsForApiPlan(expected?.items, warehouseId);

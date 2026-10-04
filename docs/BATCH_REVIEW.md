@@ -17,6 +17,7 @@ Quầy BÁN LẺ không lập được hóa đơn điện tử, nên extension k
 - Phiếu chưa xuất có sẵn ở quầy BÁN LẺ (chỉ biết được khi mở phiếu, vì danh sách không có cột phòng) bị bỏ qua khi Batch Review mở thử phiếu, không tính vào giới hạn 3 phiếu thử, và được nhớ lại trong lần tải trang để không mở lại.
 - Nếu mọi phiếu chưa xuất trong ngày đều ở quầy BÁN LẺ, giao dịch được xử lý như không còn phiếu chưa xuất: dò hóa đơn đã xuất khớp tiền, không có thì lập phương án phiếu mới ở phòng hát.
 - Lưu API phiếu có sẵn và chế độ "Điều chỉnh một phiếu" cũng từ chối phiếu ở quầy BÁN LẺ.
+- Từ 1.29.19, phiếu **không gắn phòng hát** (bán hàng không qua phòng: không `DBANID`, không đơn giá giờ, form không có ô giờ vào/ra, Tiền giờ 0) được xử lý giống phiếu quầy BÁN LẺ: bỏ qua khi dò phiếu, Lưu API từ chối với hướng dẫn Tính toán lại. Bridge chỉ báo `roomMissing` khi đọc được form, nên không đọc được form thì không bị loại nhầm. Ca thật: Nhơn 01000000142 (21/08/2026, toàn tiền hàng 2.410.000đ) bị chọn cho giao dịch 401.500đ và làm Lưu API dừng ở 0/218.
 
 ## Chọn phiếu cho một giao dịch
 

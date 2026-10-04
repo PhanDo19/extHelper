@@ -6366,9 +6366,32 @@
   // dịch sau loại luôn, khỏi mở lại.
   const knownRetailInvoiceNos = new Set();
 
-  // Phiếu ở quầy BÁN LẺ không lập được HĐĐT nên không dùng để khớp sao kê.
+  // Phiếu KHÔNG GẮN PHÒNG HÁT nào (bán hàng không qua phòng): không có đơn giá
+  // giờ, form không có ô giờ vào/ra nên không thể có Tiền giờ. Ca thật Nhơn
+  // 21/08/2026: 01000000142 không phòng, toàn tiền hàng 2.410.000đ; Batch
+  // Review lập phương án có Tiền giờ cho giao dịch 401.500đ rồi Lưu API dừng
+  // ngay phiếu đầu với "thieu ... Gio vao/Ra hop le".
+  // Bridge chỉ báo roomMissing khi ĐỌC ĐƯỢC form mà form không có phòng (không
+  // đọc được form thì không kết luận). Thêm điều kiện không giờ vào/ra và Tiền
+  // giờ = 0 — không có phòng thì website không tính được tiền giờ — để form phòng
+  // hát bản cũ không bị loại nhầm.
+  function isNoRoomInvoiceScan(scan) {
+    return Boolean(scan && !scan.newInvoicePlanning && scan.roomMissing === true &&
+      !String(scan.checkIn || "").trim() && !String(scan.checkOut || "").trim() &&
+      Math.round(Number(scan.currentHour) || 0) === 0);
+  }
+
+  // Phiếu không dùng để khớp sao kê: ở quầy BÁN LẺ (không lập được HĐĐT) hoặc
+  // không gắn phòng hát.
   function isRetailInvoiceScan(scan) {
-    return Boolean(scan && !scan.newInvoicePlanning && (scan.roomIsRetail || isRetailRoomName(scan.roomName)));
+    return Boolean(scan && !scan.newInvoicePlanning &&
+      (scan.roomIsRetail || isRetailRoomName(scan.roomName) || isNoRoomInvoiceScan(scan)));
+  }
+
+  function unusableInvoiceLabel(scan) {
+    return isNoRoomInvoiceScan(scan)
+      ? "không gắn phòng hát (không có đơn giá giờ, giờ vào/ra)"
+      : `ở quầy BÁN LẺ (${scan?.roomName || "không rõ tên"}) không lập được HĐĐT`;
   }
   const SESSION_CANDIDATE_PROBE_TIMEOUT_MS = 5000;
   // Phiếu nhỏ: tổng dưới mức này đi luật riêng — đúng MỘT món giá thấp, toàn
@@ -7067,7 +7090,7 @@
     if (isRetailInvoiceScan(scan)) {
       return {
         status: "error",
-        reason: `Phiếu ${scan.invoiceNo || ""} ở quầy BÁN LẺ (${scan.roomName || "không rõ tên"}) không lập được HĐĐT; ` +
+        reason: `Phiếu ${scan.invoiceNo || ""} ${unusableInvoiceLabel(scan)}; ` +
           "không dùng phiếu này để khớp sao kê."
       };
     }
@@ -8230,7 +8253,7 @@
           }
         }
         const retailNote = retailSkipped.length
-          ? `Bỏ qua ${retailSkipped.length} phiếu ở quầy BÁN LẺ (${retailSkipped.join(", ")}) vì không lập được HĐĐT. `
+          ? `Bỏ qua ${retailSkipped.length} phiếu ở quầy BÁN LẺ hoặc không gắn phòng hát (${retailSkipped.join(", ")}). `
           : "";
         // Mọi phiếu chưa xuất trong ngày đều ở quầy BÁN LẺ: xử lý như không còn
         // phiếu chưa xuất. Chỉ khi đã xét HẾT danh sách, nếu không còn phiếu chưa
@@ -10258,8 +10281,7 @@
     if (!latestScan?.ready) return;
     if (isRetailInvoiceScan(latestScan)) {
       return setStatus(
-        `Phiếu đang mở ở quầy BÁN LẺ (${latestScan.roomName || "không rõ tên"}) không lập được HĐĐT; ` +
-        "hãy dùng phiếu của phòng hát.",
+        `Phiếu đang mở ${unusableInvoiceLabel(latestScan)}; hãy dùng phiếu của phòng hát.`,
         "error"
       );
     }

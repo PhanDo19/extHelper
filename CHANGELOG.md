@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.29.19 (2026-10-04)
+
+- **Bỏ qua phiếu không gắn phòng hát khi Batch Review dò phiếu có sẵn.** Ca thật Paris Nhơn: Lưu API dừng ở 0/218 với "Phuong an thieu ngay hoa don hoac Gio vao/Ra hop le". Phiếu 01000000142 (21/08/2026) là phiếu bán hàng không qua phòng — không `DBANID`, không đơn giá giờ, form không có ô giờ vào/ra, Tiền giờ 0, toàn tiền hàng 2.410.000đ — nhưng Batch Review vẫn chọn nó cho giao dịch 401.500đ và lập phương án có Tiền giờ.
+  - Bridge `scan()` thêm `roomMissing`: chỉ bật khi đọc được dữ liệu form mà không có phòng (không đọc được form thì không kết luận).
+  - Content: phiếu `roomMissing`, không giờ vào/ra và Tiền giờ 0 đi cùng đường với phiếu quầy BÁN LẺ — bỏ qua khi dò, nhớ lại trong lần tải trang, lý do nêu "không gắn phòng hát".
+  - Bridge: Lưu API phiếu có sẵn không có `DBANID` bị chặn trước khi gửi, kèm hướng dẫn Tính toán lại (dòng đã Accept từ trước sẽ dừng với lý do này thay vì "thiếu giờ vào/ra").
+  - Đã đối chiếu trên website thật: 142 đọc được form nhưng không phòng; 141 cùng ngày có VIP 22, 600.000đ, 20:21→20:51. Trong 218 dòng đã Accept chỉ dòng 21/08 · 401.500đ dùng phiếu kiểu này.
+
 ## 1.29.18 (2026-10-04)
 
 - **Phiếu mới không còn dừng lô vì "Không còn phòng hát trống phù hợp" khi vẫn còn chỗ.** Ca thật Paris Nhơn 06/08/2026, lô dừng ở 14/113: chỉ 3 phòng 400.000đ (VIP 26/36/46), giờ vào xếp lưới 45 phút mà phiếu 1.540.000đ cần 51 phút 19:15→20:06, chồng các phiếu đã tạo — dù VIP 36 trống 19:03→19:59 và VIP 46 trống từ 19:48. Nay khung đã chốt hết phòng cùng đơn giá thì dời sang khung trống gần nhất (`shiftedNewInvoiceWindow`): giữ nguyên thời lượng (số tiền không đổi), vào từ 17:00, ra trước nửa đêm, chỉ phòng cùng giá, không bao giờ quầy BÁN LẺ. Phương án được ghi giờ mới trước khi gửi API. Hết chỗ thật thì thông báo nêu các phòng cùng giá.
