@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.29.18 (2026-10-04)
+
+- **Phiếu mới không còn dừng lô vì "Không còn phòng hát trống phù hợp" khi vẫn còn chỗ.** Ca thật Paris Nhơn 06/08/2026, lô dừng ở 14/113: chỉ 3 phòng 400.000đ (VIP 26/36/46), giờ vào xếp lưới 45 phút mà phiếu 1.540.000đ cần 51 phút 19:15→20:06, chồng các phiếu đã tạo — dù VIP 36 trống 19:03→19:59 và VIP 46 trống từ 19:48. Nay khung đã chốt hết phòng cùng đơn giá thì dời sang khung trống gần nhất (`shiftedNewInvoiceWindow`): giữ nguyên thời lượng (số tiền không đổi), vào từ 17:00, ra trước nửa đêm, chỉ phòng cùng giá, không bao giờ quầy BÁN LẺ. Phương án được ghi giờ mới trước khi gửi API. Hết chỗ thật thì thông báo nêu các phòng cùng giá.
+- **Lưu API phiếu có sẵn mất phản hồi ("Failed to fetch"/hết giờ) không dừng lô ngay**: đọc lại để đối soát; khớp phương án thì đi tiếp, không khớp thì dòng về Đã Accept (chưa trừ kho). Lỗi nghiệp vụ thường vẫn dừng như cũ.
+- **Lưu API tự tải lại trang rồi chạy tiếp khi rớt mạng** (tối đa 3 lần), trừ khi bị chặn chống trùng phiếu hoặc mất đăng nhập.
+- Mất phản hồi ở bước lưu phiên phiếu mới (chưa có số phiếu): thông báo nêu phòng đã chọn và sơ đồ phòng hiện có báo phiên trên phòng đó không.
+- Đã kiểm tra trên website thật bằng bridge thật (chỉ đọc): tìm phiếu chưa xuất qua API, mở phiếu theo ID, `scan()` đọc đúng lưới của form trên màn Hóa đơn điện tử; HD0126080003 và 01000000781 đều đã ở trạng thái Đã xử lý.
+
 ## 1.29.17 (2026-10-04)
 
 - **Lô Batch API không còn dừng khi bước thanh toán phiếu mới mất phản hồi nhưng server đã đóng bill.** Ca thật Paris Nhơn 04/10/2026: lô dừng ở 4/116 với "Da tao phien 01000000781 … nhung buoc thanh toan loi: Failed to fetch". Đọc lại trên website: phiếu đã đóng bill đủ 491.700 (hàng 235.000 + giờ 212.000 + VAT 44.700) — request thanh toán tới server, chỉ phản hồi bị rớt.

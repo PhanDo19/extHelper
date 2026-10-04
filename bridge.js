@@ -3576,6 +3576,22 @@
           `nhung buoc thanh toan loi: ${message}`
         );
       }
+      // Mất phản hồi ngay ở bước lưu phiên (chưa biết số phiếu): website có thể
+      // đã mở một phiên CHƯA thanh toán trên phòng vừa chọn. Nêu đúng phòng và
+      // trạng thái sơ đồ phòng để người dùng kiểm tra trước khi Đặt lại.
+      if (isNetworkFetchError(error) && expected?.room?.id) {
+        const map = await getRoomMap({ refresh: true }).catch(() => null);
+        const current = (map?.rooms || []).find(room => room.id === String(expected.room.id));
+        const state = !current
+          ? "khong doc duoc so do phong"
+          : (Number(current.status) !== 0 || String(current.gio || "").trim()
+            ? `so do phong DANG BAO CO PHIEN tren phong nay (${current.gio || "dang dung"})`
+            : "so do phong chua thay phien nao tren phong nay");
+        throw new Error(
+          `Mat phan hoi khi luu phien phieu moi tren phong ${roomName || expected.room.name || "?"} (${message}); ${state}. ` +
+          "Kiem tra phong do tren website truoc khi Dat lai giao dich."
+        );
+      }
       throw error;
     }
     return {

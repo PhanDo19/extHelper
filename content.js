@@ -450,6 +450,45 @@
       .map(entry => entry.room);
   }
 
+  // Giờ vào của phiếu mới được chốt lúc Batch Review theo lưới 45 phút, chưa
+  // biết phòng nào còn trống. Phiếu dài hơn 45 phút, hoặc nhiều phiếu cùng một
+  // đơn giá trong khi chỉ vài phòng mang giá đó, thì lúc lưu khung đã chốt có
+  // thể không còn phòng (ca thật Nhơn 06/08/2026: 3 phòng 400.000đ, phiếu 51
+  // phút 19:15→20:06 chồng các phiếu đã tạo, dù VIP 36 trống 19:03→19:59).
+  //
+  // Giờ vào/ra không đổi số tiền: Tiền giờ chỉ theo thời lượng × đơn giá. Nên
+  // dời sang khung trống GẦN NHẤT trong cùng buổi tối, giữ nguyên thời lượng và
+  // các quy định của phiếu mới (vào từ 17:00, ra trước nửa đêm). Ứng viên là
+  // giờ vào đã chốt, 17:00 và phút ngay sau mỗi phiếu đang chiếm phòng cùng giá.
+  function shiftedNewInvoiceWindow(rooms, bookings, plan, hourlyRate) {
+    const from = parseUiDateTime(plan?.checkIn);
+    const to = parseUiDateTime(plan?.checkOut);
+    if (!from || !to || to <= from) return null;
+    const duration = to.getTime() - from.getTime();
+    const day = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    const earliest = day.getTime() + NEW_INVOICE_CHECKIN_START_MINUTES * 60000;
+    const latestEnd = day.getTime() + (24 * 60 - 1) * 60000;
+    const wantedRate = Math.round(Number(hourlyRate) || 0);
+    const bookedKey = name => normalizeRoomText(name).toLocaleUpperCase("vi-VN");
+    const sameRate = (rooms || []).filter(isIdleMapRoom)
+      .filter(room => !wantedRate || roomHourlyRate(room.name, undefined, room.id) === wantedRate);
+    const starts = new Set([from.getTime(), earliest]);
+    for (const room of sameRate) {
+      // Chạm mép là chồng (roomIsFreeForRange), nên bắt đầu ở phút kế tiếp.
+      for (const slot of bookings?.get?.(bookedKey(room.name)) || []) starts.add(Math.floor(slot.to / 60000) * 60000 + 60000);
+    }
+    const ordered = [...starts]
+      .filter(start => start >= earliest && start + duration <= latestEnd)
+      .sort((left, right) => Math.abs(left - from.getTime()) - Math.abs(right - from.getTime()) || left - right);
+    for (const start of ordered) {
+      const checkIn = formatUiDateTime(new Date(start));
+      const checkOut = formatUiDateTime(new Date(start + duration));
+      const ranked = rankIdleRoomsFromMap(rooms, bookings, checkIn, checkOut, wantedRate);
+      if (ranked.length) return { checkIn, checkOut, room: ranked[0], shiftMinutes: Math.round((start - from.getTime()) / 60000) };
+    }
+    return null;
+  }
+
   async function loadRoomMapForSelection() {
     const diagnostics = { mapAvailable: false, mapRooms: 0, mapIdle: 0, mapFreeForTime: 0 };
     try {
@@ -9054,6 +9093,12 @@
     }
   }
 
+  // Lỗi mạng/hết giờ khi gửi lưu: server có thể đã lưu, chỉ phản hồi bị rớt.
+  function isUncertainSaveError(error) {
+    return /Failed to fetch|NetworkError|network error|Mất kết nối|Trang không phản hồi sau/i
+      .test(String(error?.message || error || ""));
+  }
+
   async function saveBatchEntryViaApi(index, button) {
     // Cùng lý do với phiếu mới: context mồ côi vẫn gửi được request lưu qua
     // bridge nhưng không ghi nhận được kết quả; chặn trước khi làm gì trên server.
@@ -9084,6 +9129,19 @@
     await saveBatchUiSession({ panelOpen: true });
     setStatus(`Đang lưu ${plan.invoiceNo} qua API chính thức của website…`, "warn");
     let saved;
+    let uncertainSaveError = null;
+    const revertToAccepted = async () => {
+      transaction.status = "batch_ready";
+      delete transaction.pendingPlan;
+      transaction.verifiedAt = "";
+      transaction.ledgerId = "";
+      entry.status = "batch_ready";
+      entry.plan = transaction.batchApprovedPlan || entry.plan;
+      entry.transaction = transaction;
+      await InvoiceMappingStore.saveStatement(statementDataset);
+      await saveBatchUiSession({ panelOpen: true });
+      try { await request("closeInvoiceDetail"); } catch (_) {}
+    };
     try {
       saved = await request("saveExistingInvoicePlanViaApi", {
         invoiceNo: plan.invoiceNo,
@@ -9101,17 +9159,15 @@
         tenantSlug: pageTenantSlug
       });
     } catch (error) {
-      transaction.status = "batch_ready";
-      delete transaction.pendingPlan;
-      transaction.verifiedAt = "";
-      transaction.ledgerId = "";
-      entry.status = "batch_ready";
-      entry.plan = transaction.batchApprovedPlan || entry.plan;
-      entry.transaction = transaction;
-      await InvoiceMappingStore.saveStatement(statementDataset);
-      await saveBatchUiSession({ panelOpen: true });
-      try { await request("closeInvoiceDetail"); } catch (_) {}
-      throw error;
+      if (!isUncertainSaveError(error)) {
+        await revertToAccepted();
+        throw error;
+      }
+      // Mất phản hồi: server có thể ĐÃ lưu. Đối soát đọc lại sẽ cho biết; không
+      // khớp thì quay về Đã Accept như lỗi thường.
+      uncertainSaveError = error;
+      saved = { saved: true, savedRecordId: "", httpStatus: null };
+      setStatus(`Mất phản hồi khi lưu ${plan.invoiceNo} (${error.message}); đang đọc lại phiếu trên website…`, "warn");
     }
     if (!saved?.saved) throw new Error(`Website chưa xác nhận lưu ${plan.invoiceNo}.`);
 
@@ -9133,7 +9189,7 @@
     await InvoiceMappingStore.saveStatement(statementDataset);
     await saveBatchUiSession({ panelOpen: true });
 
-    setStatus(`API đã nhận ${plan.invoiceNo}; đang đóng form và đọc lại từ server…`, "warn");
+    if (!uncertainSaveError) setStatus(`API đã nhận ${plan.invoiceNo}; đang đóng form và đọc lại từ server…`, "warn");
     const closedAfterSave = await request("closeInvoiceDetail");
     if (!closedAfterSave?.closed) {
       throw new Error(
@@ -9148,6 +9204,17 @@
     // biến transaction bắt từ đầu hàm vẫn trỏ vào dataset cũ và không bao giờ
     // đổi sang "done". Phải đọc lại theo id từ dataset hiện hành.
     const verified = findStatementTransaction(entry.transactionId);
+    if (verified?.status !== "done" && uncertainSaveError) {
+      // Đọc lại không thấy phiếu theo phương án: coi như chưa lưu. Lưu lại phiếu
+      // có sẵn theo cùng phương án là an toàn, nên trả về Đã Accept để chạy lại.
+      transaction = findStatementTransaction(entry.transactionId) || transaction;
+      entry = batchPlans[index] || entry;
+      await revertToAccepted();
+      throw new Error(
+        `Mất phản hồi khi lưu ${plan.invoiceNo} (${uncertainSaveError.message}) và đọc lại chưa thấy phiếu theo phương án: ` +
+        `${verificationFailureText(verification)} Chưa trừ tồn kho; dòng đã về Đã Accept, bấm Lưu API để chạy lại.`
+      );
+    }
     if (verified?.status !== "done") {
       // Phải kèm lý do: verifyBatchSavedInvoice có hiện lý do ở dòng trạng thái
       // nhưng thông báo dừng lô ghi đè ngay sau đó, người dùng chỉ thấy "chưa đối
@@ -9250,24 +9317,47 @@
       roomBookingsOnDate(transaction.transactionDate, transactionId), dayBookings, roomMap.rooms
     );
     const plannedRate = Number(plan.hourlyRate) || 0;
-    const ranked = rankIdleRoomsFromMap(roomMap.rooms, bookings, plan.checkIn, plan.checkOut, plannedRate);
-    if (!ranked.length) {
-      throw new Error(
-        "Không còn phòng hát trống phù hợp để tạo phiếu mới (không dùng quầy BÁN LẺ). " +
-        roomSearchDiagnosticsText({
-          ...roomMap.diagnostics, mapFreeForTime: 0, plannedHourlyRate: plannedRate, websiteBookings: dayBookings.length
-        })
-      );
+    let room = rankIdleRoomsFromMap(roomMap.rooms, bookings, plan.checkIn, plan.checkOut, plannedRate)[0] || null;
+    let effectivePlan = plan;
+    let shiftNote = "";
+    if (!room) {
+      const shifted = shiftedNewInvoiceWindow(roomMap.rooms, bookings, plan, plannedRate);
+      if (!shifted) {
+        const sameRateRooms = roomMap.rooms.filter(isIdleMapRoom)
+          .filter(item => !plannedRate || roomHourlyRate(item.name, undefined, item.id) === plannedRate)
+          .map(item => item.name);
+        throw new Error(
+          "Không còn phòng hát trống phù hợp để tạo phiếu mới (không dùng quầy BÁN LẺ): " +
+          `không phòng ${formatMoney(plannedRate)}đ/giờ nào trống đủ ${Math.round(Number(plan.durationMinutes) || 0)} phút ` +
+          `trong buổi tối ${transaction.transactionDate} (phòng cùng giá: ${sameRateRooms.join(", ") || "không có"}). ` +
+          roomSearchDiagnosticsText({
+            ...roomMap.diagnostics, mapFreeForTime: 0, plannedHourlyRate: plannedRate, websiteBookings: dayBookings.length
+          })
+        );
+      }
+      room = shifted.room;
+      const times = { checkIn: shifted.checkIn, checkOut: shifted.checkOut, proposedCheckOut: shifted.checkOut };
+      effectivePlan = { ...plan, ...times, plannedCheckIn: plan.checkIn, plannedCheckOut: plan.checkOut };
+      shiftNote = ` (dời ${shortSessionText(plan.checkIn, plan.checkOut)} → ${shortSessionText(shifted.checkIn, shifted.checkOut)}: ` +
+        `khung cũ hết phòng ${formatMoney(plannedRate)}đ/giờ, số tiền không đổi)`;
+      // Ghi giờ đã dời vào phương án TRƯỚC khi gửi API: phiếu lưu theo giờ này,
+      // và lịch phòng của các phiếu kế tiếp trong ngày phải theo giờ thật.
+      transaction = await updateStatementTransaction(transactionId, latest => {
+        if (latest.batchApprovedPlan) {
+          latest.batchApprovedPlan = { ...latest.batchApprovedPlan, ...times, plannedCheckIn: plan.checkIn, plannedCheckOut: plan.checkOut };
+        }
+      });
+      const batchEntry = batchPlans.find(item => String(item.transactionId) === transactionId);
+      if (batchEntry?.plan) batchEntry.plan = { ...batchEntry.plan, ...times, plannedCheckIn: plan.checkIn, plannedCheckOut: plan.checkOut };
     }
-    const room = ranked[0];
     currentBankTransaction = transaction;
     setStatus(
-      `Đang tạo phiếu mới ${transaction.transactionDate} · ${formatMoney(transaction.credit)}đ trên phòng ${room.name} ` +
+      `Đang tạo phiếu mới ${transaction.transactionDate} · ${formatMoney(transaction.credit)}đ trên phòng ${room.name}${shiftNote} ` +
       "ngay tại tab này (không mở tab phụ)…",
       "warn"
     );
     try {
-      return { ...(await submitNewInvoiceViaApi(transaction, plan, room)), room };
+      return { ...(await submitNewInvoiceViaApi(transaction, effectivePlan, room)), room, shiftNote };
     } catch (error) {
       if (error?.formUnavailable) {
         console.warn("[InvoiceTarget] Không đọc được form phòng bằng API; quay về tab phụ.", error);
@@ -9580,6 +9670,19 @@
   function isPageOverloadError(error) {
     const message = String(error?.message || error || "");
     return /Danh sách phiếu chưa tải xong|chưa khởi tạo xong bộ lọc Kendo|Trang không phản hồi sau|before it is initialized|Rất tiếc, không thể xử lý|Website quá tải/i.test(message);
+  }
+
+  // Lưu API: lỗi mạng cũng được tải lại rồi chạy tiếp (tối đa
+  // AUTO_RELOAD_MAX_ATTEMPTS lần). An toàn vì mọi đường ghi đã có chốt: phiếu có
+  // sẵn mất phản hồi được đọc lại, không khớp thì về Đã Accept (lưu lại cùng
+  // phương án là lặp lại được); phiếu mới đã gửi API thì bị chặn chống trùng và
+  // chỉ được gắn lại khi đọc thấy đã thanh toán. Chặn chống trùng và mất đăng
+  // nhập không tự hết khi tải lại trang nên dừng hẳn.
+  function isBatchApiReloadable(error) {
+    const message = String(error?.message || error || "");
+    if (/Không tạo lại để tránh trùng phiếu|đăng nhập|dang nhap/i.test(message)) return false;
+    return isPageOverloadError(error) ||
+      /failed to fetch|networkerror|network error|load failed|Mất kết nối tới website|Mất phản hồi khi lưu/i.test(message);
   }
 
   function autoResumeLabel(mode) {
@@ -9909,7 +10012,7 @@
       if (currentTransactionId) await noteBatchEntryError(currentTransactionId, error);
       renderBatchPlans();
       renderStatementAdmin();
-      if (isPageOverloadError(error) && await scheduleAutoReloadResume("batch-api", error.message)) return;
+      if (isBatchApiReloadable(error) && await scheduleAutoReloadResume("batch-api", error.message)) return;
       setStatus(
         `Batch API đã dừng sau ${completed}/${indexes.length} phiếu: ${error.message} ` +
         "Các phiếu phía sau chưa được gửi; tồn kho chỉ ghi cho phiếu đã đối soát thành công.",

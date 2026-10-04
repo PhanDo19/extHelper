@@ -54,6 +54,11 @@ Mục tiêu của flow này là giảm thao tác nhưng vẫn giữ nguyên các
 
 - Lô dài (nhiều ngày, nhiều phiếu) làm grid Kendo của website tích lũy lỗi: `Cannot call method 'value' of kendoDropDownList before it is initialized`, danh sách không tải xong, trang không phản hồi. Chỉ tải lại trang mới phục hồi.
 - Extension nhận diện các dấu hiệu đó trong lúc chạy Lưu API hoặc Batch Review, ghi cờ tiếp tục vào phiên rồi tự tải lại trang; sau khi tải lại, chờ danh sách Bán hàng dựng xong rồi chạy tiếp phần dở. Lưu API bỏ qua dòng đã xong; Batch Review tính lại theo khoảng ngày đã lưu.
+- Từ 1.29.18 Lưu API cũng tải lại rồi chạy tiếp khi **rớt mạng** (`Failed to fetch`, "Mất kết nối tới website", "Mất phản hồi khi lưu…"), tối đa 3 lần. An toàn vì mọi đường ghi có chốt:
+  - Phiếu có sẵn mất phản hồi khi lưu: đọc lại để đối soát. Khớp phương án thì đi tiếp; không khớp thì dòng về **Đã Accept** (lưu lại cùng phương án là lặp lại được), chưa trừ kho.
+  - Phiếu mới đã gửi API: bị chặn chống trùng; chỉ được gắn lại khi đọc thấy đã đóng bill đúng phương án (1.29.17).
+- Không tải lại vì chặn chống trùng phiếu hay mất đăng nhập: tải lại không gỡ được, chỉ lặp vô ích.
+- Mất phản hồi ngay ở bước lưu phiên phiếu mới (chưa có số phiếu): thông báo nêu phòng đã chọn và sơ đồ phòng có đang báo phiên trên phòng đó không, để kiểm tra trước khi Đặt lại.
 - Tối đa 3 lần tải lại vì lỗi trong một lô, để lỗi không phải do quá tải không lặp vô hạn. Ngoài ra Lưu API tự tải lại chủ động sau mỗi 15 phiếu (không tính vào giới hạn trên).
 - An toàn dữ liệu không đổi: mỗi phiếu chỉ được đánh dấu xong sau khi đối soát; phiếu đang `Chờ lưu/đối soát` lúc tải lại được giữ nguyên để bấm Đối soát sau lưu.
 

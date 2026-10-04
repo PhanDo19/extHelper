@@ -304,7 +304,9 @@ const vip21 = { id: ROOM_ID, areaId: AREA_ID, name: "VIP 21", areaName: "TẦNG 
   const directSource = extractFunction(contentSource, "saveNewBatchEntryDirect") + "\n" +
     extractFunction(contentSource, "submitNewInvoiceOnIdleRoom");
   assert(directSource.includes("rankIdleRoomsFromMap(roomMap.rooms, bookings, plan.checkIn, plan.checkOut, plannedRate)"));
-  assert(directSource.includes("submitNewInvoiceViaApi(transaction, plan, room)"));
+  // effectivePlan = phương án, hoặc bản đã dời giờ khi khung cũ hết phòng cùng giá.
+  assert(directSource.includes("submitNewInvoiceViaApi(transaction, effectivePlan, room)"));
+  assert(directSource.includes("shiftedNewInvoiceWindow(roomMap.rooms, bookings, plan, plannedRate)"));
   // Cả hai cách chọn phòng đều phải tránh phiếu thật của ngày đó trên website.
   assert(directSource.includes("await websiteRoomBookings(transaction.transactionDate)") &&
     directSource.includes("mergeRoomBookings("), "Luồng không cần tab phụ phải dùng lịch phòng thật trên website");

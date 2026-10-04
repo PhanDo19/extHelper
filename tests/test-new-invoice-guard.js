@@ -44,20 +44,23 @@ function extractConst(source, name) {
 // ---------------------------------------------------------------------------
 // Bridge: phân biệt lỗi "chưa gửi" với lỗi sau khi đã gửi.
 // ---------------------------------------------------------------------------
-async function bridgeError(behaviour) {
+async function bridgeError(behaviour, expected = {}, roomMap = null) {
   const box = {
     normalizeDateKey: value => value,
-    postFreshInvoiceTwoStep: async (_expected, progress) => behaviour(progress)
+    postFreshInvoiceTwoStep: async (_expected, progress) => behaviour(progress),
+    getRoomMap: async () => roomMap
   };
   vm.createContext(box);
   vm.runInContext(
     `${extractConst(bridgeSource, "NEW_INVOICE_NOT_SENT_TAG")}\n` +
+    `${extractFunction(bridgeSource, "isNetworkFetchError")}\n` +
     `${extractFunction(bridgeSource, "createAndPayFreshInvoiceViaApi")}\n` +
-    "this.run = createAndPayFreshInvoiceViaApi;",
+    "this.run = createAndPayFreshInvoiceViaApi; this.TypeError = TypeError;",
     box
   );
+  box.loadBlankRoomForm = async room => ({ roomName: room.name, formData: {} });
   try {
-    await box.run({});
+    await box.run(typeof expected === "function" ? expected(box) : expected);
   } catch (error) {
     return error.message;
   }
@@ -166,6 +169,21 @@ async function runApply(options) {
   });
   assert(/01000000150/.test(partial) && /abc-id/.test(partial) && !partial.startsWith("[chua-gui-api]"),
     "Lỗi ở bước thanh toán phải nêu số phiếu và ID phiên đã tạo dở.");
+  // Mất phản hồi ngay ở bước lưu phiên: chưa có số phiếu, website có thể đã mở
+  // phiên chưa thanh toán. Phải nêu phòng và trạng thái sơ đồ phòng hiện tại.
+  const room = { id: "room-36", name: "VIP 36" };
+  let lostSession = null;
+  const lostSessionBox = await bridgeError(progress => {
+    progress.sessionSent = true;
+    throw new lostSession("Failed to fetch");
+  }, box => { lostSession = box.TypeError; return { room }; }, { rooms: [{ id: "room-36", name: "VIP 36", status: 1, gio: "19:03" }] });
+  assert.match(lostSessionBox, /Mat phan hoi khi luu phien phieu moi tren phong VIP 36 \(Failed to fetch\); so do phong DANG BAO CO PHIEN/);
+  assert(!lostSessionBox.startsWith("[chua-gui-api]"), "Đã gửi request thì không được coi là chưa gửi");
+  const lostIdle = await bridgeError(progress => {
+    progress.sessionSent = true;
+    throw new lostSession("Failed to fetch");
+  }, box => { lostSession = box.TypeError; return { room }; }, { rooms: [{ id: "room-36", name: "VIP 36", status: 0, gio: "" }] });
+  assert.match(lostIdle, /so do phong chua thay phien nao tren phong nay/);
 
   // 1. Thành công: dấu được ghi TRƯỚC API; kết quả được ghi TRƯỚC log -------
   const success = await runApply({
