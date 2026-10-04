@@ -114,6 +114,7 @@ function makeContentBox(options) {
     `${extractFunction(contentSource, "newInvoiceAttemptBlockReason")}\n` +
     `${extractFunction(contentSource, "updateStatementTransaction")}\n` +
     `${extractFunction(contentSource, "submitNewInvoiceViaApi")}\n` +
+    `${extractFunction(contentSource, "recordFreshInvoiceSaved")}\n` +
     `${extractFunction(contentSource, "applyPendingNewInvoicePlan")}\n` +
     "this.submit = submitNewInvoiceViaApi;\n" +
     "this.apply = applyPendingNewInvoicePlan;\n" +

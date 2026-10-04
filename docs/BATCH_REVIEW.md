@@ -45,6 +45,7 @@ Nút **Lưu API N phiếu đã Accept** xử lý tuần tự, dừng ở lỗi �
 - Trước khi gửi API tạo phiếu, extension ghi dấu `newInvoiceCreateStartedAt` vào giao dịch. Lần gửi trước chưa có kết quả chắc chắn (tab bị đóng, hết giờ, website báo lỗi sau khi đã nhận request) thì mọi lần chạy lại đều bị chặn.
 - Lỗi xảy ra **trước** khi request được gửi thì được gỡ dấu và thử lại bình thường.
 - Tạo phiên thành công mà bước thanh toán lỗi: thông báo nêu rõ số phiếu và ID phiên tạo dở.
+- Bước thanh toán **mất phản hồi** (`Failed to fetch`) thì server có thể đã đóng bill. Từ 1.29.17 extension đọc lại phiếu theo ID, **không gửi lại**. Đã thanh toán đúng phương án (cờ `DATHANHTOAN = 30`, diễn giải "Xuất bán hàng", tiền thanh toán = tổng, tiền hàng/giờ/VAT đúng, chưa có số HĐ) thì ghi nhận như lưu thành công và đối soát tiếp; thiếu một dấu hiệu thì vẫn chặn. Giao dịch đã bị chặn vì lỗi này ở bản cũ được đọc lại tương tự ở lần **Lưu API** kế tiếp — không cần Đặt lại. Ca thật: Paris Nhơn 01000000781 (06/08, 491.700đ).
 - Tab phụ gặp lỗi (không có phòng trống, không áp được phương án…) thì báo về ngay; tab gốc dừng lô với đúng lý do.
 - Gỡ chặn: kiểm tra danh sách Bán hàng ngày đó. Có phiếu rồi → **Đặt lại** giao dịch và **Tạo Batch Review** để gắn đúng phiếu; chưa có → **Đặt lại** rồi chạy lại.
 

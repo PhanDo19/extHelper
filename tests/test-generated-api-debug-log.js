@@ -7,7 +7,7 @@ const background = fs.readFileSync(path.join(__dirname, "..", "background.js"), 
 [
   'await request("armApiTrace")',
   'persistGeneratedInvoiceApiDebugLog({',
-  'outcome: "success"',
+  'outcome: recovered ? "success-readback" : "success"',
   'outcome: "error"',
   'request("getApiTrace")',
   'chrome.storage.local.set({ [apiDebugStorageKey()]: payload })',
@@ -51,7 +51,7 @@ if (storeIndex < 0 || downloadIndex < 0 || storeIndex > downloadIndex) {
 const applyStart = content.indexOf("async function submitNewInvoiceViaApi(");
 const guardIndex = content.indexOf("assertRuntimeContext();", applyStart);
 const createIndex = content.indexOf('apiSaved = await request("createAndPayFreshInvoiceViaApi", apiExpected);', applyStart);
-const successLogIndex = content.indexOf('outcome: "success"', applyStart);
+const successLogIndex = content.indexOf('outcome: recovered ? "success-readback" : "success"', applyStart);
 const createCatchIndex = content.indexOf("} catch (error) {", createIndex);
 if (applyStart < 0 || guardIndex < 0 || createIndex < 0 || guardIndex > createIndex) {
   throw new Error("submitNewInvoiceViaApi must assert the extension runtime before calling the create API.");

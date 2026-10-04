@@ -8,7 +8,8 @@ function extractFunction(name) {
   let start = source.indexOf(`async function ${name}(`);
   if (start < 0) start = source.indexOf(`function ${name}(`);
   if (start < 0) throw new Error(`Không tìm thấy ${name}`);
-  const bodyStart = source.indexOf("{", start);
+  // Thân hàm bắt đầu sau ") {": tham số có thể là object ({ transaction, ... }).
+  const bodyStart = source.indexOf(") {", start) + 2;
   let depth = 0;
   for (let index = bodyStart; index < source.length; index += 1) {
     if (source[index] === "{") depth += 1;
@@ -1730,7 +1731,9 @@ const baseTransaction = {
     throw new Error("The approved Batch Review plan must be carried into the new Sales tab.");
   }
   // Lõi dùng chung gọi API; tab phụ chỉ gọi lõi rồi tự đóng.
-  const submitNewInvoiceSource = extractFunction("submitNewInvoiceViaApi");
+  // Phần ghi nhận sau khi API xác nhận nằm ở recordFreshInvoiceSaved (dùng chung
+  // với đường đọc lại phiếu mất phản hồi), gọi SAU khối try của API tạo phiếu.
+  const submitNewInvoiceSource = extractFunction("submitNewInvoiceViaApi") + "\n" + extractFunction("recordFreshInvoiceSaved");
   const applyNewInvoiceSource = extractFunction("applyPendingNewInvoicePlan");
   if (!submitNewInvoiceSource.includes('await request("createAndPayFreshInvoiceViaApi"') ||
       !applyNewInvoiceSource.includes("await submitNewInvoiceViaApi(transaction, plan)") ||

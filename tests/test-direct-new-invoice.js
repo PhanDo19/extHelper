@@ -300,7 +300,9 @@ const vip21 = { id: ROOM_ID, areaId: AREA_ID, name: "VIP 21", areaName: "TẦNG 
 
   // Luồng mới: chọn phòng từ sơ đồ (loại bán lẻ, đúng đơn giá), gửi kèm `room`,
   // lỗi không đọc được form thì trả null (chưa gửi gì) còn lỗi khác thì ném.
-  const directSource = extractFunction(contentSource, "saveNewBatchEntryDirect");
+  // Chọn phòng + gọi API tạo phiếu tách sang submitNewInvoiceOnIdleRoom.
+  const directSource = extractFunction(contentSource, "saveNewBatchEntryDirect") + "\n" +
+    extractFunction(contentSource, "submitNewInvoiceOnIdleRoom");
   assert(directSource.includes("rankIdleRoomsFromMap(roomMap.rooms, bookings, plan.checkIn, plan.checkOut, plannedRate)"));
   assert(directSource.includes("submitNewInvoiceViaApi(transaction, plan, room)"));
   // Cả hai cách chọn phòng đều phải tránh phiếu thật của ngày đó trên website.

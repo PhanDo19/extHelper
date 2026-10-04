@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.29.17 (2026-10-04)
+
+- **Lô Batch API không còn dừng khi bước thanh toán phiếu mới mất phản hồi nhưng server đã đóng bill.** Ca thật Paris Nhơn 04/10/2026: lô dừng ở 4/116 với "Da tao phien 01000000781 … nhung buoc thanh toan loi: Failed to fetch". Đọc lại trên website: phiếu đã đóng bill đủ 491.700 (hàng 235.000 + giờ 212.000 + VAT 44.700) — request thanh toán tới server, chỉ phản hồi bị rớt.
+  - Bridge: khi DoSave thanh toán ném lỗi mạng, chờ 1,5 s rồi đọc lại phiếu theo ID (`confirmFreshInvoicePayment`), **không gửi lại** payload. Chỉ coi là đã thanh toán khi mọi dấu hiệu khớp: `DATHANHTOAN = 30`, diễn giải "Xuất bán hàng" (bước lưu phiên ghi rỗng), tiền thanh toán = tổng, tiền hàng/giờ/VAT/tổng đúng phương án, đúng số phiếu, chưa có số HĐ. Thiếu một dấu hiệu thì báo lỗi và chặn như cũ.
+  - Content: giao dịch đã bị chặn vì đúng lỗi này (từ bản cũ, hoặc đọc lại cũng rớt mạng) được đọc lại ở lần Lưu API kế tiếp; xác nhận được thì ghi nhận như lưu thành công (dùng phòng thật của phiếu) rồi đối soát sau lưu như thường — bước này vẫn so từng mặt hàng trước khi trừ kho. Không bao giờ tạo phiếu thứ hai cho giao dịch đó.
+  - Tách `recordFreshInvoiceSaved` (ghi nhận phiếu mới đã lưu) và `submitNewInvoiceOnIdleRoom` (chọn phòng + tạo phiếu) khỏi hai hàm cũ để dùng chung.
+
 ## 1.29.16 (2026-10-04)
 
 - **Sửa Lưu API phiếu có sẵn báo "Phieu hien tai khong co dong hang mau de tao request API" dù phiếu có hàng** (ca thật Paris Nhơn: HD0126080003 có 7 dòng hàng). Màn Hóa đơn điện tử mới có lưới `grDetail` (Mã hàng/Số lượng/Đơn giá, rỗng khi chưa chọn dòng) nằm trước form phiếu trong DOM; `invoiceGrid()` lấy lưới đầu tiên khớp cột nên đọc nhầm lưới rỗng đó. Nay khi có form phiếu đang mở, chỉ xét lưới bên trong cửa sổ form (`openInvoiceFormContainer`). Đã thử trên trang thật: chọn đúng lưới của form, đọc đủ 7 dòng. Batch Review không bị vì `scan()` có đường dự phòng đọc DOM của dialog.

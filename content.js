@@ -968,6 +968,12 @@
       failure.formUnavailable = formUnavailable;
       throw failure;
     }
+    return recordFreshInvoiceSaved({ transaction, plan, apiSaved, apiExpected, apiTargetGrand, room });
+  }
+
+  // Ghi nhận phiếu mới đã lưu trên website (sau API tạo phiếu, hoặc sau khi đọc
+  // lại xác nhận được một lần tạo bị mất phản hồi). Trả về { transaction, apiSaved }.
+  async function recordFreshInvoiceSaved({ transaction, plan, apiSaved, apiExpected, apiTargetGrand, room, recovered = false }) {
     const apiCompletedAt = new Date().toISOString();
     const savedPendingPlan = {
       ...structuredClone(plan),
@@ -999,19 +1005,73 @@
         latest.newInvoiceCheckIn = plan.checkIn || "";
         latest.newInvoiceCheckOut = plan.checkOut || "";
       }
+      if (recovered) {
+        // Lỗi lần trước đã được giải thích: phiếu thật sự đã lưu. Dấu bắt đầu
+        // tạo (newInvoiceCreateStartedAt) vẫn giữ tới khi đối soát xong, như
+        // luồng thành công thường.
+        delete latest.newInvoiceCreateError;
+        latest.blockedNote = "";
+        latest.blockedAt = "";
+        latest.apiSavedRecoveredAt = apiCompletedAt;
+      }
     });
     currentBankTransaction = transaction;
     // Lỗi ghi/tải log KHÔNG được làm mất kết quả lưu đã ghi ở trên.
     try {
       await persistGeneratedInvoiceApiDebugLog({
         expected: apiExpected,
-        outcome: "success",
+        outcome: recovered ? "success-readback" : "success",
         result: apiSaved
       });
     } catch (logError) {
       console.error("[InvoiceTarget] Không thể xuất API debug log sau khi lưu thành công", logError);
     }
     return { transaction, apiSaved };
+  }
+
+  // Bước thanh toán của phiếu mới có thể đã được server ghi mà phản hồi rớt trên
+  // đường về; bridge đọc lại ngay lúc đó, nhưng giao dịch bị chặn từ bản cũ (hoặc
+  // đọc lại cũng lỗi mạng) vẫn mang lỗi "Da tao phien <số> (ID <guid>) nhung buoc
+  // thanh toan loi". Ca thật Paris Nhơn 04/10/2026: 01000000781 đã đóng bill đủ.
+  const LOST_FRESH_PAYMENT_PATTERN =
+    /Da tao phien (\S+) \(ID ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\) nhung buoc thanh toan loi/i;
+
+  function lostFreshPaymentSession(transaction) {
+    if (!transaction?.newInvoiceCreateStartedAt) return null;
+    const match = LOST_FRESH_PAYMENT_PATTERN.exec(String(transaction.newInvoiceCreateError || ""));
+    return match ? { invoiceNo: match[1], recordId: match[2] } : null;
+  }
+
+  // Giao dịch đang bị chặn vì lần tạo trước mất phản hồi ở bước thanh toán: đọc
+  // lại đúng phiếu đã được cấp số. Đã đóng bill khớp phương án thì ghi nhận như
+  // lưu thành công (bước đối soát sau lưu còn so từng mặt hàng trước khi trừ kho);
+  // không thì giữ nguyên chặn — tuyệt đối không tạo phiếu thứ hai.
+  async function recoverLostFreshPayment(transaction, plan) {
+    const blockReason = newInvoiceAttemptBlockReason(transaction);
+    const lost = lostFreshPaymentSession(transaction);
+    if (!lost) throw new Error(blockReason);
+    const apiTargetGrand = Math.round(Number(plan.targetGrand || transaction.credit) || 0);
+    const apiExpected = {
+      targetGrand: apiTargetGrand,
+      targetGoods: plan.goods,
+      targetHour: plan.hour,
+      targetTax: plan.tax,
+      invoiceDateKey: transaction.transactionDate
+    };
+    setStatus(`Đọc lại phiếu ${lost.invoiceNo} đã tạo ở lần trước để xem bước thanh toán đã xong chưa…`, "warn");
+    let check;
+    try {
+      check = await request("confirmFreshInvoicePayment", { recordId: lost.recordId, invoiceNo: lost.invoiceNo, expected: apiExpected });
+    } catch (error) {
+      check = { confirmed: false, reason: error.message };
+    }
+    if (!check?.confirmed) {
+      throw new Error(
+        `${blockReason} Đã đọc lại ${lost.invoiceNo} nhưng chưa thấy đã thanh toán đúng phương án: ${check?.reason || "không rõ"}.`
+      );
+    }
+    const room = check.roomId ? { id: check.roomId, name: check.roomName || "" } : null;
+    return recordFreshInvoiceSaved({ transaction, plan, apiSaved: check, apiExpected, apiTargetGrand, room, recovered: true });
   }
 
   // Luồng tab phụ: form phòng đã được mở trên giao diện của tab này.
@@ -1278,7 +1338,7 @@
         // trang rồi xét lại phiếu.
         : action === "buyerFixInvoice" ? 90000
         : action === "buyerFixScan" ? 60000
-        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm", "readInvoiceSummary", "readInvoiceSnapshot"].includes(action) ? 30000
+        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm", "readInvoiceSummary", "readInvoiceSnapshot", "confirmFreshInvoicePayment"].includes(action) ? 30000
         : 5000;
       const timeout = setTimeout(
         () => reject(new Error(`Trang không phản hồi sau ${Math.round(timeoutMs / 1000)}s (${action}).`)),
@@ -9133,9 +9193,46 @@
     const plan = entry.plan || transaction.batchApprovedPlan;
     const planError = newInvoicePlanValidationError(plan, transaction);
     if (planError) throw new Error(await discardInvalidNewInvoicePlan(transaction, planError));
-    const blockReason = newInvoiceAttemptBlockReason(transaction);
-    if (blockReason) throw new Error(blockReason);
+    // Bị chặn vì lần tạo trước đã gửi API: chỉ được gắn lại đúng phiếu đã cấp số
+    // khi đọc lại thấy đã đóng bill khớp phương án; không thì ném lý do chặn.
+    const submitted = newInvoiceAttemptBlockReason(transaction)
+      ? await recoverLostFreshPayment(transaction, plan)
+      : await submitNewInvoiceOnIdleRoom(transaction, plan);
+    if (!submitted) return null;
+    syncBatchPlanTransaction(submitted.transaction);
+    await saveBatchUiSession({ panelOpen: true });
+    renderBatchPlans();
+    const verifyIndex = batchPlans.findIndex(item => String(item.transactionId) === transactionId);
+    if (verifyIndex < 0) throw new Error("Không tìm thấy dòng Batch vừa tạo phiếu để đối soát.");
+    const verification = await verifyBatchSavedInvoice({
+      target: { closest: () => batchButtonProxy(verifyIndex) }
+    });
+    const verified = findStatementTransaction(transactionId);
+    if (!verification?.verified || verified?.status !== "done") {
+      throw new Error(
+        `Đã lưu ${submitted.apiSaved.invoiceNo} nhưng đọc lại từ server chưa khớp: ` +
+        `${verification?.error || "không rõ lỗi"}. Tồn kho chưa bị trừ; KHÔNG chạy lại API, hãy bấm Đối soát sau lưu.`
+      );
+    }
+    const uiState = await request("getInvoiceUiState");
+    if (uiState?.detailVisible) {
+      throw new Error(
+        `Sau khi đối soát ${verified.invoiceNo}, form phiếu trên website chưa đóng; ` +
+        "batch đã dừng để không ghi nhầm phiếu."
+      );
+    }
+    return {
+      invoiceNo: verified.invoiceNo,
+      transactionId,
+      roomName: submitted.room?.name || submitted.apiSaved.roomName || "",
+      formSource: "api"
+    };
+  }
 
+  // Chọn phòng trống theo sơ đồ phòng + lịch thật của ngày rồi tạo phiếu bằng
+  // API. Trả về null khi chưa gửi request ghi nào mà không dùng được cách này.
+  async function submitNewInvoiceOnIdleRoom(transaction, plan) {
+    const transactionId = String(transaction.id || "");
     const roomMap = await loadRoomMapForSelection();
     if (!roomMap.rooms.length) return null;
     // Sơ đồ phòng chỉ cho trạng thái hôm nay; phiếu lập bù cho ngày khác phải
@@ -9169,9 +9266,8 @@
       "ngay tại tab này (không mở tab phụ)…",
       "warn"
     );
-    let submitted;
     try {
-      submitted = await submitNewInvoiceViaApi(transaction, plan, room);
+      return { ...(await submitNewInvoiceViaApi(transaction, plan, room)), room };
     } catch (error) {
       if (error?.formUnavailable) {
         console.warn("[InvoiceTarget] Không đọc được form phòng bằng API; quay về tab phụ.", error);
@@ -9179,29 +9275,6 @@
       }
       throw error;
     }
-    syncBatchPlanTransaction(submitted.transaction);
-    await saveBatchUiSession({ panelOpen: true });
-    renderBatchPlans();
-    const verifyIndex = batchPlans.findIndex(item => String(item.transactionId) === transactionId);
-    if (verifyIndex < 0) throw new Error("Không tìm thấy dòng Batch vừa tạo phiếu để đối soát.");
-    const verification = await verifyBatchSavedInvoice({
-      target: { closest: () => batchButtonProxy(verifyIndex) }
-    });
-    const verified = findStatementTransaction(transactionId);
-    if (!verification?.verified || verified?.status !== "done") {
-      throw new Error(
-        `Đã lưu ${submitted.apiSaved.invoiceNo} nhưng đọc lại từ server chưa khớp: ` +
-        `${verification?.error || "không rõ lỗi"}. Tồn kho chưa bị trừ; KHÔNG chạy lại API, hãy bấm Đối soát sau lưu.`
-      );
-    }
-    const uiState = await request("getInvoiceUiState");
-    if (uiState?.detailVisible) {
-      throw new Error(
-        `Sau khi đối soát ${verified.invoiceNo}, form phiếu trên website chưa đóng; ` +
-        "batch đã dừng để không ghi nhầm phiếu."
-      );
-    }
-    return { invoiceNo: verified.invoiceNo, transactionId, roomName: room.name, formSource: "api" };
   }
 
   // Phiếu mới: ưu tiên tạo ngay trên tab danh sách; chỉ mở tab Bán hàng phụ khi

@@ -1310,7 +1310,7 @@
   const READ_RETRY_DELAYS_MS = [1500, 4000];
 
   function isNetworkFetchError(error) {
-    return error instanceof TypeError && /Failed to fetch|NetworkError|Load failed/i.test(String(error?.message || ""));
+    return error instanceof TypeError && /Failed to fetch|NetworkError|network error|Load failed/i.test(String(error?.message || ""));
   }
 
   async function fetchForRead(url, init) {
@@ -3447,7 +3447,35 @@
       ID: sessionTag.ID,
       Loai: 0
     };
-    const payment = await postDoSavePayload(paymentPayload);
+    let payment;
+    try {
+      payment = await postDoSavePayload(paymentPayload);
+    } catch (error) {
+      if (!isNetworkFetchError(error)) throw error;
+      // Mất phản hồi: server có thể ĐÃ đóng bill. Đọc lại trước, KHÔNG gửi lại.
+      await wait(1500);
+      const check = await confirmFreshInvoicePayment({
+        recordId: sessionTag.ID,
+        invoiceNo: sessionTag.NAME,
+        expected: { targetGrand: grand, targetGoods: goods, targetHour: hour, targetTax: tax }
+      });
+      if (!check.confirmed) {
+        throw new Error(`${error.message}; doc lai phieu chua thay da thanh toan (${check.reason}).`);
+      }
+      return {
+        saved: true,
+        createdFresh: true,
+        invoiceNo: String(sessionTag.NAME),
+        savedRecordId: String(sessionTag.ID),
+        lastSaveId: check.lastSaveId,
+        endpoint: session.endpoint,
+        httpStatus: null,
+        sessionHttpStatus: session.httpStatus,
+        rowCount: paymentRows.length,
+        targetGrand: grand,
+        recoveredBy: "readback"
+      };
+    }
     if (String(payment.body.Tag.ID).toLowerCase() !== String(sessionTag.ID).toLowerCase()) {
       throw new Error("API thanh toan tra ve ID khac phien vua tao.");
     }
@@ -3462,6 +3490,59 @@
       sessionHttpStatus: session.httpStatus,
       rowCount: paymentRows.length,
       targetGrand: grand
+    };
+  }
+
+  // Bước thanh toán (mode=2) của phiếu mới có thể đã được server ghi mà phản hồi
+  // rớt trên đường về ("Failed to fetch"). Ca thật Paris Nhơn 04/10/2026:
+  // 01000000781 đã đóng bill đủ 491.700 nhưng extension nhận lỗi và dừng lô.
+  // Chỉ coi là ĐÃ thanh toán khi mọi dấu hiệu cùng khớp: cờ đã thanh toán
+  // (DATHANHTOAN = 30, như mọi phiếu đóng bill), diễn giải "Xuất bán hàng" (bước
+  // lưu phiên mode=0 ghi rỗng), tiền thanh toán = tổng, tiền hàng/giờ/VAT/tổng
+  // đúng phương án, đúng số phiếu, chưa có số HĐ. Thiếu một dấu hiệu là không kết
+  // luận. Dòng hàng còn được bước đối soát sau lưu so từng mã trước khi trừ kho.
+  function freshPaymentProblems(fields, expected, invoiceNo) {
+    const problems = [];
+    const amount = key => formAmount(fields?.[key]);
+    const want = key => Math.round(Number(expected?.[key]) || 0);
+    if (String(fields?.NAME || "").trim() !== String(invoiceNo || "").trim()) problems.push(`số phiếu ${fields?.NAME || "?"}`);
+    if (!["30", "true", "1"].includes(String(fields?.DATHANHTOAN ?? "").trim().toLowerCase())) {
+      problems.push(`chưa có cờ đã thanh toán (${fields?.DATHANHTOAN ?? "trống"})`);
+    }
+    if (normalizedVietnameseText(fields?.DIENGIAI) !== "XUAT BAN HANG") problems.push(`diễn giải "${fields?.DIENGIAI || ""}"`);
+    const grand = want("targetGrand");
+    if (!grand || amount("TONGCONG") !== grand) problems.push(`tổng ${amount("TONGCONG")} khác ${grand}`);
+    if (amount("TIENTHANHTOAN") !== grand) problems.push(`tiền thanh toán ${amount("TIENTHANHTOAN")}`);
+    for (const [field, key, label] of [["TIENHANG", "targetGoods", "tiền hàng"], ["TIENGIO", "targetHour", "tiền giờ"], ["TIENTHUE", "targetTax", "VAT"]]) {
+      if (amount(field) !== want(key)) problems.push(`${label} ${amount(field)} khác ${want(key)}`);
+    }
+    if (String(fields?.SOHD || "").trim()) problems.push("đã có số hóa đơn");
+    return problems;
+  }
+
+  // Đọc lại phiếu mới theo ID (chỉ đọc) để biết bước thanh toán bị mất phản hồi
+  // đã được server ghi chưa. Dùng ngay sau lỗi, và cho giao dịch đã bị chặn vì lỗi
+  // đó ở lần chạy trước ("Da tao phien ... nhung buoc thanh toan loi").
+  async function confirmFreshInvoicePayment(detail) {
+    const recordId = String(detail?.recordId || "").trim();
+    const invoiceNo = String(detail?.invoiceNo || "").trim();
+    const formData = await readInvoiceFormById(recordId, invoiceNo);
+    const fields = mapObject(formData.mapper?.Maps);
+    const problems = freshPaymentProblems(fields, detail?.expected, invoiceNo);
+    if (problems.length) return { confirmed: false, reason: problems.join("; ") };
+    const roomId = String(fields.DBANID || "").trim();
+    return {
+      confirmed: true,
+      saved: true,
+      createdFresh: true,
+      invoiceNo,
+      savedRecordId: recordId,
+      lastSaveId: String(fields.LASTSAVEID || ""),
+      targetGrand: formAmount(fields.TONGCONG),
+      // Phòng thật của phiếu: lịch phòng của phiếu mới kế tiếp trong ngày dựa vào đây.
+      roomId,
+      roomName: await roomNameById(roomId).catch(() => ""),
+      recoveredBy: "readback"
     };
   }
 
@@ -3978,6 +4059,7 @@
       else if (detail.action === "readRoomHourlyRates") result = await readRoomHourlyRates(detail);
       else if (detail.action === "readInvoiceSummary") result = await readInvoiceSummary(detail);
       else if (detail.action === "readInvoiceSnapshot") result = await readInvoiceSnapshot(detail);
+      else if (detail.action === "confirmFreshInvoicePayment") result = await confirmFreshInvoicePayment(detail);
       else if (detail.action === "readDayRoomBookings") result = await readDayRoomBookings(detail);
       else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);
       else if (detail.action === "issueEInvoice") result = await issueEInvoice(detail);
