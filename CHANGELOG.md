@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.29.14 (2026-10-04)
+
+- **Theo giao diện mới của màn hình Hóa đơn điện tử trên website** (ô "Loại" thay radio, nút Phát hành/Kiểm tra hàng loạt, lưới mặt hàng của phiếu đang chọn). API đọc từ `HoaDonDienTu_JsClient` trên trang Paris Nhơn và gọi thử phần chỉ đọc; chi tiết ở `docs/API_FLOWS.md` mục 3.6.
+  - **Đọc mặt hàng qua API, không còn chuyển màn hình.** Phiếu chưa có trong sổ đối soát (hoặc sổ lệch web) được đọc bằng `TDONHANG0Ae/LayDuLieuChiTiet`, chính API website dùng cho lưới mặt hàng. Trước đây extension phải tự chuyển sang danh sách Bán hàng, nhấp đúp mở phiếu rồi đóng. Ở Paris Nhơn, menu "Bán hàng" mở sơ đồ phòng, không có lưới danh sách, nên bước chuyển màn hình không tới được danh sách và lô bị chặn với "Chưa mở được danh sách Bán hàng". Mở phiếu qua giao diện chỉ còn là đường dự phòng khi API lỗi và đang đứng ở danh sách Bán hàng thật. Nút **Thử đọc mặt hàng** cũng dùng API.
+  - **Không còn nhận nhầm lưới Hóa đơn điện tử là danh sách Bán hàng.** Lưới mới có cột Ngày/Số phiếu/Tổng cộng nên `invoiceListElement()` từng coi nó là danh sách Bán hàng. Khi đó `ensureInvoiceListScreen` tưởng đã tới nơi, còn luồng mở phiếu đi tìm phiếu trên một lưới lọc theo ngày của website. Nay lưới có cột Kiểm tra + Phát hành bị loại.
+  - `phatHanhHoaDon` gửi `{ id, kyHieu: "" }` như website (tham số `kyHieu` mới; rỗng khi form tắt chọn ký hiệu).
+  - `LayDuLieu` gửi đủ 6 ô lọc như website. "Loại" vẫn là Tất cả (`TRANGTHAI = 0`; `1` Đã phát hành, `2` Chưa phát hành) vì Check/Đồng bộ sổ cần cả phiếu đã phát hành. Danh sách tải được như trước; payload cũ vẫn được chấp nhận.
+
 ## 1.29.12 (2026-10-03)
 
 - **Giao diện Batch Review và Phát hành gọn hơn, không còn phải kéo thanh cuộn ngang.** Chỉ đổi cách hiển thị; logic lập phương án, Lưu API, phát hành giữ nguyên.

@@ -129,8 +129,6 @@ const stockAdminIndex = contentSource.indexOf('id="it-stock-admin"');
 assert(contentSource.indexOf('id="it-export-issued"', stockAdminIndex) > stockAdminIndex,
   "Nút xuất hạch toán phải nằm trong tab Kho");
 assert.match(contentSource, /function issueSelectedEInvoices\(\)/);
-assert.match(contentSource, /present: await ensureInvoiceListScreen\(\)/);
-assert.match(contentSource, /Chưa mở được danh sách Bán hàng để đọc mặt hàng/);
 assert.match(contentSource, /function exportIssuedInvoices\(\)/);
 assert.match(contentSource, /function renderEInvoiceRows\(\)/);
 // Ghi sổ ngay sau từng hóa đơn để lô dừng giữa chừng vẫn có số liệu.
@@ -205,7 +203,41 @@ assert(bridgeSource.includes('postEInvoiceApi("phatHanhHoaDon?is_ajax=1"'), "Mis
 assert(bridgeSource.includes('detail.action === "issueEInvoice"'), "issueEInvoice not dispatched");
 assert(bridgeSource.includes('detail.action === "fetchEInvoiceList"'), "fetchEInvoiceList not dispatched");
 
-// Đọc mặt hàng phải đi qua đúng đường extension đã dùng để mở phiếu (nhấp đúp
+// Giao diện Hóa đơn điện tử 10/2026: phatHanhHoaDon(id, kyHieu). Website gửi
+// kyHieu rỗng khi form tắt ChonKyHieu; thiếu hẳn trường này là khác website.
+assert.match(bridgeSource,
+  /postEInvoiceApi\("phatHanhHoaDon\?is_ajax=1", \{ id, kyHieu: EINVOICE_DEFAULT_KY_HIEU \}\)/,
+  "phatHanhHoaDon phải gửi kèm kyHieu như website");
+assert.match(bridgeSource, /const EINVOICE_DEFAULT_KY_HIEU = "";/);
+// LayDuLieu: đủ các ô lọc như source_ParameterMap của website, Loại = Tất cả (0)
+// vì Check/Đồng bộ sổ cần cả phiếu đã phát hành (1 = đã, 2 = chưa phát hành).
+const listFetch = bridgeSource.slice(
+  bridgeSource.indexOf("async function fetchEInvoiceList"),
+  bridgeSource.indexOf("async function readInvoiceItemsViaApi"));
+for (const field of ["DXEID", "DNHANVIENID", "DKHACHHANGID", "DNHOMMATHANGID", "DKHOXUATID", "DHANGSANXUATID"]) {
+  assert(listFetch.includes(`${field}: ""`), `LayDuLieu thiếu ô lọc ${field}`);
+}
+assert.match(listFetch, /TRANGTHAI: EINVOICE_STATUS_ALL/);
+assert.match(bridgeSource, /const EINVOICE_STATUS_ALL = 0;/);
+
+// Mặt hàng đọc qua API màn hình Hóa đơn điện tử dùng cho lưới chi tiết:
+// TDONHANG0Ae/LayDuLieuChiTiet { ID, STABLEDESCID = bảng Bán hàng }. Chỉ đọc.
+const readViaApi = bridgeSource.slice(
+  bridgeSource.indexOf("async function readInvoiceItemsViaApi"),
+  bridgeSource.indexOf("async function readInvoiceItemsViaUi"));
+assert.match(readViaApi, /"TDONHANG0Ae\/LayDuLieuChiTiet\?is_ajax=1"/);
+assert.match(readViaApi, /\{ ID: recordId, STABLEDESCID: SALES_TABLE_ID \}/);
+assert.match(readViaApi, /Number\(body\?\.code\) !== 1/, "code != 1 là lỗi, không coi là phiếu rỗng");
+// API trước; mở phiếu qua giao diện chỉ là dự phòng khi API lỗi và đang đứng ở
+// danh sách Bán hàng thật.
+const readItems = bridgeSource.slice(
+  bridgeSource.indexOf("async function readInvoiceItems("),
+  bridgeSource.indexOf("function eInvoiceFailureReason"));
+assert(readItems.indexOf("readInvoiceItemsViaApi") < readItems.indexOf("readInvoiceItemsViaUi"),
+  "Phải thử API trước giao diện");
+assert.match(readItems, /detail\?\.canReadItems === false \|\| !invoiceListElement\(\)/);
+
+// Đường dự phòng phải đi qua đúng đường extension đã dùng để mở phiếu (nhấp đúp
 // trên danh sách Bán hàng rồi scan lưới Kendo), KHÔNG fetch HTML trang AddEdit —
 // trang đó được dựng bằng script client nên HTML thô không có sẵn dòng hàng.
 assert.match(bridgeSource, /async function readInvoiceItemsViaUi/);
@@ -231,21 +263,22 @@ assert.match(readViaUi, /finally\s*\{[\s\S]*closeInvoiceDetail\(\)/);
 assert.match(readViaUi, /openedNo !== wanted/);
 
 // Mặt hàng ưu tiên lấy từ sổ đối soát (đã kiểm tra khi trừ tồn) nên không phụ
-// thuộc màn hình đang mở. Chỉ hóa đơn thiếu trong sổ mới phải mở lại phiếu.
+// thuộc màn hình đang mở. Chỉ hóa đơn thiếu trong sổ mới phải đọc từ website.
 assert.match(contentSource, /function ledgerItemsForInvoiceNo\(invoiceNo\)/);
 assert.match(contentSource, /knownItems: ledgerItems \|\| null/);
-// Không được gọi bridge phát hành từ màn hình Mặt hàng. Với hóa đơn thiếu trong
-// sổ, content script phải tự chuyển về danh sách Bán hàng trước khi chạy lô.
 const issueFlow = contentSource.slice(
   contentSource.indexOf("async function issueSelectedEInvoices"),
   contentSource.indexOf("async function exportIssuedInvoices"));
 assert.match(issueFlow, /withoutLedger/);
 // Phiếu thiếu trong sổ HOẶC sổ lệch web (bị sửa ngoài extension) đều phải đọc
-// mặt hàng từ phiếu, nên đều cần màn hình danh sách Bán hàng.
+// mặt hàng từ website.
 assert.match(issueFlow, /const staleTargets = await checkLedgerFreshness\(/);
 assert.match(issueFlow, /const needsWebItems = withoutLedger\.length \+ staleTargets\.length;/);
-assert.match(issueFlow, /needsWebItems\s*\?\s*\{ present: await ensureInvoiceListScreen\(\) \}/);
-assert.match(issueFlow, /needsWebItems && !listReady\.present/);
+// Đọc qua API nên KHÔNG tự chuyển trang trước khi phát hành: rời màn hình giữa
+// chừng làm lô hỏng (ở Paris Nhơn "Bán hàng" là sơ đồ phòng, không có danh sách).
+assert(!issueFlow.includes("ensureInvoiceListScreen"),
+  "Phát hành không được tự điều hướng sang danh sách Bán hàng");
+assert.match(issueFlow, /needsWebItems\s*\?\s*await request\("hasInvoiceList"\)/);
 assert.match(issueFlow, /const ledgerItems = stale \? null : ledgerItemsForInvoiceNo\(row\.invoiceNo\);/,
   "Sổ lệch web thì không được gửi mặt hàng của sổ cho bước phát hành");
 assert.match(issueFlow, /resyncLedgerFromWebItems\(row\.invoiceNo, result\.items/,
@@ -257,7 +290,7 @@ const issueBridge = bridgeSource.slice(
   bridgeSource.indexOf("async function saveCurrentInvoiceViaApi"));
 assert.match(issueBridge, /Array\.isArray\(detail\?\.knownItems\)/);
 assert.match(issueBridge, /if \(!items\.length\)/);
-assert.match(issueBridge, /detail\?\.canReadItems === false/);
+assert.match(issueBridge, /items = await readInvoiceItems\(detail\);/);
 
 // Phản hồi phát hành thành công thật từ website: Tag là CHUỖI HTML để đổ vào
 // hộp thoại, không phải object. Trích xuất theo nhãn phải ra đủ 5 trường.
@@ -422,6 +455,26 @@ assert.match(issueFlow, /KHÔNG thuộc danh sách giao dịch/);
 // được (phát hành tay, hoặc lần trước mất phản hồi).
 assert.match(contentSource, /async function syncIssuedInvoices\(\)/);
 assert(contentSource.includes('id="it-sync-issued"'), "Thiếu nút đồng bộ hóa đơn đã phát hành");
+
+// Dòng thật của LayDuLieuChiTiet (Paris Nhơn 04/10/2026). Tiền giờ không nằm ở
+// đây; số lượng/giá là số, mã giữ nguyên số 0 đứng đầu.
+const { eInvoiceDetailItem } = evalBridgeFunction("eInvoiceDetailItem");
+assert.deepStrictEqual(eInvoiceDetailItem({
+  DMATHANG_CODE: "0000045", DMATHANG_NAME: "Bia Tiger lon", SOLUONG: 17, DDONVITINH_NAME: "Lon",
+  DONGIA: 50000, TILEGIAMGIA: 0, TIENGIAMGIA: 0, THANHTIEN: 850000, NOTE: "", KHUYENMAI: 0
+}), { code: "0000045", name: "Bia Tiger lon", unit: "Lon", qty: 17, price: 50000, amount: 850000 });
+assert.deepStrictEqual(eInvoiceDetailItem({ DMATHANG_CODE: " 0000014 ", SOLUONG: "4", DONGIA: "5000.00" }),
+  { code: "0000014", name: "", unit: "", qty: 4, price: 5000, amount: 20000 });
+
+// Tiêu đề lưới thật: màn hình Hóa đơn điện tử mới có Ngày/Số phiếu/Tổng cộng như
+// danh sách Bán hàng nhưng không được nhận là danh sách Bán hàng.
+const { isInvoiceListHeader } = evalBridgeFunction("isInvoiceListHeader");
+assert(!isInvoiceListHeader(
+  "Chọn Ngày Số phiếu Chiết khấu Tổng cộng Ghi chú Đơn vị Khách hàng Điện thoại Địa chỉ " +
+  "Người mua hàng MST CCCD Ký hiệu Số HĐ Xem Kiểm tra Phát hành"
+), "Lưới Hóa đơn điện tử không phải danh sách Bán hàng");
+assert(isInvoiceListHeader("Ngày Số phiếu Khách hàng Tổng cộng Thanh toán"),
+  "Danh sách Bán hàng vẫn được nhận như cũ");
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
 assert(manifest.content_scripts.some(script => (script.js || []).includes("issued-invoices.js")),

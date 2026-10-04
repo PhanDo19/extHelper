@@ -151,9 +151,7 @@ flowchart TD
     J1 --> K
 
     K[Kiểm tra nguồn mặt hàng<br/>ledgerItemsForInvoiceNo cho từng dòng] --> L{Có dòng nào<br/>thiếu trong sổ đối soát?}
-    L -- Có --> L1[ensureInvoiceListScreen] --> L2{Mở được<br/>danh sách Bán hàng?}
-    L2 -- Không --> Z3[Chặn cả lô:<br/>không đọc được mặt hàng để hạch toán]
-    L2 -- Có --> M
+    L -- Có --> L1[Cảnh báo: sẽ đọc mặt hàng<br/>từ website qua LayDuLieuChiTiet] --> M
     L -- Không --> M
 
     M[HỘP THOẠI XÁC NHẬN MỘT LẦN CHO CẢ LÔ<br/>số hóa đơn, tổng tiền, thứ tự sẽ phát hành<br/>dải số dự kiến tính từ sao kê đối chiếu<br/>+ mọi cảnh báo ở trên] --> N{Xác nhận?}
@@ -161,7 +159,7 @@ flowchart TD
     N -- Có --> O
 
     O[VÒNG TUẦN TỰ — MỘT LUỒNG<br/>for row of targets] --> P[processTarget row]
-    P --> Q[Lấy mặt hàng:<br/>ưu tiên sổ đối soát, thiếu thì mở phiếu đọc]
+    P --> Q[Lấy mặt hàng:<br/>ưu tiên sổ đối soát, thiếu thì đọc qua API]
     Q --> R[kiemTraThongTin]
     R --> S[phatHanhHoaDon<br/>→ máy chủ cấp SOHOADON kế tiếp]
 

@@ -72,8 +72,11 @@ assert(!isLoginRedirect({ status: 200, url: api },
 
 // Phát hành hóa đơn: mất phiên giữa lô mà không dừng thì các hóa đơn sau bị bỏ
 // qua trong im lặng, còn sổ thì thiếu bản ghi.
+// postEInvoiceApi và API đọc mặt hàng cùng đi qua postShopApi.
+assert(/function postEInvoiceApi\([^)]*\)\s*\{\s*return postShopApi\(/.test(source),
+  "Mọi lời gọi HoaDonDienTu phải đi qua postShopApi để được kiểm tra mất phiên");
 const eInvoiceCall = source.slice(
-  source.indexOf("async function postEInvoiceApi"),
+  source.indexOf("async function postShopApi"),
   source.indexOf("function isLoginRedirect")
 );
 assert(eInvoiceCall.includes("isLoginRedirect(response, responseText)"),

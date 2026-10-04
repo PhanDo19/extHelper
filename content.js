@@ -1248,9 +1248,9 @@
   // một hạn chờ:
   //   - Có sẵn mặt hàng (knownItems): bridge chỉ gọi kiemTraThongTin +
   //     phatHanhHoaDon, không đụng giao diện, không polling. 30s là rất rộng.
-  //   - Không có: bridge phải mở phiếu trên danh sách Bán hàng, chờ lưới Kendo,
-  //     đọc dòng hàng rồi đóng form. Chuỗi polling này có thể mất hàng chục giây
-  //     nên vẫn cần 90s.
+  //   - Không có: bridge đọc mặt hàng qua API (nhanh), nhưng nếu API lỗi thì
+  //     rơi về mở phiếu trên danh sách Bán hàng, chờ lưới Kendo, đọc dòng hàng
+  //     rồi đóng form. Chuỗi polling đó có thể mất hàng chục giây nên vẫn 90s.
   // Hạn chờ chỉ là ngưỡng báo lỗi phía content script; nó KHÔNG hủy request đang
   // chạy trong bridge. Phiếu quá hạn vẫn có thể đã phát hành xong trên server,
   // và đúng tình huống đó được confirmIssuedAfterFailure đọc lại và ghi sổ.
@@ -3991,7 +3991,6 @@
     if (!sample.length) return setStatus("Chưa có hóa đơn nào để thử đọc.", "error");
     const progress = document.getElementById("it-einvoice-progress");
     const lines = [];
-    let listReady = null;
     setStatus(`Đang thử đọc mặt hàng của ${sample.length} hóa đơn…`, "warn");
     const describe = items => items.map(item => `${item.code} x${item.qty}`).join(", ");
     for (const row of sample) {
@@ -4000,24 +3999,17 @@
         lines.push(`${row.invoiceNo}: ${fromLedger.length} mã (sổ đối soát) — ${describe(fromLedger)}`);
         continue;
       }
-      // Chỉ hóa đơn không có trong sổ mới phải mở lại phiếu trên website.
-      if (listReady == null) {
-        listReady = await request("hasInvoiceList").catch(() => ({ present: false }));
-      }
-      if (!listReady?.present) {
-        lines.push(`${row.invoiceNo}: chưa có trong sổ đối soát, và màn hình danh sách Bán hàng chưa mở nên không đọc được.`);
-        continue;
-      }
+      // Chỉ hóa đơn không có trong sổ mới phải đọc từ website.
       try {
         const result = await request("readInvoiceItems", { id: row.id, invoiceNo: row.invoiceNo });
         const items = result.items || [];
-        lines.push(`${row.invoiceNo}: ${items.length} mã (đọc từ phiếu) — ${describe(items) || "không có dòng hàng"}`);
+        lines.push(`${row.invoiceNo}: ${items.length} mã (đọc từ website) — ${describe(items) || "không có dòng hàng"}`);
       } catch (error) {
         lines.push(`${row.invoiceNo}: LỖI — ${error.message}`);
       }
     }
     if (progress) progress.textContent = lines.join("\n");
-    const failed = lines.filter(line => line.includes("LỖI") || line.includes("không đọc được")).length;
+    const failed = lines.filter(line => line.includes("LỖI")).length;
     setStatus(
       failed
         ? `${failed}/${sample.length} hóa đơn chưa có mặt hàng; xem chi tiết bên dưới trước khi phát hành.`
@@ -4207,9 +4199,8 @@
         `${row.invoiceNo}: ${statementInvoiceMatch(row).reason}`).join(" | ");
       throw new Error(`Không phát hành: ${mismatched.length} phiếu không khớp giao dịch sao kê. ${details}`);
     }
-    // Mặt hàng lấy từ sổ đối soát; chỉ hóa đơn không có trong sổ mới cần đọc lại
-    // từ màn hình danh sách Bán hàng. Cảnh báo trước để người dùng biết hóa đơn
-    // nào sẽ thiếu số liệu hạch toán, thay vì chặn cả lô.
+    // Mặt hàng lấy từ sổ đối soát; chỉ hóa đơn không có trong sổ mới phải đọc
+    // từ website. Cảnh báo trước để người dùng biết, thay vì chặn cả lô.
     const withoutLedger = targets.filter(row => !ledgerItemsForInvoiceNo(row.invoiceNo));
     // Sổ có thể đã cũ nếu phiếu bị sửa ngoài extension (chuyển phòng, đổi số
     // lượng). Kiểm tra lại NGAY trước khi phát hành (chỉ đọc, không mở phiếu):
@@ -4218,18 +4209,15 @@
     const staleTargets = await checkLedgerFreshness(targets.filter(row => ledgerItemsForInvoiceNo(row.invoiceNo)));
     const staleIds = new Set(staleTargets.map(row => row.id));
     renderEInvoiceRows();
-    // Nếu có phiếu chưa nằm trong sổ đối soát (hoặc sổ lệch web), bridge phải
-    // mở phiếu từ danh sách Bán hàng để đọc mặt hàng. Chủ động chuyển màn hình
-    // trước khi phát hành, thay vì để bridge ném lỗi sâu sau khi lô đã chạy.
+    // Phiếu chưa có trong sổ (hoặc sổ lệch web) được bridge đọc mặt hàng qua API
+    // LayDuLieuChiTiet — chính API màn hình Hóa đơn điện tử dùng — nên không cần
+    // màn hình nào. Mở phiếu trên danh sách Bán hàng chỉ còn là đường dự phòng
+    // khi API lỗi, và KHÔNG tự chuyển trang: rời màn hình đang phát hành giữa
+    // chừng (ở Paris Nhơn "Bán hàng" là sơ đồ phòng) chỉ làm lô hỏng.
     const needsWebItems = withoutLedger.length + staleTargets.length;
     const listReady = needsWebItems
-      ? { present: await ensureInvoiceListScreen() }
-      : { present: true };
-    if (needsWebItems && !listReady.present) {
-      throw new Error(
-        "Chưa mở được danh sách Bán hàng để đọc mặt hàng. Hãy đóng phiếu đang mở, mở Bán hàng rồi thử phát hành lại."
-      );
-    }
+      ? await request("hasInvoiceList").catch(() => ({ present: false }))
+      : { present: false };
     // Phiếu ngoài danh sách giao dịch không thuộc luồng của extension; chỉ phát
     // hành khi người dùng đã chủ động hiện và chọn, và phải nêu rõ trong xác nhận.
     const linkedNos = statementInvoiceNos();
@@ -4240,10 +4228,8 @@
         `${outside.slice(0, 5).map(row => row.invoiceNo).join(", ")}${outside.length > 5 ? "…" : ""}`
       : "";
     const warning = withoutLedger.length
-      ? `\n\n⚠ ${withoutLedger.length}/${targets.length} hóa đơn chưa có trong sổ đối soát` +
-        (listReady?.present
-          ? "; extension sẽ mở từng phiếu để đọc mặt hàng (chậm hơn)."
-          : " và màn hình danh sách Bán hàng chưa mở, nên sẽ KHÔNG có mặt hàng để hạch toán.")
+      ? `\n\n⚠ ${withoutLedger.length}/${targets.length} hóa đơn chưa có trong sổ đối soát; ` +
+        "extension sẽ đọc mặt hàng từ website trước khi phát hành từng hóa đơn."
       : "";
     const staleWarning = staleTargets.length
       ? `\n\n⚠ ${staleTargets.length} hóa đơn có mặt hàng trên website khác sổ đối soát ` +
@@ -4325,8 +4311,9 @@
             id: row.id,
             invoiceNo: row.invoiceNo,
             dateKey: row.dateKey,
-            // Có sẵn mặt hàng thì bridge khỏi phải mở lại phiếu để đọc.
+            // Có sẵn mặt hàng thì bridge khỏi phải đọc lại từ website.
             knownItems: ledgerItems || null,
+            // Chỉ cho phép đường dự phòng mở phiếu khi đang đứng ở danh sách Bán hàng.
             canReadItems: Boolean(listReady?.present)
           });
           // Ghi sổ ngay sau từng hóa đơn: nếu lô dừng giữa chừng thì phần đã

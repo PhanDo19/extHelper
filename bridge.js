@@ -1582,10 +1582,17 @@
   }
 
   function invoiceListElement() {
-    return Array.from(document.querySelectorAll(".k-grid")).find(element => {
-      const text = element.querySelector("thead")?.innerText || "";
-      return /Số phiếu/i.test(text) && /Tổng cộng/i.test(text) && /Ngày/i.test(text);
-    }) || null;
+    return Array.from(document.querySelectorAll(".k-grid")).find(element =>
+      isInvoiceListHeader(element.querySelector("thead")?.innerText || "")) || null;
+  }
+
+  // Lưới của màn hình Hóa đơn điện tử (giao diện 10/2026) cũng có Ngày/Số phiếu/
+  // Tổng cộng nhưng lọc theo ô ngày của website, không phải danh sách Bán hàng.
+  // Nhận nhầm thì ensureInvoiceListScreen tưởng đã tới nơi và luồng mở phiếu đi
+  // tìm phiếu trên lưới sai. Nó có riêng hai cột thao tác Kiểm tra + Phát hành.
+  function isInvoiceListHeader(text) {
+    if (/Kiểm tra/i.test(text) && /Phát hành/i.test(text)) return false;
+    return /Số phiếu/i.test(text) && /Tổng cộng/i.test(text) && /Ngày/i.test(text);
   }
 
   // Sau khi form phiếu đóng, website dựng lại grid danh sách. Trong lúc đó
@@ -3675,16 +3682,33 @@
   // Hai hop thoai xac nhan cua website chi la UI; extension da hoi nguoi dung mot
   // lan cho ca lo nen goi thang API. Tat ca deu POST JSON cung origin, dung
   // cookie phien hien tai.
+  //
+  // Giao dien moi (10/2026, Form ID 9bc781f5-...): o loc "Loai" thay radio, them
+  // nut Phat hanh/Kiem tra hang loat va luoi mat hang cua phieu dang chon. API
+  // van giu ten cu; khac biet duoc doc tu HoaDonDienTu_JsClient tren trang:
+  //   - LayDuLieu: customData co them 6 o loc (rong = khong loc).
+  //   - phatHanhHoaDon(id, kyHieu): kyHieu = "" khi form tat ChonKyHieu.
+  //   - Mat hang: TDONHANG0Ae/LayDuLieuChiTiet (xem readInvoiceItemsViaApi).
   // ---------------------------------------------------------------------------
 
   const EINVOICE_LIST_TAKE = 200;
+  // O loc "Loai" (rdTrangThai): 0 Tat ca, 1 Da phat hanh, 2 Chua phat hanh.
+  // Lay Tat ca vi Check/Dong bo so can ca phieu da phat hanh.
+  const EINVOICE_STATUS_ALL = 0;
+  // Website gui kyHieu rong khi khong bat chon ky hieu (ChonKyHieu = false);
+  // server dung ky hieu mac dinh cua co so.
+  const EINVOICE_DEFAULT_KY_HIEU = "";
 
   function shopBasePath() {
     return location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
   }
 
-  async function postEInvoiceApi(action, payload) {
-    const endpoint = `${location.origin}/${shopBasePath()}/HoaDonDienTu/${action}`;
+  function postEInvoiceApi(action, payload) {
+    return postShopApi(`HoaDonDienTu/${action}`, payload, action);
+  }
+
+  async function postShopApi(path, payload, action) {
+    const endpoint = `${location.origin}/${shopBasePath()}/${path}`;
     const response = await window.fetch(endpoint, {
       method: "POST",
       credentials: "same-origin",
@@ -3792,9 +3816,15 @@
         page,
         pageSize: EINVOICE_LIST_TAKE,
         sort: [{ field: "NAME", dir: "asc" }],
+        // Du cac o loc nhu source_ParameterMap cua website; rong = khong loc.
         customData: {
+          DXEID: "",
+          DNHANVIENID: "",
           DKHACHHANGID: "",
-          TRANGTHAI: 0,
+          DNHOMMATHANGID: "",
+          DKHOXUATID: "",
+          DHANGSANXUATID: "",
+          TRANGTHAI: EINVOICE_STATUS_ALL,
           TuNgay: fromDate,
           DenNgay: toDate
         },
@@ -3809,9 +3839,39 @@
     return { rows: rows.map(eInvoiceRow), total: total || rows.length, fromDate, toDate };
   }
 
-  // Doc chi tiet mat hang bang dung duong ma extension da dung de mo phieu:
-  // nhap doi tren dong danh sach Ban hang -> scan() doc luoi Kendo dang mo ->
-  // dong form. Man hinh hoa don dien tu khong tra ve dong hang.
+  // Man hinh hoa don dien tu moi hien mat hang cua phieu dang chon bang chinh API
+  // nay (grDon_SelectionChanged): chi doc, khong mo phieu, khong can man hinh
+  // danh sach Ban hang. Tag chi co dong hang; tien gio khong nam trong do.
+  function eInvoiceDetailItem(row) {
+    const qty = Math.round(Number(row?.SOLUONG) || 0);
+    const price = Math.round(Number(row?.DONGIA) || 0);
+    return {
+      code: String(row?.DMATHANG_CODE || "").trim(),
+      name: String(row?.DMATHANG_NAME || "").trim(),
+      unit: String(row?.DDONVITINH_NAME || "").trim(),
+      qty,
+      price,
+      amount: qty * price
+    };
+  }
+
+  async function readInvoiceItemsViaApi(id) {
+    const recordId = String(id || "").trim();
+    if (!isGuid(recordId)) throw new Error(`ID phieu khong hop le: ${recordId || "trong"}.`);
+    const { body, responseText } = await postShopApi(
+      "TDONHANG0Ae/LayDuLieuChiTiet?is_ajax=1",
+      { ID: recordId, STABLEDESCID: SALES_TABLE_ID },
+      "LayDuLieuChiTiet"
+    );
+    if (Number(body?.code) !== 1 || !Array.isArray(body?.Tag)) {
+      const reason = String(body?.message || "").trim() || responseText.slice(0, 200) || "khong co du lieu";
+      throw new Error(`Website khong tra mat hang cua phieu (${reason}).`);
+    }
+    return body.Tag.map(eInvoiceDetailItem).filter(item => item.code && item.qty > 0);
+  }
+
+  // Duong du phong khi API tren loi: nhap doi tren dong danh sach Ban hang ->
+  // scan() doc luoi Kendo dang mo -> dong form.
   //
   // Khong dung fetch AddEdit: trang do duoc website dung bang script client nen
   // HTML tho khong chua san dong hang.
@@ -3859,8 +3919,19 @@
     }
   }
 
+  // API truoc. Chi mo phieu qua giao dien khi API loi VA dang dung o danh sach
+  // Ban hang that (canReadItems): khong tu chuyen trang giua lo phat hanh.
   async function readInvoiceItems(detail) {
-    return readInvoiceItemsViaUi(detail?.invoiceNo);
+    try {
+      return await readInvoiceItemsViaApi(detail?.id);
+    } catch (apiError) {
+      if (detail?.canReadItems === false || !invoiceListElement()) throw apiError;
+      try {
+        return await readInvoiceItemsViaUi(detail?.invoiceNo);
+      } catch (uiError) {
+        throw new Error(`${apiError.message} Mo phieu tren danh sach Ban hang cung loi: ${uiError.message}`);
+      }
+    }
   }
 
   // kiemTraThongTin + phatHanhHoaDon deu tra HTTP 200 ke ca khi nghiep vu tu choi,
@@ -3944,21 +4015,17 @@
 
     // Mat hang uu tien lay tu so doi soat do content script gui sang; so lieu do
     // da duoc kiem tra lai voi phieu tren website khi tru ton. Chi khi khong co
-    // moi phai mo lai phieu de doc, va viec do can man hinh danh sach Ban hang.
+    // moi doc tu website (readInvoiceItems).
     //
     // Doc TRUOC khi phat hanh: sau khi phat hanh phieu bi khoa, va neu buoc doc
     // that bai thi chua co gi thay doi tren he thong.
     let items = Array.isArray(detail?.knownItems) ? detail.knownItems : [];
     let itemsError = "";
     if (!items.length) {
-      if (detail?.canReadItems === false) {
-        itemsError = "Phieu khong co trong so doi soat va man hinh danh sach Ban hang chua mo.";
-      } else {
-        try {
-          items = await readInvoiceItemsViaUi(detail?.invoiceNo);
-        } catch (error) {
-          itemsError = error.message;
-        }
+      try {
+        items = await readInvoiceItems(detail);
+      } catch (error) {
+        itemsError = error.message;
       }
     }
 
@@ -3967,7 +4034,7 @@
     if (checkFailure) throw new Error(`Kiem tra thong tin that bai: ${checkFailure}`);
     const checkedMetadata = parseEInvoiceCheckTagHtml(check.body?.Tag ?? check.body?.data ?? "");
 
-    const issue = await postEInvoiceApi("phatHanhHoaDon?is_ajax=1", { id });
+    const issue = await postEInvoiceApi("phatHanhHoaDon?is_ajax=1", { id, kyHieu: EINVOICE_DEFAULT_KY_HIEU });
     const issueFailure = eInvoiceFailureReason(issue.body, issue.responseText);
     if (issueFailure) throw new Error(issueFailure);
 

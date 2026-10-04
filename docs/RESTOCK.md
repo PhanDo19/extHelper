@@ -66,8 +66,8 @@ với tổng dòng hàng trong sổ. Bước này chỉ đọc (`GET AddEdit?Rec
 mở phiếu, khoảng một request mỗi phiếu.
 
 - Phiếu lệch được đánh dấu ⚠ ở cột mặt hàng.
-- Khi phát hành, bước **lấy mặt hàng** của phiếu lệch đọc lại từ phiếu trên
-  website thay vì tin sổ (cần màn hình danh sách Bán hàng, extension tự chuyển).
+- Khi phát hành, bước **lấy mặt hàng** của phiếu lệch đọc lại từ website thay
+  vì tin sổ (API `TDONHANG0Ae/LayDuLieuChiTiet`, không cần chuyển màn hình).
   Phát hành xong, sổ đối soát và tồn kho được cập nhật theo phiếu thật. Hộp xác
   nhận phát hành nêu rõ các phiếu này.
 
