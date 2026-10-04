@@ -1439,7 +1439,9 @@
     const chips = [
       {
         text: `<b>${escapeHtml(pageTenantLabel)}</b>`,
-        title: "Cơ sở đang làm · Kho vật lý dùng chung Kim Giang + Linh Đàm"
+        title: pageTenantSlug === "parisnhon"
+          ? "Cơ sở đang làm · Paris Nhơn dùng kho vật lý riêng"
+          : "Cơ sở đang làm · Kho vật lý dùng chung Kim Giang + Linh Đàm"
       },
       {
         text: `Kho: <b>${escapeHtml(warehouseSource)}</b>`,
@@ -2059,11 +2061,19 @@
           <input id="it-state-file" type="file" accept=".json,application/json" hidden>
         </div>
         <section id="it-stock-admin" hidden>
+          <!-- Khối đầu: kho riêng/chung + MỘT nút cập nhật kho (trước có hai nút
+               cùng việc ở hai chỗ) và các thao tác file kho nhỏ bên dưới. -->
           <div class="it-shared-stock-note">
-            ${pageTenantSlug === "parisnhon" ? '<div class="it-tenant-stock-warning"><b>Paris Nhon dung kho rieng</b></div>' : ""}
             <div><span class="it-eyebrow">${pageTenantSlug === "parisnhon" ? "KHO VẬT LÝ RIÊNG" : "KHO VẬT LÝ DÙNG CHUNG"}</span><b>${pageTenantSlug === "parisnhon" ? "Paris Nhơn dùng kho riêng" : "Kim Giang và Linh Đàm cùng trừ một số tồn"}</b>
               <small>Mã web, ánh xạ và số tồn được kiểm soát theo đúng cơ sở đang mở.</small></div>
-            <button id="it-open-stock-import" type="button" class="primary">${pageTenantSlug === "parisnhon" ? "Cập nhật kho Nhơn" : "Cập nhật kho chung"}</button>
+            <div class="it-stock-note-actions">
+              <button id="it-import-stock" type="button" class="primary">${pageTenantSlug === "parisnhon" ? "Cập nhật kho Nhơn" : "Cập nhật kho chung"}</button>
+              <div class="it-stock-file-actions">
+                <button id="it-export-state" type="button" title="Tải file JSON số tồn hiện tại để khôi phục khi cần">Sao lưu kho</button>
+                <button id="it-import-state" type="button" title="Nạp lại số tồn từ file sao lưu">Khôi phục bản sao</button>
+                <button id="it-export-issued" type="button" title="Xuất Excel mặt hàng đã phát hành hóa đơn để hạch toán">Xuất kho đã phát hành (Excel)</button>
+              </div>
+            </div>
           </div>
           <section id="it-warehouse-import" class="it-warehouse-import" hidden>
             <div class="it-import-title"><div><b>Cập nhật file kho</b><small>Chọn đúng mục đích của file trước khi nhập.</small></div><button id="it-cancel-warehouse-import" type="button">Đóng</button></div>
@@ -2075,6 +2085,20 @@
             <div class="it-import-file-row"><button id="it-choose-stock-file" type="button" class="primary">Chọn file Excel</button><span id="it-stock-file-name">Chưa chọn file</span></div>
             <div id="it-warehouse-preview" hidden></div>
           </section>
+          <!-- Hoàn kho ít dùng và đổi dữ liệu (trả tồn, đưa giao dịch về Chưa xử lý):
+               thu gọn thành một dòng, bấm mới mở. -->
+          <details class="it-tool-section it-restock-section">
+            <summary><b>Hoàn kho để chạy lại batch</b><small>Trả tồn đã trừ cho các giao dịch đã đối soát trong khoảng ngày</small></summary>
+            <div class="it-tool-body">
+              <small>Trả số lượng đã trừ về kho cho các giao dịch đã đối soát trong khoảng ngày, rồi đưa chúng về Chưa xử lý. Hóa đơn đã lưu trên website không bị xóa.</small>
+              <div class="it-controls-row">
+                <label>Từ ngày<input id="it-restock-from" type="date"></label>
+                <label>Đến ngày<input id="it-restock-to" type="date"></label>
+                <button id="it-restock-range" type="button">Hoàn kho theo khoảng ngày</button>
+              </div>
+            </div>
+          </details>
+          <div id="it-stock-kpis" class="it-stock-kpis"></div>
           <div class="it-stock-toolbar">
             <input id="it-stock-search" type="search" placeholder="Tìm mã hoặc tên hàng…">
             <select id="it-stock-filter">
@@ -2084,21 +2108,7 @@
               <option value="out">Đã hết</option>
               <option value="per_invoice">Theo định mức/HĐ</option>
             </select>
-            <div class="it-restock-box">
-              <b>Hoàn kho để chạy lại batch</b>
-              <small>Trả số lượng đã trừ về kho cho các giao dịch đã đối soát trong khoảng ngày, rồi đưa chúng về Chưa xử lý. Hóa đơn đã lưu trên website không bị xóa.</small>
-              <label>Từ ngày<input id="it-restock-from" type="date"></label>
-              <label>Đến ngày<input id="it-restock-to" type="date"></label>
-              <button id="it-restock-range" type="button">Hoàn kho theo khoảng ngày</button>
-            </div>
-            <div class="it-stock-actions">
-              <button id="it-import-stock" type="button">Cập nhật kho chung</button>
-              <button id="it-import-state" type="button">Khôi phục bản sao</button>
-              <button id="it-export-state" type="button">Sao lưu kho</button>
-              <button id="it-export-issued" type="button" title="Xuất Excel mặt hàng đã phát hành hóa đơn để hạch toán">Xuất kho đã phát hành (Excel)</button>
-            </div>
           </div>
-          <div id="it-stock-kpis" class="it-stock-kpis"></div>
           <div class="it-table-wrap"><table class="it-stock-table">
             <thead><tr><th>Mã web</th><th>Mặt hàng</th><th>ĐVT</th><th>Giá</th><th>Tồn ghi nhận</th><th>Đang giữ</th><th>Có thể phân bổ</th><th>Nguồn kho</th></tr></thead>
             <tbody id="it-stock-body"></tbody>
@@ -2183,7 +2193,6 @@
     root.querySelector("#it-scan").addEventListener("click", scanInvoice);
     root.querySelector("#it-solve").addEventListener("click", solveInvoice);
     root.querySelector("#it-import-stock").addEventListener("click", openWarehouseImport);
-    root.querySelector("#it-open-stock-import").addEventListener("click", openWarehouseImport);
     root.querySelector("#it-cancel-warehouse-import").addEventListener("click", closeWarehouseImport);
     root.querySelector("#it-choose-stock-file").addEventListener("click", () => root.querySelector("#it-stock-file").click());
     root.querySelectorAll('input[name="it-warehouse-mode"]').forEach(input => input.addEventListener("change", () => {
@@ -3228,7 +3237,11 @@
     const title = document.getElementById("it-screen-title");
     const subtitle = document.getElementById("it-screen-subtitle");
     const help = document.getElementById("it-screen-help");
-    if (title) title.textContent = screen?.title || "Điều chỉnh một phiếu";
+    // Paris Nhơn có kho riêng: tiêu đề "dùng chung" ở đó là sai.
+    const screenTitle = screen?.mode === "stock-mode" && pageTenantSlug === "parisnhon"
+      ? "Bước 1 · Kho vật lý riêng"
+      : screen?.title;
+    if (title) title.textContent = screenTitle || "Điều chỉnh một phiếu";
     // Dấu vân tay bản dựng: đọc THẲNG từ các hằng số đang chạy, không phải từ
     // manifest. Số manifest chỉ nói file manifest là bản nào; vân tay này nói
     // chính content.js đang chạy là bản nào — hai thứ có thể lệch khi Chrome

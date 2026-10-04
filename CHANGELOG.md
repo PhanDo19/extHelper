@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.29.20 (2026-10-04)
+
+- **Sắp xếp lại màn Kho.** Chỉ đổi hiển thị.
+  - Khối đầu: kho riêng/dùng chung (bỏ dòng "Paris Nhon dung kho rieng" không dấu bị lặp; chữ nhỏ "KHO VẬT LÝ …" nay đọc được) và **một** nút chính "Cập nhật kho Nhơn / kho chung" — trước có hai nút cùng việc ở hai chỗ. Sao lưu kho, Khôi phục bản sao, Xuất kho đã phát hành thành nhóm nút nhỏ ngay dưới.
+  - "Hoàn kho để chạy lại batch" thu gọn thành một dòng, bấm mới mở (thao tác ít dùng và đổi dữ liệu); trước là khối cam chiếm nửa màn hình.
+  - Thứ tự: KPI (5 ô một hàng) → ô tìm + ô lọc → bảng. Trước đây thanh công cụ là lưới 3 cột chứa 4 khối nên nhóm nút rớt xuống hàng hai, nằm lệch trong cột đầu.
+  - Tiêu đề màn ở Paris Nhơn là "Bước 1 · Kho vật lý riêng" (trước ghi "dùng chung"); chú thích ô Kho ở thanh tóm tắt cũng theo cơ sở.
+  - Nhãn ngày trong các hàng điều khiển (Kho, Phát hành) cách ô nhập một khoảng.
+
 ## 1.29.19 (2026-10-04)
 
 - **Bỏ qua phiếu không gắn phòng hát khi Batch Review dò phiếu có sẵn.** Ca thật Paris Nhơn: Lưu API dừng ở 0/218 với "Phuong an thieu ngay hoa don hoac Gio vao/Ra hop le". Phiếu 01000000142 (21/08/2026) là phiếu bán hàng không qua phòng — không `DBANID`, không đơn giá giờ, form không có ô giờ vào/ra, Tiền giờ 0, toàn tiền hàng 2.410.000đ — nhưng Batch Review vẫn chọn nó cho giao dịch 401.500đ và lập phương án có Tiền giờ.
