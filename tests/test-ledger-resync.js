@@ -40,12 +40,18 @@ const ledgerItems = [
   { code: KHAN, name: "Khăn ướt", qty: 3, price: 5000 }
 ];
 
-function makeBox({ scans, confirmResult = true, summaries = {} }) {
+// Website giả: danh sách Hóa đơn điện tử theo ngày (fetchEInvoiceList) và đọc
+// trọn phiếu theo ID (readInvoiceSnapshot). Không có thao tác mở phiếu nào.
+function makeBox({ scans, confirmResult = true, summaries = {}, issued = [] }) {
   const commits = [];
   const statuses = [];
   const summaryCalls = [];
+  const listCalls = [];
+  const snapshotCalls = [];
   const box = {
     summaryCalls,
+    listCalls,
+    snapshotCalls,
     structuredClone,
     Promise,
     setTimeout: callback => { callback(); return 0; },
@@ -56,18 +62,25 @@ function makeBox({ scans, confirmResult = true, summaries = {} }) {
     InvoiceSharedWarehouse: SharedWarehouse,
     formatMoney: value => new Intl.NumberFormat("vi-VN").format(Math.round(Number(value) || 0)),
     assertRuntimeContext: () => {},
-    ensureInvoiceListScreen: async () => true,
+    // Đối soát lại chỉ dùng API: gọi tới chuyển màn hình là lỗi.
+    ensureInvoiceListScreen: async () => { throw new Error("Không được chuyển màn hình"); },
     refreshMappingState: () => {},
     renderStatementRows: () => {},
     setStatus: (message, kind) => statuses.push({ message, kind }),
     window: { confirm: () => confirmResult },
     document: { getElementById: id => ({ "it-restock-from": { value: "2026-07-01" }, "it-restock-to": { value: "2026-07-01" } })[id] || null },
     request: async (action, payload) => {
-      if (action === "findInvoiceCandidates") {
-        const found = scans[payload.invoiceNo];
-        return { candidates: found ? [{ uid: `uid-${payload.invoiceNo}`, invoiceNo: payload.invoiceNo, dateKey: payload.dateKey, available: true }] : [] };
+      if (action === "fetchEInvoiceList") {
+        listCalls.push(payload.fromDate);
+        const rows = [...Object.keys(scans), ...issued].map(invoiceNo => ({
+          id: `id-${invoiceNo}`, invoiceNo, dateKey: payload.fromDate, issued: issued.includes(invoiceNo), cancelled: false
+        }));
+        return { rows };
       }
-      if (action === "openInvoiceCandidate" || action === "closeInvoiceDetail") return { closed: true };
+      if (action === "readInvoiceSnapshot") {
+        snapshotCalls.push(payload.id);
+        return scans[String(payload.id).replace(/^id-/, "")];
+      }
       if (action === "readInvoiceSummary") {
         summaryCalls.push(payload.id);
         const summary = summaries[payload.id];
@@ -76,7 +89,6 @@ function makeBox({ scans, confirmResult = true, summaries = {} }) {
       }
       throw new Error(`Hành động không mong đợi: ${action}`);
     },
-    waitForOpenedInvoice: async invoiceNo => scans[invoiceNo],
     InvoiceMappingStore: {
       loadSharedWarehouse: async fallback => structuredClone(fallback),
       commitVerifiedInvoice: async (mapping, statement, ledger, warehouse) => {
@@ -154,8 +166,9 @@ function scan(invoiceNo, items, extra = {}) {
       "01000000269": scan("01000000269", editedItems),
       "01000000270": scan("01000000270", structuredClone(ledgerItems)),
       "01000000272": scan("01000000272", structuredClone(ledgerItems), { currentGrand: 500000 })
-      // 01000000271 không còn trong danh sách Chưa xuất hóa đơn.
-    }
+      // 01000000271 đã phát hành HĐĐT: phiếu đã khóa, giữ nguyên sổ.
+    },
+    issued: ["01000000271"]
   });
   const statement = {
     revision: 7,
@@ -202,8 +215,18 @@ function scan(invoiceNo, items, extra = {}) {
   assert.strictEqual(finalStatus.kind, "warn", "Có phiếu lệch tổng thì kết thúc ở mức cảnh báo");
   assert.match(finalStatus.message, /01000000269/);
   assert.match(finalStatus.message, /TỔNG TIỀN khác sổ[\s\S]*01000000272/);
-  assert.match(finalStatus.message, /01000000271/, "Phải nêu phiếu không còn trong danh sách chưa xuất");
+  assert.match(finalStatus.message, /đã phát hành HĐĐT[^.]*01000000271/, "Phải nêu phiếu đã phát hành, giữ nguyên sổ");
   assert(!/01000000300/.test(finalStatus.message), "Chỉ xét đúng khoảng ngày đã chọn");
+  // Một ngày chỉ tải danh sách một lần cho cả lượt; phiếu đã phát hành không bị đọc.
+  assert.strictEqual(box.listCalls.join(","), "2026-07-01", "Danh sách mỗi ngày chỉ tải một lần");
+  assert(!box.snapshotCalls.includes("id-01000000271"), "Phiếu đã phát hành không được đọc lại để sửa sổ");
+
+  // Website trả nhầm phiếu khác thì báo lỗi theo dòng, không ghi số liệu sai.
+  const wrong = makeBox({ scans: { "01000000269": scan("01000000999", editedItems) } });
+  wrong.setState({ transactions: [transaction("t269", "01000000269")] }, { entries: [ledgerEntry("t269", "01000000269")] }, makeMapping());
+  await wrong.run();
+  assert.strictEqual(wrong.commits.length, 0, "Đọc nhầm phiếu thì không ghi");
+  assert.match(wrong.statuses[wrong.statuses.length - 1].message, /01000000999 thay vì 01000000269/);
 
   // Người dùng bấm Hủy: không ghi gì.
   const cancelled = makeBox({ scans: { "01000000269": scan("01000000269", editedItems) }, confirmResult: false });

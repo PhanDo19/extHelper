@@ -150,16 +150,17 @@ Màn hình `Form?ID=9bc781f5-…` (menu **Hóa đơn điện tử**). Xác nhậ
 
 | Việc | Request | Body | Response |
 |---|---|---|---|
-| Danh sách | `POST HoaDonDienTu/LayDuLieu` (grid Kendo) | `customData: { DXEID, DNHANVIENID, DKHACHHANGID, DNHOMMATHANGID, DKHOXUATID, DHANGSANXUATID, TRANGTHAI, TuNgay, DenNgay }` (ngày `MM/dd/yyyy`, ô lọc rỗng = không lọc) | `{ Data: [{ ID, NAME, NGAY, TONGCONG, NGUOIMUAHANG, PHUONGTHUCTT, SOKYHIEU, SOHOADON, MACQTHUE, DAHUY, INVOICEDATA, … }], Total }` |
+| Danh sách (cũng là nơi extension tìm phiếu chưa xuất/đã xuất) | `POST HoaDonDienTu/LayDuLieu` (grid Kendo) | `customData: { DXEID, DNHANVIENID, DKHACHHANGID, DNHOMMATHANGID, DKHOXUATID, DHANGSANXUATID, TRANGTHAI, TuNgay, DenNgay }` (ngày `MM/dd/yyyy`, ô lọc rỗng = không lọc) | `{ Data: [{ ID, NAME, NGAY, TONGCONG, NGUOIMUAHANG, PHUONGTHUCTT, SOKYHIEU, SOHOADON, MACQTHUE, DAHUY, INVOICEDATA, … }], Total }` |
 | Mặt hàng của phiếu | `POST TDONHANG0Ae/LayDuLieuChiTiet?is_ajax=1` | `{ ID, STABLEDESCID: "d56b4b85-…" }` | `{ code: 1, Tag: [{ DMATHANG_CODE, DMATHANG_NAME, DDONVITINH_NAME, SOLUONG, DONGIA, THANHTIEN, TIENGIAMGIA, KHUYENMAI, NOTE }] }` — chỉ dòng hàng, không có tiền giờ; ID sai trả `code != 1` |
 | Kiểm tra trước phát hành | `POST HoaDonDienTu/kiemTraThongTin?is_ajax=1` | `{ id }` | `{ code, Tag: HTML xem trước người mua }` |
 | Phát hành một phiếu | `POST HoaDonDienTu/phatHanhHoaDon?is_ajax=1` | `{ id, kyHieu }` | `{ code, Tag: HTML "Số HĐ: …</br>Mã CQT: …" }` |
 | Phát hành nhiều phiếu | `HoaDonDienTu/PostHoaDon` | `{ ids, kyHieu }` | Extension **không** dùng: cần kết quả và thứ tự cấp số theo từng phiếu |
 | Tải lại trạng thái | `HoaDonDienTu/CheckHoaDon` | `{ ids }` | Nút "Kiểm tra" của website; extension chưa dùng |
+| Mở form phiếu (nhấp đúp dòng) | `UiUtils.ShowEditForm("d56b4b85-…", 0, ID, "Loai=0&notitle=1&ModeQuanLy=30", cb)` | — | Hàm giao diện của website; có ở mọi trang, kể cả sơ đồ phòng |
 
-- `TRANGTHAI` là ô "Loại": `0` Tất cả, `1` Đã phát hành, `2` Chưa phát hành. Extension lấy `0` vì Check/Đồng bộ sổ cần cả phiếu đã phát hành. Payload cũ chỉ có `DKHACHHANGID` + `TRANGTHAI` vẫn được server chấp nhận.
+- `TRANGTHAI` là ô "Loại": `0` Tất cả, `1` Đã phát hành, `2` Chưa phát hành. Màn Phát hành của extension lấy `0` vì Check/Đồng bộ sổ cần cả phiếu đã phát hành; tìm phiếu để lập phương án (`findInvoiceCandidates`) lấy `2`, dò hóa đơn đã xuất khớp tiền (`findIssuedInvoiceByAmount`) lấy `1`. Payload cũ chỉ có `DKHACHHANGID` + `TRANGTHAI` vẫn được server chấp nhận.
 - `kyHieu`: website chỉ hỏi ký hiệu khi biến form `ChonKyHieu = true`; Paris Nhơn là `false` và website gửi `""`. Extension luôn gửi `""`.
-- Lưới danh sách có cột Ngày/Số phiếu/Tổng cộng giống danh sách Bán hàng, cộng hai cột thao tác **Kiểm tra** và **Phát hành**. `invoiceListElement()` dựa vào hai cột này để không nhận nhầm. Nhấp đúp dòng ở đây mở form phiếu bán hàng, nhưng lưới lọc theo ô ngày của website.
+- Đây chính là "danh sách phiếu" mà các bản trước gọi là danh sách Bán hàng: lưới Ngày/Số phiếu/Tổng cộng, radio `rdTrangThai` (lựa chọn `_2` = Chưa phát hành), ô Từ/Đến ngày, nút Refresh, nhấp đúp mở phiếu. Giao diện 10/2026 đổi radio thành dropdown và thêm cột Chọn/Chiết khấu, nên cách điều khiển lưới cũ hỏng. Từ 1.29.15 extension không điều khiển lưới nữa: lấy danh sách bằng `LayDuLieu` và mở phiếu bằng `UiUtils.ShowEditForm` theo ID — chạy được ở mọi trang, không cần chuyển màn hình.
 
 ## 4. Cấu trúc payload DoSave
 

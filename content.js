@@ -698,6 +698,10 @@
   // hình này khác nhau: sau khi lưu xong, tab worker vẫn đứng ở sơ đồ phòng nên
   // findInvoiceCandidates ném "Hãy mở màn hình danh sách Bán hàng trước." và
   // giao dịch kẹt ở trạng thái Chờ lưu/đối soát dù hóa đơn đã lưu thành công.
+  //
+  // Từ 1.29.15 tìm phiếu đi qua API và mở phiếu theo ID, nên bridge báo sẵn sàng
+  // ở mọi trang mở được phiếu (cả sơ đồ phòng); nhánh chuyển trang chỉ còn là
+  // dự phòng cho trang không có UiUtils.
   async function ensureInvoiceListScreen(timeout = 12000) {
     if (await request("hasInvoiceList").then(r => r?.present).catch(() => false)) return true;
     const listAnchor = Array.from(document.querySelectorAll("a"))
@@ -1274,7 +1278,7 @@
         // trang rồi xét lại phiếu.
         : action === "buyerFixInvoice" ? 90000
         : action === "buyerFixScan" ? 60000
-        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm", "readInvoiceSummary"].includes(action) ? 30000
+        : ["findInvoiceCandidates", "findIssuedInvoiceByAmount", "fetchEInvoiceList", "createProductViaApi", "fetchLatestProductCatalog", "getRoomMap", "probeBlankRoomForm", "readInvoiceSummary", "readInvoiceSnapshot"].includes(action) ? 30000
         : 5000;
       const timeout = setTimeout(
         () => reject(new Error(`Trang không phản hồi sau ${Math.round(timeoutMs / 1000)}s (${action}).`)),
@@ -4313,7 +4317,7 @@
             dateKey: row.dateKey,
             // Có sẵn mặt hàng thì bridge khỏi phải đọc lại từ website.
             knownItems: ledgerItems || null,
-            // Chỉ cho phép đường dự phòng mở phiếu khi đang đứng ở danh sách Bán hàng.
+            // Chỉ cho phép đường dự phòng mở phiếu khi trang hiện tại mở phiếu được.
             canReadItems: Boolean(listReady?.present)
           });
           // Ghi sổ ngay sau từng hóa đơn: nếu lô dừng giữa chừng thì phần đã
@@ -5410,36 +5414,32 @@
     return changes.map(describeLedgerChange).join("; ");
   }
 
-  // Mở phiếu từ danh sách "Chưa xuất hóa đơn" của website, đọc rồi đóng. Thử
-  // lần lượt các ngày danh sách có thể chứa phiếu; không thấy thì trả null.
-  async function readInvoiceFromServer(invoiceNo, lookupDateKeys) {
+  // Đọc lại phiếu chỉ bằng API, không mở phiếu nên chạy được ở mọi màn hình:
+  // tìm ID trên danh sách Hóa đơn điện tử theo lần lượt các ngày phiếu có thể
+  // nằm, rồi đọc đầu phiếu + dòng hàng. Phiếu đã phát hành HĐĐT hoặc đã hủy thì
+  // giữ nguyên sổ (sổ phát hành đã ghi theo mặt hàng lúc phát hành); không thấy
+  // cũng trả null. `listCache` dùng chung trong một lượt để mỗi ngày chỉ tải một lần.
+  async function readInvoiceFromServer(invoiceNo, lookupDateKeys, listCache = new Map()) {
     for (const dateKey of lookupDateKeys) {
-      const found = await request("findInvoiceCandidates", {
-        dateKey,
-        usedInvoiceNos: [],
-        invoiceNo,
-        forceRefresh: true
-      });
-      const candidate = (found.candidates || []).find(item => String(item.invoiceNo) === String(invoiceNo));
-      if (!candidate) continue;
-      await request("openInvoiceCandidate", { uid: candidate.uid, invoiceNo });
-      try {
-        const scan = await waitForOpenedInvoice(invoiceNo, candidate.dateKey || dateKey);
-        if (String(scan?.invoiceNo || "") !== String(invoiceNo)) {
-          throw new Error(`Website mở nhầm phiếu ${scan?.invoiceNo || "không xác định"} thay vì ${invoiceNo}.`);
-        }
-        return scan;
-      } finally {
-        try { await request("closeInvoiceDetail"); } catch (_) {}
-        await new Promise(resolve => setTimeout(resolve, 450));
+      if (!listCache.has(dateKey)) {
+        const list = await request("fetchEInvoiceList", { fromDate: dateKey, toDate: dateKey });
+        listCache.set(dateKey, list.rows || []);
       }
+      const row = listCache.get(dateKey).find(item => String(item.invoiceNo) === String(invoiceNo));
+      if (!row) continue;
+      if (row.issued || row.cancelled) return null;
+      const scan = await request("readInvoiceSnapshot", { id: row.id, invoiceNo });
+      if (String(scan?.invoiceNo || "") !== String(invoiceNo)) {
+        throw new Error(`Website trả phiếu ${scan?.invoiceNo || "không xác định"} thay vì ${invoiceNo}.`);
+      }
+      return scan;
     }
     return null;
   }
 
   // Đọc lại các phiếu đã đối soát trên website và cập nhật sổ/tồn theo phần
   // chênh. `onlyInvoiceNos` giới hạn vào đúng các phiếu đã biết là lệch (do
-  // kiểm tra nhanh tìm ra) để khỏi mở mọi phiếu; không có thì xét cả khoảng ngày.
+  // kiểm tra nhanh tìm ra) để khỏi đọc mọi phiếu; không có thì xét cả khoảng ngày.
   async function resyncVerifiedRange({
     fromDate = "", toDate = "", onlyInvoiceNos = null, button = null, label = "Đối soát lại mặt hàng từ website"
   } = {}) {
@@ -5460,14 +5460,12 @@
           "warn"
         );
       }
-      if (!await ensureInvoiceListScreen()) {
-        throw new Error("Chưa mở được màn hình danh sách Bán hàng để đọc lại phiếu; hãy mở danh sách rồi thử lại.");
-      }
       if (button) button.disabled = true;
       const changed = [];
       const totalChanged = [];
       const notFound = [];
       const readErrors = [];
+      const listCache = new Map();
       for (let index = 0; index < matches.length; index += 1) {
         const { transaction, entry } = matches[index];
         const invoiceNo = String(transaction.invoiceNo);
@@ -5490,7 +5488,7 @@
         ].filter(Boolean))];
         let scan = null;
         try {
-          scan = await readInvoiceFromServer(invoiceNo, lookupDateKeys);
+          scan = await readInvoiceFromServer(invoiceNo, lookupDateKeys, listCache);
         } catch (error) {
           readErrors.push(`${invoiceNo}: ${error.message}`);
           continue;
@@ -5511,7 +5509,7 @@
           ? `${totalChanged.length} phiếu có TỔNG TIỀN khác sổ, không tự sửa: ${totalChanged.slice(0, 5).join("; ")}${totalChanged.length > 5 ? "…" : ""}.`
           : "",
         notFound.length
-          ? `${notFound.length} phiếu không còn trong danh sách Chưa xuất hóa đơn (có thể đã phát hành HĐĐT), giữ nguyên sổ: ${notFound.slice(0, 8).join(", ")}${notFound.length > 8 ? "…" : ""}.`
+          ? `${notFound.length} phiếu đã phát hành HĐĐT, đã hủy hoặc không tìm thấy trên website, giữ nguyên sổ: ${notFound.slice(0, 8).join(", ")}${notFound.length > 8 ? "…" : ""}.`
           : "",
         readErrors.length ? `${readErrors.length} phiếu đọc lỗi: ${readErrors.slice(0, 3).join("; ")}.` : ""
       ].filter(Boolean).join(" ");
@@ -5547,7 +5545,7 @@
   }
 
   // Nút ở màn Phát hành hóa đơn: kiểm tra nhanh mọi phiếu chưa phát hành của
-  // danh sách đang tải, rồi chỉ mở các phiếu thật sự lệch sổ để đọc mặt hàng.
+  // danh sách đang tải, rồi chỉ đọc lại mặt hàng của các phiếu thật sự lệch sổ.
   async function resyncEInvoiceDay(event) {
     const button = event?.currentTarget || document.getElementById("it-resync-einvoice-day");
     const label = "Đối soát lại mặt hàng từ website";
@@ -9106,10 +9104,11 @@
         "batch không chạy sang phiếu kế tiếp."
       );
     }
+    // Phiếu được mở theo ID nên không cần lưới danh sách; chỉ cần chắc form đã đóng.
     const uiState = await request("getInvoiceUiState");
-    if (uiState?.detailVisible || !uiState?.listVisible) {
+    if (uiState?.detailVisible) {
       throw new Error(
-        `Sau khi xử lý ${plan.invoiceNo}, website chưa trở về danh sách phiếu; ` +
+        `Sau khi xử lý ${plan.invoiceNo}, form phiếu trên website chưa đóng; ` +
         "batch đã dừng để không ghi nhầm phiếu."
       );
     }
@@ -9196,9 +9195,9 @@
       );
     }
     const uiState = await request("getInvoiceUiState");
-    if (uiState?.detailVisible || !uiState?.listVisible) {
+    if (uiState?.detailVisible) {
       throw new Error(
-        `Sau khi đối soát ${verified.invoiceNo}, website chưa trở về danh sách phiếu; ` +
+        `Sau khi đối soát ${verified.invoiceNo}, form phiếu trên website chưa đóng; ` +
         "batch đã dừng để không ghi nhầm phiếu."
       );
     }

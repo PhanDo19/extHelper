@@ -552,8 +552,6 @@
           state = await waitForInvoiceDetailClosed();
         }
       }
-      const listDialog = window.__invoiceTargetListDialogInfo;
-      if (!state.detailVisible && listDialog?.client && invoiceListElement()) window.dialogInfo = listDialog;
       return {
         closed: !state.detailVisible,
         method,
@@ -1581,143 +1579,14 @@
     return { changed: true, snapshot };
   }
 
+  // Lưới danh sách phiếu (màn hình Hóa đơn điện tử: Ngày / Số phiếu / Tổng cộng).
+  // Chỉ còn dùng để báo trạng thái giao diện; tìm và mở phiếu đi qua API, không
+  // điều khiển lưới này nữa.
   function invoiceListElement() {
-    return Array.from(document.querySelectorAll(".k-grid")).find(element =>
-      isInvoiceListHeader(element.querySelector("thead")?.innerText || "")) || null;
-  }
-
-  // Lưới của màn hình Hóa đơn điện tử (giao diện 10/2026) cũng có Ngày/Số phiếu/
-  // Tổng cộng nhưng lọc theo ô ngày của website, không phải danh sách Bán hàng.
-  // Nhận nhầm thì ensureInvoiceListScreen tưởng đã tới nơi và luồng mở phiếu đi
-  // tìm phiếu trên lưới sai. Nó có riêng hai cột thao tác Kiểm tra + Phát hành.
-  function isInvoiceListHeader(text) {
-    if (/Kiểm tra/i.test(text) && /Phát hành/i.test(text)) return false;
-    return /Số phiếu/i.test(text) && /Tổng cộng/i.test(text) && /Ngày/i.test(text);
-  }
-
-  // Sau khi form phiếu đóng, website dựng lại grid danh sách. Trong lúc đó
-  // kendoDropDownList của pager chưa init xong; bấm Refresh hoặc đổi ô lọc ngay
-  // lúc này làm website ném "Cannot call method 'value' of kendoDropDownList
-  // before it is initialized" và cả batch dừng lại.
-  async function waitForInvoiceListReady(timeout = 8000) {
-    const jq = window.jQuery || window.$;
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const grid = invoiceListElement();
-      const widget = grid && jq ? jq(grid).data("kendoGrid") : null;
-      const pagerElement = grid?.querySelector(".k-pager-wrap, .k-pager");
-      const pagerSelects = pagerElement ? Array.from(pagerElement.querySelectorAll("select")) : [];
-      // Chính thẻ SELECT chưa được Kendo khởi tạo là nguyên nhân website ném
-      // "before it is initialized". Không coi SELECT thuần là sẵn sàng.
-      const pagerReady = !pagerElement || !pagerSelects.length || pagerSelects.every(select =>
-        Boolean(jq && (jq(select).data("kendoDropDownList") || jq(select).data("kendoDropDown")))
-      );
-      const loading = grid?.querySelector(".k-loading-mask");
-      if (grid && widget && pagerReady && (!loading || !isVisible(loading))) {
-        // Kendo hoàn tất init trong microtask kế tiếp; nhường thêm một nhịp.
-        await wait(150);
-        return true;
-      }
-      await wait(150);
-    }
-    throw new Error("Danh sách phiếu chưa khởi tạo xong bộ lọc Kendo; hãy thử lại sau vài giây.");
-  }
-
-  function rememberInvoiceListDialog() {
-    const current = window.dialogInfo;
-    const runner = current?.client?.get_CodeRunner?.();
-    if (invoiceListElement() && runner && typeof runner.Detail_MouseDoubleClick === "function") {
-      window.__invoiceTargetListDialogInfo = current;
-    }
-    return window.__invoiceTargetListDialogInfo || current || null;
-  }
-
-  function invoiceListRows() {
-    const grid = invoiceListElement();
-    if (!grid) return [];
-    return Array.from(grid.querySelectorAll("tbody tr[data-uid]")).map(row => {
-      const cells = Array.from(row.querySelectorAll('[role="gridcell"]')).map(cell => (cell.innerText || "").trim());
-      const offset = cells.length >= 4 && /^\d+$/.test(cells[0]) ? 1 : 0;
-      return {
-        uid: row.getAttribute("data-uid") || "",
-        date: cells[offset] || "",
-        dateKey: normalizeDateKey(cells[offset] || ""),
-        invoiceNo: cells[offset + 1] || "",
-        grandTotal: money(cells[offset + 2])
-      };
-    }).filter(item => item.invoiceNo && item.dateKey);
-  }
-
-  function invoiceListDataSource() {
-    const grid = invoiceListElement();
-    const jq = window.jQuery || window.$;
-    const widget = grid && jq ? jq(grid).data("kendoGrid") : null;
-    return widget?.dataSource || null;
-  }
-
-  async function waitForInvoiceListPage(page, dateKey, timeout = 22000, previousSignature = "") {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const dataSource = invoiceListDataSource();
-      const currentPage = typeof dataSource?.page === "function" ? Number(dataSource.page()) : page;
-      const rows = invoiceListRows();
-      const loading = document.querySelector(".k-loading-mask");
-      const settled = !loading || !isVisible(loading);
-      const signature = rows.map(row => `${row.uid}:${row.invoiceNo}`).join("|");
-      const pageChanged = !previousSignature || signature !== previousSignature;
-      if (settled && currentPage === page && pageChanged &&
-          (!rows.length || rows.every(row => row.dateKey === dateKey))) {
-        return rows;
-      }
-      await wait(180);
-    }
-    throw new Error("Danh sách phiếu chưa tải xong. Hãy thử lại.");
-  }
-
-  // The grid is server-paged.  invoiceListRows() only sees the visible page,
-  // so a newly-created invoice can be present on the server while the first
-  // page does not contain it.  The post-save readback supplies an exact number
-  // and uses this helper to walk every page for that date.  When no match is
-  // found, the original page is restored; when found, the matching page is
-  // intentionally kept visible so openInvoiceRowForReading can open its row.
-  async function findInvoiceRowAcrossPages(dateKey, invoiceNo, initialRows) {
-    const wanted = String(invoiceNo || "").trim();
-    if (!wanted) return null;
-    const dataSource = invoiceListDataSource();
-    if (!dataSource || typeof dataSource.page !== "function") {
-      return (initialRows || []).find(row => String(row.invoiceNo) === wanted) || null;
-    }
-    const originalPage = Math.max(1, Number(dataSource.page()) || 1);
-    const pageSize = Math.max(1, Number(dataSource.pageSize?.()) || (initialRows || []).length || 20);
-    const total = Math.max(0, Number(dataSource.total?.()) || 0);
-    const pageCount = Math.min(100, Math.max(1, Math.ceil(total / pageSize)));
-    const pages = [...Array(pageCount)].map((_, index) => index + 1);
-    // Prefer the currently displayed page; it is already settled by the caller.
-    pages.sort((left, right) => (left === originalPage ? -1 : right === originalPage ? 1 : left - right));
-    try {
-      for (const page of pages) {
-        if (Number(dataSource.page()) !== page) {
-          const previousSignature = invoiceListRows().map(row => `${row.uid}:${row.invoiceNo}`).join("|");
-          dataSource.page(page);
-          await waitForInvoiceListPage(page, dateKey, 22000, previousSignature);
-        }
-        const rows = page === originalPage && Array.isArray(initialRows)
-          ? initialRows
-          : invoiceListRows();
-        const exact = rows.find(row => String(row.invoiceNo) === wanted && row.dateKey === dateKey);
-        if (exact) return exact;
-      }
-    } finally {
-      // Keep the matching page in place.  If the scan failed, avoid leaving the
-      // user on an arbitrary page of the sales list.
-      const currentRows = invoiceListRows();
-      const onTargetPage = currentRows.some(row => String(row.invoiceNo) === wanted && row.dateKey === dateKey);
-      if (!onTargetPage && Number(dataSource.page()) !== originalPage) {
-        dataSource.page(originalPage);
-        await waitForInvoiceListPage(originalPage, dateKey).catch(() => {});
-      }
-    }
-    return null;
+    return Array.from(document.querySelectorAll(".k-grid")).find(element => {
+      const text = element.querySelector("thead")?.innerText || "";
+      return /Số phiếu/i.test(text) && /Tổng cộng/i.test(text) && /Ngày/i.test(text);
+    }) || null;
   }
 
   function setNativeValue(input, value) {
@@ -1733,242 +1602,124 @@
     return match ? `${match[3]}/${match[2]}/${match[1]}` : "";
   }
 
+  // Danh sách phiếu theo ngày lấy bằng API LayDuLieu của màn hình Hóa đơn điện
+  // tử, ô "Loại" do SERVER lọc: Chưa phát hành (2) / Đã phát hành (1). Không dựa
+  // vào số hóa đơn trên dòng để đoán trạng thái.
+  //
+  // Trước giao diện 10/2026 extension đặt ô ngày + radio rdTrangThai_2 trên lưới
+  // rồi đọc DOM từng trang. Radio đã thành dropdown và lưới thêm cột Chọn/Chiết
+  // khấu, nên cách đó không còn chạy. `uid` của dòng chính là ID phiếu, để
+  // openInvoiceCandidate mở theo ID.
+  function invoiceCandidateRow(row, dateKey) {
+    return {
+      uid: row.id,
+      id: row.id,
+      invoiceNo: row.invoiceNo,
+      date: dateDisplay(dateKey),
+      dateKey,
+      grandTotal: row.grandTotal
+    };
+  }
+
+  const INVOICE_LIST_CACHE_MS = 120000;
+
+  // ID phiếu đã thấy trong danh sách Chưa phát hành, theo ngày. openInvoiceCandidate
+  // chỉ mở ID có ở đây: luồng lập/sửa phương án chỉ được chạm phiếu chưa xuất.
+  const unissuedInvoiceIds = new Map();
+
+  function rememberUnissuedRows(dateKey, rows) {
+    for (const [id, known] of unissuedInvoiceIds) {
+      if (known.dateKey === dateKey) unissuedInvoiceIds.delete(id);
+    }
+    for (const row of rows) unissuedInvoiceIds.set(row.id, { invoiceNo: row.invoiceNo, dateKey });
+  }
+
   async function findInvoiceCandidates(dateKey, usedInvoiceNos, options = {}) {
-    const expected = dateDisplay(dateKey);
-    if (!expected) throw new Error("Ngày giao dịch không hợp lệ.");
-    if (!invoiceListElement()) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
-    await waitForInvoiceListReady();
-    rememberInvoiceListDialog();
-
-    const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
-      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Chưa xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
-    if (!unissuedRadio) throw new Error('Không tìm thấy bộ lọc "Chưa xuất hóa đơn".');
-
+    const key = normalizeDateKey(dateKey);
+    if (!key) throw new Error("Ngày giao dịch không hợp lệ.");
     const used = new Set((usedInvoiceNos || []).map(String));
     const wantedInvoiceNo = String(options.invoiceNo || "").trim();
+    // Tìm đúng một số phiếu (đối soát sau lưu) luôn đọc lại server: phiếu vừa tạo
+    // chưa có trong bản đã nhớ.
     const forceRefresh = Boolean(options.forceRefresh || wantedInvoiceNo);
-    if (forceRefresh) invoiceListCache.delete(String(dateKey));
-    const cachedRows = invoiceListCache.get(String(dateKey));
-    if (unissuedRadio.checked &&
-        !forceRefresh &&
-        cachedRows?.length) {
-      return {
-        dateKey,
-        invoiceStatus: "unissued",
-        cached: true,
-        suppressedAlerts: [],
-        candidates: cachedRows.map(row => ({ ...row, available: !used.has(String(row.invoiceNo)) }))
-      };
+    const entry = invoiceListCache.get(key);
+    // Batch Review hỏi nhiều giao dịch cùng ngày liên tiếp: dùng lại bản vừa tải
+    // trong thời gian ngắn, quá hạn thì tải lại để tổng tiền không cũ.
+    const cached = Boolean(!forceRefresh && entry && Date.now() - entry.at < INVOICE_LIST_CACHE_MS);
+    let rows = cached ? entry.rows : null;
+    if (!rows) {
+      const list = await fetchEInvoiceList({ dateKey: key, status: EINVOICE_STATUS_UNISSUED });
+      rows = list.rows
+        .filter(row => isGuid(row.id) && row.invoiceNo && !row.issued && !row.cancelled)
+        .map(row => invoiceCandidateRow(row, key));
+      invoiceListCache.set(key, { at: Date.now(), rows: rows.map(row => ({ ...row })) });
+      rememberUnissuedRows(key, rows);
     }
-    const currentRows = invoiceListRows();
-    // Batch Review normally handles many transactions of one day. Reusing the
-    // already loaded unissued list avoids repeatedly destroying/recreating the
-    // Kendo pager DropDownList between transactions.
-    if (unissuedRadio.checked &&
-        !forceRefresh &&
-        currentRows.length &&
-        currentRows.every(row => row.dateKey === dateKey)) {
-      invoiceListCache.set(String(dateKey), currentRows.map(row => ({ ...row })));
-      return {
-        dateKey,
-        invoiceStatus: "unissued",
-        cached: true,
-        suppressedAlerts: [],
-        candidates: currentRows.map(row => ({ ...row, available: !used.has(String(row.invoiceNo)) }))
-      };
-    }
-
-    const dateInputs = Array.from(document.querySelectorAll('input[type="text"]')).filter(input => normalizeDateKey(input.value));
-    if (dateInputs.length < 2) throw new Error("Không tìm thấy bộ lọc Từ ngày/Đến ngày.");
-    const refresh = document.querySelector('[id^="btnRefresh"]') ||
-      Array.from(document.querySelectorAll("button")).find(button => (button.innerText || "").trim() === "Refresh");
-    if (!refresh) throw new Error("Không tìm thấy nút Refresh của danh sách phiếu.");
-    // Chặn alert từ TRƯỚC khi chạm vào ô lọc: đổi ngày/radio cũng có thể làm
-    // website ném lỗi Kendo nội bộ, và alert đó sẽ treo cả batch.
-    const originalAlert = window.alert;
-    const suppressedAlerts = [];
-    window.alert = message => { suppressedAlerts.push(String(message || "")); };
-    try {
-      const jq = window.jQuery || window.$;
-      dateInputs.slice(0, 2).forEach(input => {
-        const picker = jq ? jq(input).data("kendoDatePicker") : null;
-        try {
-          if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
-        } catch (_) {}
-        setNativeValue(input, expected);
-      });
-
-      if (!unissuedRadio.checked) unissuedRadio.click();
-      if (!unissuedRadio.checked) {
-        unissuedRadio.checked = true;
-        unissuedRadio.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-
-      refresh.click();
-
-      const startedAt = Date.now();
-      // The website can show a native "no data" alert while the Kendo source
-      // refreshes. Suppress only inside this read-only lookup so a whole batch
-      // cannot be blocked by one empty date.
-      const deadline = startedAt + 22000;
-      while (Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 180));
-        const rows = invoiceListRows();
-        if (rows.length && rows.every(row => row.dateKey === dateKey)) {
-          const exact = wantedInvoiceNo
-            ? await findInvoiceRowAcrossPages(dateKey, wantedInvoiceNo, rows)
-            : null;
-          if (wantedInvoiceNo) {
-            const candidates = exact
-              ? [{ ...exact, available: !used.has(String(exact.invoiceNo)) }]
-              : [];
-            return { dateKey, invoiceStatus: "unissued", exact: Boolean(exact), suppressedAlerts, candidates };
-          }
-          invoiceListCache.set(String(dateKey), rows.map(row => ({ ...row })));
-          return {
-            dateKey,
-            invoiceStatus: "unissued",
-            suppressedAlerts,
-            candidates: rows.map(row => ({ ...row, available: !used.has(String(row.invoiceNo)) }))
-          };
-        }
-        if (Date.now() - startedAt > 2500 && !document.querySelector(".k-loading-mask") && !rows.length) {
-          return { dateKey, invoiceStatus: "unissued", suppressedAlerts, candidates: [] };
-        }
-      }
-      throw new Error("Danh sách phiếu chưa tải xong. Hãy thử lại.");
-    } finally {
-      window.alert = originalAlert;
-    }
+    const picked = wantedInvoiceNo ? rows.filter(row => row.invoiceNo === wantedInvoiceNo) : rows;
+    return {
+      dateKey: key,
+      invoiceStatus: "unissued",
+      source: "api",
+      cached,
+      ...(wantedInvoiceNo ? { exact: picked.length > 0 } : {}),
+      suppressedAlerts: [],
+      candidates: picked.map(row => ({ ...row, available: !used.has(String(row.invoiceNo)) }))
+    };
   }
 
   async function findIssuedInvoiceByAmount(dateKey, amount) {
-    const expected = dateDisplay(dateKey);
-    if (!expected) throw new Error("Ngày giao dịch không hợp lệ.");
-    if (!invoiceListElement()) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
-    await waitForInvoiceListReady();
-    rememberInvoiceListDialog();
-
-    const dateInputs = Array.from(document.querySelectorAll('input[type="text"]')).filter(input => normalizeDateKey(input.value));
-    if (dateInputs.length < 2) throw new Error("Không tìm thấy bộ lọc Từ ngày/Đến ngày.");
-    // Radio "Đã xuất hóa đơn" là _1 (đối ứng "Chưa xuất" _2); dự phòng theo nhãn.
-    const issuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_1"]') ||
-      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Đã xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
-    if (!issuedRadio) throw new Error('Không tìm thấy bộ lọc "Đã xuất hóa đơn".');
-    const refresh = document.querySelector('[id^="btnRefresh"]') ||
-      Array.from(document.querySelectorAll("button")).find(button => (button.innerText || "").trim() === "Refresh");
-    if (!refresh) throw new Error("Không tìm thấy nút Refresh của danh sách phiếu.");
-    // Chặn alert từ TRƯỚC khi chạm vào ô lọc, xem findInvoiceCandidates.
-    const originalAlert = window.alert;
-    const suppressedAlerts = [];
-    window.alert = message => { suppressedAlerts.push(String(message || "")); };
+    const key = normalizeDateKey(dateKey);
+    if (!key) throw new Error("Ngày giao dịch không hợp lệ.");
     const target = Math.round(Number(amount) || 0);
-    try {
-      const jq = window.jQuery || window.$;
-      dateInputs.slice(0, 2).forEach(input => {
-        const picker = jq ? jq(input).data("kendoDatePicker") : null;
-        try {
-          if (picker?.value) picker.value(new Date(`${dateKey}T00:00:00`));
-        } catch (_) {}
-        setNativeValue(input, expected);
-      });
-
-      if (!issuedRadio.checked) issuedRadio.click();
-      if (!issuedRadio.checked) {
-        issuedRadio.checked = true;
-        issuedRadio.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-
-      refresh.click();
-      const startedAt = Date.now();
-      const deadline = startedAt + 22000;
-      while (Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 180));
-        const rows = invoiceListRows();
-        if (rows.length && rows.every(row => row.dateKey === dateKey)) {
-          const matches = rows.filter(row => Math.round(Number(row.grandTotal) || 0) === target);
-          return { dateKey, invoiceStatus: "issued", suppressedAlerts, target, matches, rows };
-        }
-        if (Date.now() - startedAt > 2500 && !document.querySelector(".k-loading-mask") && !rows.length) {
-          return { dateKey, invoiceStatus: "issued", suppressedAlerts, target, matches: [], rows: [] };
-        }
-      }
-      throw new Error("Danh sách phiếu chưa tải xong. Hãy thử lại.");
-    } finally {
-      window.alert = originalAlert;
-    }
-  }
-
-  async function waitForInvoiceListRow(invoiceNo, uid, timeout = 5000) {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const grid = invoiceListElement();
-      const row = grid && Array.from(grid.querySelectorAll("tbody tr[data-uid]")).find(element =>
-        (uid && element.getAttribute("data-uid") === String(uid)) ||
-        (invoiceNo && (element.innerText || "").includes(String(invoiceNo)))
-      );
-      const loading = document.querySelector(".k-loading-mask");
-      if (row && (!loading || !isVisible(loading))) return { grid, row };
-      await wait(120);
-    }
-    return { grid: invoiceListElement(), row: null };
+    const list = await fetchEInvoiceList({ dateKey: key, status: EINVOICE_STATUS_ISSUED });
+    // Hóa đơn đã hủy không còn là hóa đơn của giao dịch nào.
+    const rows = list.rows
+      .filter(row => isGuid(row.id) && row.invoiceNo && !row.cancelled)
+      .map(row => ({ ...invoiceCandidateRow(row, key), soHoaDon: row.soHoaDon }));
+    const matches = rows.filter(row => Math.round(Number(row.grandTotal) || 0) === target);
+    return { dateKey: key, invoiceStatus: "issued", source: "api", suppressedAlerts: [], target, matches, rows };
   }
 
   async function openInvoiceCandidate(uid, invoiceNo) {
-    const unissuedRadio = document.querySelector('input[type="radio"][id^="rdTrangThai"][id$="_2"]') ||
-      Array.from(document.querySelectorAll('input[type="radio"]')).find(input => /Chưa xuất hóa đơn/i.test(`${input.value} ${input.closest("label,td")?.innerText || ""}`));
+    const id = String(uid || "").trim();
+    const known = unissuedInvoiceIds.get(id);
     // Luồng lập/sửa phương án chỉ được chạm vào phiếu chưa xuất hóa đơn.
-    if (!unissuedRadio?.checked) throw new Error('Chỉ được tự mở khi bộ lọc "Chưa xuất hóa đơn" đang được chọn.');
-    return openInvoiceRowForReading(uid, invoiceNo);
+    if (!known) throw new Error('Chỉ được tự mở phiếu lấy từ danh sách "Chưa phát hành". Hãy tìm lại phiếu.');
+    const wanted = String(invoiceNo || "").trim();
+    if (wanted && wanted !== known.invoiceNo) {
+      throw new Error(`ID phiếu thuộc ${known.invoiceNo}, không phải ${wanted}; đã dừng để tránh mở nhầm.`);
+    }
+    return openInvoiceById(id, known.invoiceNo);
   }
 
-  // Phần thao tác mở phiếu, tách riêng để luồng chỉ-đọc (đọc mặt hàng trước khi
-  // phát hành) dùng lại mà không phải nới lỏng ràng buộc "Chưa xuất hóa đơn"
-  // của luồng lập phương án.
-  async function openInvoiceRowForReading(uid, invoiceNo) {
-    const initial = await waitForInvoiceListRow(invoiceNo, uid);
-    const grid = initial.grid;
-    if (!grid) throw new Error("Hãy mở màn hình danh sách Bán hàng trước.");
-    const row = initial.row;
-    if (!row) throw new Error("Phiếu không còn trong danh sách hiện tại. Hãy tìm lại.");
-    await new Promise(resolve => setTimeout(resolve, 350));
-    const jq = window.jQuery || window.$;
-    const widget = jq ? jq(grid).data("kendoGrid") : null;
-    if (widget?.select) widget.select(row);
-    row.scrollIntoView({ block: "center", inline: "nearest" });
-
-    // Editable detail is opened by the generated form client's row-double-click
-    // handler. The XEM column is only for already-issued electronic invoices.
-    const listDialog = rememberInvoiceListDialog();
-    const codeRunner = listDialog?.client?.get_CodeRunner?.();
-    if (codeRunner && typeof codeRunner.Detail_MouseDoubleClick === "function") {
-      codeRunner.Detail_MouseDoubleClick({});
-      const formDeadline = Date.now() + 5000;
-      while (Date.now() < formDeadline) {
-        await new Promise(resolve => setTimeout(resolve, 120));
-        if (suffixInput("numTONGCONG")) return { opened: true, method: "form-client", invoiceNo: String(invoiceNo || "") };
+  // Mở form phiếu theo ID đúng như website làm khi nhấp đúp một dòng ở màn hình
+  // Hóa đơn điện tử (grDon_MouseDoubleClick -> UiUtils.ShowEditForm). Chạy được ở
+  // mọi trang của website (đã thử trên màn Hóa đơn điện tử và sơ đồ phòng), nên
+  // không cần chuyển sang màn hình danh sách. Chỉ mở; không sửa gì.
+  async function openInvoiceById(id, invoiceNo) {
+    const recordId = String(id || "").trim();
+    if (!isGuid(recordId)) throw new Error(`ID phiếu không hợp lệ: ${recordId || "trống"}.`);
+    const uiUtils = window.UiUtils;
+    if (typeof uiUtils?.ShowEditForm !== "function") {
+      throw new Error("Trang hiện tại không mở được phiếu (thiếu UiUtils.ShowEditForm); hãy tải lại trang.");
+    }
+    // Không đóng hộ form đang mở: có thể là phiếu người dùng đang sửa dở.
+    if ((await waitForInvoiceDetailClosed()).detailVisible) {
+      throw new Error("Đang có một phiếu mở trên website; hãy đóng phiếu đó trước.");
+    }
+    uiUtils.ShowEditForm(SALES_TABLE_ID, 0, recordId, "Loai=0&notitle=1&ModeQuanLy=30", () => {});
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      await wait(120);
+      if (visibleInvoiceTotalInput()) {
+        return { opened: true, method: "show-edit-form", id: recordId, invoiceNo: String(invoiceNo || "") };
       }
     }
+    throw new Error(`Website không mở được phiếu ${invoiceNo || recordId} sau 10 giây.`);
+  }
 
-    // The list grid binds its editable-detail action through jQuery on some
-    // generated form versions. Trigger that binding before raw DOM events.
-    if (jq) {
-      jq(row).trigger("dblclick");
-      const jqueryDeadline = Date.now() + 3000;
-      while (Date.now() < jqueryDeadline) {
-        await new Promise(resolve => setTimeout(resolve, 120));
-        if (suffixInput("numTONGCONG")) {
-          return { opened: true, method: "jquery-dblclick", invoiceNo: String(invoiceNo || "") };
-        }
-      }
-    }
-
-    // Fallback for older sale lists that still bind opening to row dblclick.
-    const mouse = (type, detail) => row.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0, detail }));
-    mouse("mousedown", 1); mouse("mouseup", 1); mouse("click", 1);
-    await new Promise(resolve => setTimeout(resolve, 70));
-    mouse("mousedown", 2); mouse("mouseup", 2); mouse("click", 2); mouse("dblclick", 2);
-    return { opened: true, method: "dblclick", invoiceNo: String(invoiceNo || "") };
+  function canOpenInvoiceById() {
+    return typeof window.UiUtils?.ShowEditForm === "function";
   }
 
   function domInvoiceRows() {
@@ -3061,7 +2812,8 @@
   // Đọc số liệu đầu phiếu đã có theo ID bằng API, không mở form trên giao diện:
   // GET AddEdit với RecordID trả HTML chứa DataTransferJs của phiếu (cách các
   // script chuyển phòng data/chuyen-phong-*.js đã chạy trên trang thật). Chỉ
-  // đọc. Dòng hàng không nằm trong dữ liệu này nên vẫn phải mở phiếu để đọc.
+  // đọc. Dòng hàng không nằm trong dữ liệu này; đọc riêng bằng
+  // readInvoiceItemsViaApi.
   async function readInvoiceSummary(detail) {
     const id = String(detail?.id || "").trim();
     const formData = await readInvoiceFormById(id, detail?.invoiceNo);
@@ -3075,6 +2827,53 @@
       grand: formAmount(fields.TONGCONG),
       roomId: String(fields.DBANID || "").trim()
     };
+  }
+
+  // Đọc trọn một phiếu đã lưu chỉ bằng API — đầu phiếu (AddEdit), dòng hàng
+  // (LayDuLieuChiTiet), tên phòng (sơ đồ phòng) — và trả CÙNG DẠNG scan() mà
+  // luồng đối soát lại dùng. Trước đây phải mở phiếu trên danh sách Bán hàng,
+  // không chạy được ở màn hình khác (ở Paris Nhơn "Bán hàng" là sơ đồ phòng).
+  async function readInvoiceSnapshot(detail) {
+    const id = String(detail?.id || "").trim();
+    const formData = await readInvoiceFormById(id, detail?.invoiceNo);
+    const fields = mapObject(formData.mapper?.Maps);
+    const items = await readInvoiceItemsViaApi(id);
+    const roomId = String(fields.DBANID || "").trim();
+    return {
+      ready: true,
+      id,
+      invoiceNo: String(fields.NAME || "").trim(),
+      currentGoods: formAmount(fields.TIENHANG),
+      currentHour: formAmount(fields.TIENGIO),
+      currentTax: formAmount(fields.TIENTHUE),
+      currentGrand: formAmount(fields.TONGCONG),
+      roomId,
+      roomName: await roomNameById(roomId),
+      checkIn: uiDateTimeText(parseFormDateTime(fields.BATDAUPHONGCUOI) || parseFormDateTime(fields.BATDAU)),
+      checkOut: uiDateTimeText(parseFormDateTime(fields.KETTHUC)),
+      items
+    };
+  }
+
+  // Sơ đồ phòng đã bắt trước, chưa có phòng đó thì gọi lại một lần. Không tra
+  // được thì trả "" — bên gọi coi như không biết phòng, không đoán.
+  async function roomNameById(roomId) {
+    if (!roomId) return "";
+    const find = map => (map?.rooms || []).find(room => room.id === roomId);
+    const room = find(await getRoomMap().catch(() => null)) ||
+      find(await getRoomMap({ refresh: true }).catch(() => null));
+    return String(room?.name || "").trim();
+  }
+
+  // Cùng định dạng ô Giờ vào/Giờ ra trên form ("01/07/2026 19:15"), là dạng
+  // content đọc bằng parseUiDateTime.
+  function uiDateTimeText(milliseconds) {
+    if (!milliseconds) return "";
+    const date = new Date(milliseconds);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = value => String(value).padStart(2, "0");
+    return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ` +
+      `${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
   async function readInvoiceFormById(recordId, invoiceNo) {
@@ -3693,8 +3492,11 @@
 
   const EINVOICE_LIST_TAKE = 200;
   // O loc "Loai" (rdTrangThai): 0 Tat ca, 1 Da phat hanh, 2 Chua phat hanh.
-  // Lay Tat ca vi Check/Dong bo so can ca phieu da phat hanh.
+  // Man Phat hanh lay Tat ca vi Check/Dong bo so can ca phieu da phat hanh; tim
+  // phieu de lap phuong an lay Chua phat hanh (findInvoiceCandidates).
   const EINVOICE_STATUS_ALL = 0;
+  const EINVOICE_STATUS_ISSUED = 1;
+  const EINVOICE_STATUS_UNISSUED = 2;
   // Website gui kyHieu rong khi khong bat chon ky hieu (ChonKyHieu = false);
   // server dung ky hieu mac dinh cua co so.
   const EINVOICE_DEFAULT_KY_HIEU = "";
@@ -3804,6 +3606,10 @@
   async function fetchEInvoiceList(options) {
     const fromDate = eInvoiceFilterDate(options?.fromDate || options?.dateKey);
     const toDate = eInvoiceFilterDate(options?.toDate || options?.dateKey);
+    const status = options?.status ?? EINVOICE_STATUS_ALL;
+    if (![EINVOICE_STATUS_ALL, EINVOICE_STATUS_ISSUED, EINVOICE_STATUS_UNISSUED].includes(status)) {
+      throw new Error(`Trang thai loc hoa don dien tu khong hop le: ${status}`);
+    }
     const rows = [];
     let page = 1;
     let total = 0;
@@ -3824,7 +3630,7 @@
           DNHOMMATHANGID: "",
           DKHOXUATID: "",
           DHANGSANXUATID: "",
-          TRANGTHAI: EINVOICE_STATUS_ALL,
+          TRANGTHAI: status,
           TuNgay: fromDate,
           DenNgay: toDate
         },
@@ -3836,7 +3642,7 @@
       if (!data.length || rows.length >= total) break;
       page += 1;
     }
-    return { rows: rows.map(eInvoiceRow), total: total || rows.length, fromDate, toDate };
+    return { rows: rows.map(eInvoiceRow), total: total || rows.length, fromDate, toDate, status };
   }
 
   // Man hinh hoa don dien tu moi hien mat hang cua phieu dang chon bang chinh API
@@ -3870,24 +3676,17 @@
     return body.Tag.map(eInvoiceDetailItem).filter(item => item.code && item.qty > 0);
   }
 
-  // Duong du phong khi API tren loi: nhap doi tren dong danh sach Ban hang ->
-  // scan() doc luoi Kendo dang mo -> dong form.
-  //
-  // Khong dung fetch AddEdit: trang do duoc website dung bang script client nen
-  // HTML tho khong chua san dong hang.
-  async function readInvoiceItemsViaUi(invoiceNo) {
-    const wanted = String(invoiceNo || "").trim();
+  // Duong du phong khi API tren loi: mo phieu theo ID (openInvoiceById) ->
+  // scan() doc luoi Kendo dang mo -> dong form. Chi doc, khong can man hinh
+  // danh sach.
+  async function readInvoiceItemsViaUi(detail) {
+    const wanted = String(detail?.invoiceNo || "").trim();
     if (!wanted) throw new Error("Thieu so phieu de doc mat hang.");
-    if (!invoiceListElement()) throw new Error("Hay mo man hinh danh sach Ban hang truoc.");
 
     // Neu dang co form phieu mo san thi dong lai de khong doc nham phieu khac.
     if (invoiceUiState().detailVisible) await closeInvoiceDetail();
 
-    const found = await waitForInvoiceListRow(wanted, "");
-    if (!found.row) {
-      throw new Error(`Khong thay phieu ${wanted} trong danh sach hien tai; hay loc dung ngay cua phieu.`);
-    }
-    await openInvoiceRowForReading(found.row.getAttribute("data-uid") || "", wanted);
+    await openInvoiceById(detail?.id, wanted);
     try {
       const deadline = Date.now() + 10000;
       let snapshot = null;
@@ -3913,23 +3712,21 @@
         amount: Math.round((Number(item.qty) || 0) * (Number(item.price) || 0))
       })).filter(item => item.code && item.qty > 0);
     } finally {
-      // Luon dong form va tra man hinh ve danh sach de hoa don ke tiep chay duoc.
+      // Luon dong form de hoa don ke tiep chay duoc.
       await closeInvoiceDetail().catch(() => {});
-      await waitForInvoiceListReady().catch(() => {});
     }
   }
 
-  // API truoc. Chi mo phieu qua giao dien khi API loi VA dang dung o danh sach
-  // Ban hang that (canReadItems): khong tu chuyen trang giua lo phat hanh.
+  // API truoc; chi mo phieu tren giao dien khi API loi va trang mo phieu duoc.
   async function readInvoiceItems(detail) {
     try {
       return await readInvoiceItemsViaApi(detail?.id);
     } catch (apiError) {
-      if (detail?.canReadItems === false || !invoiceListElement()) throw apiError;
+      if (detail?.canReadItems === false || !canOpenInvoiceById()) throw apiError;
       try {
-        return await readInvoiceItemsViaUi(detail?.invoiceNo);
+        return await readInvoiceItemsViaUi(detail);
       } catch (uiError) {
-        throw new Error(`${apiError.message} Mo phieu tren danh sach Ban hang cung loi: ${uiError.message}`);
+        throw new Error(`${apiError.message} Mo phieu de doc cung loi: ${uiError.message}`);
       }
     }
   }
@@ -4144,6 +3941,7 @@
       else if (detail.action === "probeBlankRoomForm") result = await probeBlankRoomForm(detail.room);
       else if (detail.action === "readRoomHourlyRates") result = await readRoomHourlyRates(detail);
       else if (detail.action === "readInvoiceSummary") result = await readInvoiceSummary(detail);
+      else if (detail.action === "readInvoiceSnapshot") result = await readInvoiceSnapshot(detail);
       else if (detail.action === "readDayRoomBookings") result = await readDayRoomBookings(detail);
       else if (detail.action === "fetchEInvoiceList") result = await fetchEInvoiceList(detail);
       else if (detail.action === "issueEInvoice") result = await issueEInvoice(detail);
@@ -4156,7 +3954,9 @@
       else if (detail.action === "fetchLatestProductCatalog") result = await fetchLatestProductCatalog();
       // Cho content script biết trang hiện tại đã có grid danh sách phiếu chưa,
       // để nó tự điều hướng về màn hình danh sách trước khi đối soát sau lưu.
-      else if (detail.action === "hasInvoiceList") result = { present: Boolean(invoiceListElement()) };
+      // Tìm/mở phiếu nay đi qua API và mở theo ID, nên "sẵn sàng" nghĩa là trang
+      // mở được phiếu theo ID, không còn đòi lưới danh sách.
+      else if (detail.action === "hasInvoiceList") result = { present: canOpenInvoiceById() || Boolean(invoiceListElement()) };
       else throw new Error("Thao tác không được hỗ trợ.");
       respond({ id: replyId, ok: true, result });
     } catch (error) {

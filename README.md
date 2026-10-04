@@ -164,10 +164,10 @@ Chi tiết Batch Review xem tại `docs/BATCH_REVIEW.md`.
 - Extension không tự phát hành hóa đơn điện tử khi chưa có xác nhận của người dùng, và không tự hủy hóa đơn.
 # Mới trong MVP 0.4
 
-- Chọn giao dịch ngân hàng sẽ tự lọc danh sách Bán hàng theo đúng ngày giao dịch.
+- Chọn giao dịch ngân hàng sẽ tự tìm phiếu chưa xuất đúng ngày giao dịch.
 - Các số phiếu đã gắn với giao dịch khác bị loại; nếu chỉ còn một phiếu thì tự mở, nếu có nhiều phiếu thì người dùng chọn.
 - Liên kết `giao dịch ngân hàng → số phiếu` được lưu để tránh chọn trùng.
-- Khi tìm phiếu, extension luôn chọn trạng thái **Chưa xuất hóa đơn** trước khi Refresh.
+- Khi tìm phiếu, extension luôn lấy danh sách với trạng thái **Chưa phát hành** (từ 1.29.15 lấy bằng API của màn hình Hóa đơn điện tử và mở phiếu theo ID, không cần mở màn hình danh sách).
 
 # Mới trong MVP 0.5
 

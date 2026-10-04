@@ -76,9 +76,10 @@ mở phiếu, khoảng một request mỗi phiếu.
 Ở màn **Phát hành hóa đơn**, cạnh **Thử đọc mặt hàng**. Dùng khi muốn cập nhật
 sổ ngay mà chưa phát hành.
 
-1. Mở danh sách Bán hàng, chọn ngày ở màn Phát hành rồi bấm **Tải danh sách**.
+1. Chọn ngày ở màn Phát hành rồi bấm **Tải danh sách**.
 2. Bấm **Đối soát lại mặt hàng từ website**. Extension so nhanh mọi phiếu chưa
-   phát hành, rồi chỉ mở những phiếu lệch để đọc dòng hàng thật.
+   phát hành, rồi chỉ đọc lại những phiếu lệch (đầu phiếu + dòng hàng qua API,
+   không mở phiếu, chạy được ở màn hình nào cũng được).
 3. Hộp thoại liệt kê các phiếu có dòng hàng khác sổ. Bấm OK để cập nhật.
 
 Khi cập nhật:
@@ -95,5 +96,5 @@ Không tự xử lý:
 | Trường hợp | Xử lý |
 |---|---|
 | Tổng tiền phiếu khác sổ | Chỉ báo; cần người kiểm tra vì phiếu không còn khớp sao kê |
-| Phiếu không còn trong danh sách Chưa xuất hóa đơn | Giữ nguyên sổ; thường là phiếu đã phát hành HĐĐT |
+| Phiếu đã phát hành HĐĐT, đã hủy hoặc không tìm thấy trên website | Giữ nguyên sổ |
 | Tồn không đủ cho phần tăng thêm | Dừng cả lần cập nhật, không ghi nửa vời |

@@ -52,10 +52,9 @@ Không tự xác nhận ánh xạ mới. Việc trùng giá chỉ là tín hiệ
 - Thứ tự mỗi hóa đơn: lấy mặt hàng → `kiemTraThongTin` → `phatHanhHoaDon`. Lấy mặt hàng trước để nếu bước này hỏng thì chưa có gì thay đổi trên hệ thống.
 - Mặt hàng ưu tiên lấy từ sổ đối soát sau lưu; đó là số liệu đã được kiểm tra lại với phiếu khi trừ tồn. Không mở lại phiếu khi đã có trong sổ.
 - Chỉ hóa đơn thiếu trong sổ (hoặc sổ lệch web) mới đọc lại từ website, qua `TDONHANG0Ae/LayDuLieuChiTiet` — chính API màn hình Hóa đơn điện tử (giao diện 10/2026) dùng cho lưới mặt hàng; chỉ đọc. Không tự chế đường đọc nào khác.
-- Mở phiếu trên danh sách Bán hàng (nhấp đúp → `scan()` → đóng form) chỉ còn là đường dự phòng khi API lỗi **và** đang đứng ở danh sách Bán hàng thật. Luồng phát hành không tự chuyển trang.
-- Lưới của màn hình Hóa đơn điện tử (có cột Kiểm tra + Phát hành) không được nhận là danh sách Bán hàng.
+- Mở phiếu để đọc (`openInvoiceById` → `scan()` → đóng form) chỉ còn là đường dự phòng khi API lỗi. Luồng phát hành không tự chuyển trang.
 - `phatHanhHoaDon` gửi `{ id, kyHieu: "" }` như website khi form tắt chọn ký hiệu.
-- Ràng buộc "Chưa xuất hóa đơn" của `openInvoiceCandidate` chỉ áp cho luồng lập/sửa phương án; luồng chỉ-đọc dùng `openInvoiceRowForReading` và không được nới lỏng ràng buộc đó.
+- Ràng buộc "chưa xuất hóa đơn" của `openInvoiceCandidate` (chỉ mở ID đã thấy trong danh sách Chưa phát hành) chỉ áp cho luồng lập/sửa phương án; luồng chỉ-đọc gọi thẳng `openInvoiceById` và không được nới lỏng ràng buộc đó.
 - Phiếu mở ra để đọc phải luôn được đóng lại; mở nhầm số phiếu khác thì dừng.
 - Hóa đơn đã có `SOHOADON` hoặc đã hủy không được chọn lại.
 - Mỗi hóa đơn phát hành xong được ghi sổ ngay; lô dừng giữa chừng vẫn giữ đủ số liệu phần đã chạy.

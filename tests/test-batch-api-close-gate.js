@@ -15,7 +15,8 @@ for (const invariant of [
   "const verification = await verifyBatchSavedInvoice",
   "if (!verification?.verified || !verification?.closed)",
   'const uiState = await request("getInvoiceUiState")',
-  "if (uiState?.detailVisible || !uiState?.listVisible)"
+  // Phiếu mở theo ID nên không còn đòi lưới danh sách; chỉ cần form đã đóng.
+  "if (uiState?.detailVisible) {"
 ]) {
   if (!source.includes(invariant)) {
     throw new Error(`Missing batch API close gate: ${invariant}`);
@@ -67,20 +68,19 @@ for (const bridgeApiGuard of [
 
 console.log("existing invoice direct API path: OK");
 
+// Giao diện 10/2026: danh sách phiếu chưa xuất lấy bằng API LayDuLieu (Loại =
+// Chưa phát hành) thay vì điều khiển radio/ô ngày/phân trang trên lưới; mở phiếu
+// theo ID bằng UiUtils.ShowEditForm như website.
 for (const lookupGuard of [
   "const invoiceListCache = new Map();",
-  "async function findInvoiceRowAcrossPages(dateKey, invoiceNo, initialRows)",
-  "async function waitForInvoiceListRow(invoiceNo, uid, timeout = 5000)",
-  "const initial = await waitForInvoiceListRow(invoiceNo, uid);",
-  "const cachedRows = invoiceListCache.get(String(dateKey));",
-  "invoiceListCache.set(String(dateKey), rows.map(row => ({ ...row })));",
-  "(invoiceNo && (element.innerText || \"\").includes(String(invoiceNo)))",
-  "const currentRows = invoiceListRows();",
-  "if (unissuedRadio.checked &&",
+  "fetchEInvoiceList({ dateKey: key, status: EINVOICE_STATUS_UNISSUED })",
+  "fetchEInvoiceList({ dateKey: key, status: EINVOICE_STATUS_ISSUED })",
+  "Date.now() - entry.at < INVOICE_LIST_CACHE_MS",
+  "invoiceListCache.set(key, { at: Date.now(), rows: rows.map(row => ({ ...row })) });",
   "const wantedInvoiceNo = String(options.invoiceNo || \"\").trim();",
   "const forceRefresh = Boolean(options.forceRefresh || wantedInvoiceNo);",
-  "currentRows.every(row => row.dateKey === dateKey)",
-  "cached: true"
+  "const known = unissuedInvoiceIds.get(id);",
+  "uiUtils.ShowEditForm(SALES_TABLE_ID, 0, recordId, \"Loai=0&notitle=1&ModeQuanLy=30\", () => {});"
 ]) {
   if (!bridgeSource.includes(lookupGuard)) {
     throw new Error(`Missing same-day invoice-list reuse guard: ${lookupGuard}`);
@@ -95,14 +95,10 @@ if (!source.includes("invoiceNo: plan.invoiceNo") || !source.includes("forceRefr
 
 console.log("post-save exact invoice lookup: OK");
 
-for (const readinessGuard of [
-  "const pagerSelects = pagerElement ? Array.from(pagerElement.querySelectorAll(\"select\")) : [];",
-  "pagerSelects.every(select =>",
-  "throw new Error(\"Danh sách phiếu chưa khởi tạo xong bộ lọc Kendo; hãy thử lại sau vài giây.\")"
-]) {
-  if (!bridgeSource.includes(readinessGuard)) {
-    throw new Error(`Missing Kendo invoice-list readiness guard: ${readinessGuard}`);
-  }
+// Không còn điều khiển lưới danh sách nên không còn chờ pager Kendo. Mã điều
+// khiển radio/phân trang cũ không chạy trên giao diện mới, không được quay lại.
+for (const legacy of ["unissuedRadio", "findInvoiceRowAcrossPages", "waitForInvoiceListReady", "invoiceListRows("]) {
+  if (bridgeSource.includes(legacy)) throw new Error(`Mã điều khiển lưới cũ còn sót: ${legacy}`);
 }
 
 for (const roundedGrandGuard of [

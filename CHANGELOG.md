@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.29.15 (2026-10-04)
+
+- **Tìm phiếu chưa xuất bằng API và mở phiếu theo ID — chạy lại được Batch Review, Lưu API và đối soát sau lưu trên giao diện mới.** "Danh sách phiếu" mà extension vẫn gọi là danh sách Bán hàng thực ra là màn hình **Hóa đơn điện tử**: bridge tìm bộ lọc `rdTrangThai_2` (Chưa phát hành) và chỉ màn này có control đó. Giao diện 10/2026 đổi radio thành dropdown, thêm cột Chọn/Chiết khấu vào lưới, nên cách cũ (đặt ô ngày + radio, Refresh, đọc DOM từng trang, nhấp đúp dòng) không chạy nữa.
+  - `findInvoiceCandidates` lấy danh sách bằng `HoaDonDienTu/LayDuLieu` với Loại = Chưa phát hành (`TRANGTHAI = 2`, server lọc); `findIssuedInvoiceByAmount` dùng Loại = Đã phát hành (`1`) và bỏ hóa đơn đã hủy. Danh sách một ngày được dùng lại trong 2 phút; tìm một số phiếu cụ thể (đối soát sau lưu) luôn đọc lại server.
+  - `openInvoiceCandidate` mở phiếu theo ID bằng `UiUtils.ShowEditForm` — đúng lời gọi website dùng khi nhấp đúp dòng. Đã thử trên màn Hóa đơn điện tử và trên sơ đồ phòng: không cần chuyển màn hình. Vẫn chỉ mở ID đã thấy trong danh sách Chưa phát hành; không tự đóng phiếu người dùng đang mở.
+  - Sau mỗi phiếu, Lưu API chỉ còn kiểm form đã đóng, không đòi "đã trở về danh sách".
+  - Bỏ toàn bộ mã điều khiển lưới cũ (radio, ô ngày, phân trang, chờ pager Kendo).
+- **Đối soát lại mặt hàng từ website chạy bằng API**: tìm ID trên danh sách Hóa đơn điện tử theo ngày, đọc đầu phiếu (`AddEdit`) + dòng hàng (`LayDuLieuChiTiet`) + tên phòng (sơ đồ phòng) bằng action mới `readInvoiceSnapshot`, không mở phiếu. Phiếu đã phát hành HĐĐT hoặc đã hủy giữ nguyên sổ.
+- **Sửa sai của 1.29.14**: bản đó loại lưới Hóa đơn điện tử khỏi `invoiceListElement()` vì tưởng nhận nhầm; thực ra đó chính là danh sách extension dùng. Đã hoàn lại. Mục CHANGELOG 1.29.14 cũng đã chuẩn hóa xuống dòng (có 8 dòng CRLF lẫn vào).
+
 ## 1.29.14 (2026-10-04)
 
 - **Theo giao diện mới của màn hình Hóa đơn điện tử trên website** (ô "Loại" thay radio, nút Phát hành/Kiểm tra hàng loạt, lưới mặt hàng của phiếu đang chọn). API đọc từ `HoaDonDienTu_JsClient` trên trang Paris Nhơn và gọi thử phần chỉ đọc; chi tiết ở `docs/API_FLOWS.md` mục 3.6.

@@ -209,16 +209,20 @@ assert.match(bridgeSource,
   /postEInvoiceApi\("phatHanhHoaDon\?is_ajax=1", \{ id, kyHieu: EINVOICE_DEFAULT_KY_HIEU \}\)/,
   "phatHanhHoaDon phải gửi kèm kyHieu như website");
 assert.match(bridgeSource, /const EINVOICE_DEFAULT_KY_HIEU = "";/);
-// LayDuLieu: đủ các ô lọc như source_ParameterMap của website, Loại = Tất cả (0)
-// vì Check/Đồng bộ sổ cần cả phiếu đã phát hành (1 = đã, 2 = chưa phát hành).
+// LayDuLieu: đủ các ô lọc như source_ParameterMap của website. Loại mặc định Tất
+// cả (0) cho màn Phát hành vì Check/Đồng bộ sổ cần cả phiếu đã phát hành; tìm phiếu
+// để lập phương án truyền Chưa phát hành (2), dò hóa đơn đã xuất truyền 1.
 const listFetch = bridgeSource.slice(
   bridgeSource.indexOf("async function fetchEInvoiceList"),
   bridgeSource.indexOf("async function readInvoiceItemsViaApi"));
 for (const field of ["DXEID", "DNHANVIENID", "DKHACHHANGID", "DNHOMMATHANGID", "DKHOXUATID", "DHANGSANXUATID"]) {
   assert(listFetch.includes(`${field}: ""`), `LayDuLieu thiếu ô lọc ${field}`);
 }
-assert.match(listFetch, /TRANGTHAI: EINVOICE_STATUS_ALL/);
+assert.match(listFetch, /const status = options\?\.status \?\? EINVOICE_STATUS_ALL;/);
+assert.match(listFetch, /TRANGTHAI: status,/);
 assert.match(bridgeSource, /const EINVOICE_STATUS_ALL = 0;/);
+assert.match(bridgeSource, /const EINVOICE_STATUS_ISSUED = 1;/);
+assert.match(bridgeSource, /const EINVOICE_STATUS_UNISSUED = 2;/);
 
 // Mặt hàng đọc qua API màn hình Hóa đơn điện tử dùng cho lưới chi tiết:
 // TDONHANG0Ae/LayDuLieuChiTiet { ID, STABLEDESCID = bảng Bán hàng }. Chỉ đọc.
@@ -228,31 +232,31 @@ const readViaApi = bridgeSource.slice(
 assert.match(readViaApi, /"TDONHANG0Ae\/LayDuLieuChiTiet\?is_ajax=1"/);
 assert.match(readViaApi, /\{ ID: recordId, STABLEDESCID: SALES_TABLE_ID \}/);
 assert.match(readViaApi, /Number\(body\?\.code\) !== 1/, "code != 1 là lỗi, không coi là phiếu rỗng");
-// API trước; mở phiếu qua giao diện chỉ là dự phòng khi API lỗi và đang đứng ở
-// danh sách Bán hàng thật.
+// API trước; mở phiếu qua giao diện chỉ là dự phòng khi API lỗi và trang mở
+// phiếu theo ID được.
 const readItems = bridgeSource.slice(
   bridgeSource.indexOf("async function readInvoiceItems("),
   bridgeSource.indexOf("function eInvoiceFailureReason"));
 assert(readItems.indexOf("readInvoiceItemsViaApi") < readItems.indexOf("readInvoiceItemsViaUi"),
   "Phải thử API trước giao diện");
-assert.match(readItems, /detail\?\.canReadItems === false \|\| !invoiceListElement\(\)/);
+assert.match(readItems, /detail\?\.canReadItems === false \|\| !canOpenInvoiceById\(\)/);
 
-// Đường dự phòng phải đi qua đúng đường extension đã dùng để mở phiếu (nhấp đúp
-// trên danh sách Bán hàng rồi scan lưới Kendo), KHÔNG fetch HTML trang AddEdit —
-// trang đó được dựng bằng script client nên HTML thô không có sẵn dòng hàng.
+// Đường dự phòng mở phiếu theo ID như website (openInvoiceById) rồi scan lưới
+// Kendo, KHÔNG fetch HTML trang AddEdit để tìm dòng hàng.
 assert.match(bridgeSource, /async function readInvoiceItemsViaUi/);
-assert.match(bridgeSource, /openInvoiceRowForReading\(found\.row/);
+assert.match(bridgeSource, /await openInvoiceById\(detail\?\.id, wanted\);/);
 assert.match(bridgeSource, /snapshot = scan\(\)/);
 assert(!/AddEdit\?TableID=\$\{SALES_TABLE_ID\}/.test(bridgeSource),
   "Không được quay lại cách fetch HTML AddEdit để đọc dòng hàng");
 
-// Ràng buộc "Chưa xuất hóa đơn" của luồng lập phương án phải được giữ nguyên;
-// luồng chỉ-đọc dùng hàm tách riêng chứ không nới lỏng ràng buộc này.
+// Ràng buộc "chưa xuất hóa đơn" của luồng lập phương án phải được giữ nguyên:
+// chỉ mở ID đã thấy trong danh sách Chưa phát hành. Luồng chỉ-đọc gọi thẳng
+// openInvoiceById chứ không nới lỏng ràng buộc này.
 const openCandidate = bridgeSource.slice(
   bridgeSource.indexOf("async function openInvoiceCandidate"),
-  bridgeSource.indexOf("async function openInvoiceRowForReading"));
-assert.match(openCandidate, /Chưa xuất hóa đơn/);
-assert.match(openCandidate, /Chỉ được tự mở khi bộ lọc/);
+  bridgeSource.indexOf("async function openInvoiceById"));
+assert.match(openCandidate, /const known = unissuedInvoiceIds\.get\(id\);/);
+assert.match(openCandidate, /Chỉ được tự mở phiếu lấy từ danh sách "Chưa phát hành"/);
 
 // Mở phiếu để đọc thì phải luôn đóng lại, kể cả khi đọc lỗi.
 const readViaUi = bridgeSource.slice(
@@ -465,16 +469,6 @@ assert.deepStrictEqual(eInvoiceDetailItem({
 }), { code: "0000045", name: "Bia Tiger lon", unit: "Lon", qty: 17, price: 50000, amount: 850000 });
 assert.deepStrictEqual(eInvoiceDetailItem({ DMATHANG_CODE: " 0000014 ", SOLUONG: "4", DONGIA: "5000.00" }),
   { code: "0000014", name: "", unit: "", qty: 4, price: 5000, amount: 20000 });
-
-// Tiêu đề lưới thật: màn hình Hóa đơn điện tử mới có Ngày/Số phiếu/Tổng cộng như
-// danh sách Bán hàng nhưng không được nhận là danh sách Bán hàng.
-const { isInvoiceListHeader } = evalBridgeFunction("isInvoiceListHeader");
-assert(!isInvoiceListHeader(
-  "Chọn Ngày Số phiếu Chiết khấu Tổng cộng Ghi chú Đơn vị Khách hàng Điện thoại Địa chỉ " +
-  "Người mua hàng MST CCCD Ký hiệu Số HĐ Xem Kiểm tra Phát hành"
-), "Lưới Hóa đơn điện tử không phải danh sách Bán hàng");
-assert(isInvoiceListHeader("Ngày Số phiếu Khách hàng Tổng cộng Thanh toán"),
-  "Danh sách Bán hàng vẫn được nhận như cũ");
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
 assert(manifest.content_scripts.some(script => (script.js || []).includes("issued-invoices.js")),
