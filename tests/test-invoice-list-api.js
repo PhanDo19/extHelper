@@ -161,6 +161,49 @@ const row = (id, invoiceNo, grandTotal, extra = {}) =>
   assert.match(snapshot, /readInvoiceItemsViaApi\(id\)/);
   assert.match(source, /detail\.action === "readInvoiceSnapshot"/);
 
+  // --- Rớt mạng: request ĐỌC thử lại, request ghi thì không ------------------------
+  const netBox = { window: {}, results: [] };
+  vm.createContext(netBox);
+  vm.runInContext([
+    "const READ_RETRY_DELAYS_MS = [0, 0];",
+    "const wait = () => Promise.resolve();",
+    extract("isNetworkFetchError"),
+    extract("fetchForRead"),
+    "this.fetchForRead = fetchForRead;"
+  ].join("\n"), netBox);
+  // TypeError của chính sandbox: instanceof trong fetchForRead so với realm đó.
+  const SandboxTypeError = vm.runInContext("TypeError", netBox);
+  let attempts = 0;
+  netBox.window.fetch = async () => {
+    attempts += 1;
+    if (attempts < 3) throw new SandboxTypeError("Failed to fetch");
+    return { ok: true };
+  };
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(await netBox.fetchForRead("/x", {}))), { ok: true });
+  assert.strictEqual(attempts, 3, "Rớt mạng thoáng qua: thử lại tới khi được");
+  attempts = 0;
+  netBox.window.fetch = async () => { attempts += 1; throw new SandboxTypeError("Failed to fetch"); };
+  await assert.rejects(netBox.fetchForRead("/x", {}), /Mất kết nối tới website \(Failed to fetch\) sau 3 lần thử/);
+  assert.strictEqual(attempts, 3);
+  attempts = 0;
+  netBox.window.fetch = async () => { attempts += 1; throw new Error("HTTP 500"); };
+  await assert.rejects(netBox.fetchForRead("/x", {}), /HTTP 500/);
+  assert.strictEqual(attempts, 1, "Lỗi không phải mạng thì không thử lại");
+  // DoSave và phát hành không được đi qua đường thử lại.
+  for (const name of ["postDoSavePayload", "postCurrentInvoiceViaApi", "buyerFixInvoice"]) {
+    const body = extract(name);
+    assert(!body.includes("fetchForRead"), `${name} là request ghi, không được thử lại`);
+  }
+  assert.match(source, /postEInvoiceApi\("kiemTraThongTin\?is_ajax=1", \{ id \}\)/, "kiemTraThongTin không truyền cờ đọc");
+  assert.match(source, /postEInvoiceApi\("phatHanhHoaDon\?is_ajax=1", \{ id, kyHieu: EINVOICE_DEFAULT_KY_HIEU \}\)/);
+  assert.match(source, /\}, \{ read: true \}\);/, "LayDuLieu là request đọc");
+
+  // --- Lưới dòng hàng chỉ lấy trong form phiếu đang mở ------------------------------
+  // Màn Hóa đơn điện tử có lưới grDetail (Mã hàng/Số lượng/Đơn giá, rỗng) nằm trước
+  // form trong DOM; invoiceGrid() từng lấy nhầm nó → "không có dòng hàng mẫu".
+  assert.match(extract("kendoGridElements"), /const scope = openInvoiceFormContainer\(\) \|\| document;/);
+  assert.match(extract("openInvoiceFormContainer"), /visibleInvoiceTotalInput\(\)\?\.closest\("\.k-window, \[role='dialog'\]"\)/);
+
   console.log("Danh sách phiếu qua API + mở theo ID: OK");
 })().catch(error => {
   console.error(error);

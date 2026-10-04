@@ -124,7 +124,10 @@ function makeBridgeBox() {
     bridge.constant("DEFAULT_INVOICE_ADDRESS"), bridge.constant("FORM_DATA_MARKER"), bridge.constant("BUYER_FIX_PAYMENTS"),
     bridge.constant("BUYER_FIX_OUR_PAYMENTS"), bridge.constant("BUYER_FIX_OLD_BUYER"), bridge.constant("BUYER_FIX_ROW_KEY"),
     "const fetchEInvoiceList = (...args) => this.fetchEInvoiceList(...args);",
-    ...["normalizedVietnameseText", "mapObject", "formDataRecordId", "parseFormDateTime", "formAmount", "localMidnightIso",
+    // Request đọc đi qua fetchForRead (thử lại khi rớt mạng); mock ném Error
+    // thường nên không bị thử lại.
+    "const READ_RETRY_DELAYS_MS = []; const wait = () => Promise.resolve();",
+    ...["isNetworkFetchError", "fetchForRead", "normalizedVietnameseText", "mapObject", "formDataRecordId", "parseFormDateTime", "formAmount", "localMidnightIso",
       "localUsDateTime", "localServerDateTime", "normalizeDateKey", "verifySaveResponse", "isGuid",
       "salesFormDataFromHtml", "buyerFixDecision", "vietnamDateKey", "buyerFixPayload", "buyerFixCheckRows", "buyerFixVerify",
       "buyerFixRowDates", "buyerFixReadInvoice", "buyerFixRowsDiffer",

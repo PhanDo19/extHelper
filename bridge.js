@@ -272,7 +272,7 @@
 
   async function fetchRoomMapDirect() {
     const endpoint = `${location.origin}/${shopBasePath()}/${ROOM_MAP_ENDPOINT}`;
-    const response = await window.fetch(endpoint, {
+    const response = await fetchForRead(endpoint, {
       method: "POST",
       credentials: "same-origin",
       headers: {
@@ -657,7 +657,7 @@
       NOTITLE: "1",
       is_dialog: "1"
     });
-    const response = await window.fetch(`${location.origin}/${base}/AddEdit?${query}`, {
+    const response = await fetchForRead(`${location.origin}/${base}/AddEdit?${query}`, {
       method: "GET",
       credentials: "same-origin",
       headers: { "X-Requested-With": "XMLHttpRequest" }
@@ -1207,8 +1207,17 @@
     };
   }
 
+  // Lưới dòng hàng/danh mục chỉ lấy trong cửa sổ PHIẾU ĐANG MỞ. Màn Hóa đơn điện
+  // tử (giao diện 10/2026) có sẵn lưới grDetail cùng cột Mã hàng/Số lượng/Đơn giá
+  // nằm trước form trong DOM; duyệt cả trang thì invoiceGrid() lấy nhầm lưới rỗng
+  // đó và Lưu API báo "không có dòng hàng mẫu" dù phiếu có hàng.
+  function openInvoiceFormContainer() {
+    return visibleInvoiceTotalInput()?.closest(".k-window, [role='dialog']") || null;
+  }
+
   function kendoGridElements() {
-    return Array.from(document.querySelectorAll(".k-grid")).filter(isVisible).map(element => {
+    const scope = openInvoiceFormContainer() || document;
+    return Array.from(scope.querySelectorAll(".k-grid")).filter(isVisible).map(element => {
       const jq = window.jQuery || window.$;
       const grid = jq ? jq(element).data("kendoGrid") : null;
       return { element, grid };
@@ -1294,6 +1303,29 @@
   }
 
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+  // Rớt kết nối giữa lô dài ("Failed to fetch") thường chỉ thoáng qua. Request
+  // CHỈ ĐỌC được thử lại; request ghi (DoSave, phát hành) KHÔNG đi qua đây vì
+  // server có thể đã nhận và thử lại sẽ ghi hai lần.
+  const READ_RETRY_DELAYS_MS = [1500, 4000];
+
+  function isNetworkFetchError(error) {
+    return error instanceof TypeError && /Failed to fetch|NetworkError|Load failed/i.test(String(error?.message || ""));
+  }
+
+  async function fetchForRead(url, init) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await window.fetch(url, init);
+      } catch (error) {
+        if (!isNetworkFetchError(error)) throw error;
+        if (attempt >= READ_RETRY_DELAYS_MS.length) {
+          throw new Error(`Mất kết nối tới website (${error.message}) sau ${attempt + 1} lần thử; kiểm tra mạng rồi bấm lại.`);
+        }
+        await wait(READ_RETRY_DELAYS_MS[attempt]);
+      }
+    }
+  }
 
   function currentCodeRunner() {
     return window.dialogInfo?.client?.get_CodeRunner?.() || null;
@@ -1852,7 +1884,7 @@
       quickFilter: "",
       filterCategoryID: "TatCa"
     };
-    const response = await window.fetch(`${location.origin}/${base}/DataGrid/GetGridData`, {
+    const response = await fetchForRead(`${location.origin}/${base}/DataGrid/GetGridData`, {
       method: "POST",
       credentials: "same-origin",
       headers: {
@@ -2363,7 +2395,7 @@
     const wanted = new Set((items || []).map(item => String(item.code || "").trim()).filter(Boolean));
     if (!wanted.size) throw new Error("Phuong an API khong co ma hang.");
     const base = location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
-    const response = await window.fetch(`${location.origin}/${base}/DataGrid/GetDataSearchData`, {
+    const response = await fetchForRead(`${location.origin}/${base}/DataGrid/GetDataSearchData`, {
       method: "POST",
       credentials: "same-origin",
       headers: {
@@ -2697,7 +2729,7 @@
     let response;
     let html = "";
     try {
-      response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+      response = await fetchForRead(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
         method: "GET",
         credentials: "same-origin",
         headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
@@ -2778,7 +2810,7 @@
     let response;
     let html = "";
     try {
-      response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+      response = await fetchForRead(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
         method: "GET",
         credentials: "same-origin",
         headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
@@ -2888,7 +2920,7 @@
       NOTITLE: "1",
       is_dialog: "1"
     });
-    const response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+    const response = await fetchForRead(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
       method: "GET",
       credentials: "same-origin",
       headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
@@ -3118,7 +3150,7 @@
       ModeQuanLy: "30",
       is_dialog: "1"
     });
-    const response = await window.fetch(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
+    const response = await fetchForRead(`${location.origin}/${shopBasePath()}/AddEdit?${query}`, {
       method: "GET",
       credentials: "same-origin",
       headers: { "Accept": "text/html, */*; q=0.01", "X-Requested-With": "XMLHttpRequest" }
@@ -3505,13 +3537,16 @@
     return location.pathname.split("/").filter(Boolean)[0] || "pariskimgiang";
   }
 
-  function postEInvoiceApi(action, payload) {
-    return postShopApi(`HoaDonDienTu/${action}`, payload, action);
+  function postEInvoiceApi(action, payload, options) {
+    return postShopApi(`HoaDonDienTu/${action}`, payload, action, options);
   }
 
-  async function postShopApi(path, payload, action) {
+  // `options.read`: request CHỈ ĐỌC (danh sách, mặt hàng) thì được thử lại khi
+  // rớt mạng. Phát hành/kiểm tra không truyền cờ này: thử lại có thể gửi hai lần.
+  async function postShopApi(path, payload, action, options = {}) {
     const endpoint = `${location.origin}/${shopBasePath()}/${path}`;
-    const response = await window.fetch(endpoint, {
+    const send = options.read ? fetchForRead : (url, init) => window.fetch(url, init);
+    const response = await send(endpoint, {
       method: "POST",
       credentials: "same-origin",
       headers: {
@@ -3635,7 +3670,7 @@
           DenNgay: toDate
         },
         quickFilter: ""
-      });
+      }, { read: true });
       const data = Array.isArray(body?.Data) ? body.Data : [];
       total = Number(body?.Total) || total;
       rows.push(...data);
@@ -3667,7 +3702,8 @@
     const { body, responseText } = await postShopApi(
       "TDONHANG0Ae/LayDuLieuChiTiet?is_ajax=1",
       { ID: recordId, STABLEDESCID: SALES_TABLE_ID },
-      "LayDuLieuChiTiet"
+      "LayDuLieuChiTiet",
+      { read: true }
     );
     if (Number(body?.code) !== 1 || !Array.isArray(body?.Tag)) {
       const reason = String(body?.message || "").trim() || responseText.slice(0, 200) || "khong co du lieu";

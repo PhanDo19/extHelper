@@ -94,8 +94,11 @@ function makeBridge(responder, roomMapRooms = []) {
     `const SALES_TABLE_ID = ${JSON.stringify(SALES_TABLE_ID)};\n` +
     `let roomMapCapture = ${JSON.stringify({ rooms: roomMapRooms })};\n` +
     `${extractConst(bridgeSource, "FORM_DATA_MARKER")}\n` +
+    // Request đọc đi qua fetchForRead (thử lại khi rớt mạng); mock ném Error
+    // thường nên không bị thử lại.
+    "const READ_RETRY_DELAYS_MS = []; const wait = () => Promise.resolve();\n" +
     [
-      "shopBasePath", "extractJsonObject", "isGuid", "formDataRecordId", "mapObject", "isLoginRedirect",
+      "isNetworkFetchError", "fetchForRead", "shopBasePath", "extractJsonObject", "isGuid", "formDataRecordId", "mapObject", "isLoginRedirect",
       "roomTextKey", "isRetailRoomText", "mappedRoomById", "assertNotRetailRoom",
       "salesFormDataFromHtml", "formUnavailableError", "loadBlankRoomForm", "probeBlankRoomForm",
       "formAmount", "readInvoiceSummary", "readInvoiceFormById", "parseFormDateTime", "readDayRoomBookings"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.29.16 (2026-10-04)
+
+- **Sửa Lưu API phiếu có sẵn báo "Phieu hien tai khong co dong hang mau de tao request API" dù phiếu có hàng** (ca thật Paris Nhơn: HD0126080003 có 7 dòng hàng). Màn Hóa đơn điện tử mới có lưới `grDetail` (Mã hàng/Số lượng/Đơn giá, rỗng khi chưa chọn dòng) nằm trước form phiếu trong DOM; `invoiceGrid()` lấy lưới đầu tiên khớp cột nên đọc nhầm lưới rỗng đó. Nay khi có form phiếu đang mở, chỉ xét lưới bên trong cửa sổ form (`openInvoiceFormContainer`). Đã thử trên trang thật: chọn đúng lưới của form, đọc đủ 7 dòng. Batch Review không bị vì `scan()` có đường dự phòng đọc DOM của dialog.
+- **Request chỉ đọc tự thử lại khi rớt mạng** (`TypeError: Failed to fetch`): danh sách hóa đơn điện tử, mặt hàng, đầu phiếu `AddEdit`, danh mục hàng, sơ đồ phòng — thử thêm 2 lần (1,5 s, 4 s), hết lượt thì báo "Mất kết nối tới website… kiểm tra mạng rồi bấm lại". Request ghi (DoSave, kiểm tra/phát hành HĐĐT) **không** thử lại vì server có thể đã nhận.
+
 ## 1.29.15 (2026-10-04)
 
 - **Tìm phiếu chưa xuất bằng API và mở phiếu theo ID — chạy lại được Batch Review, Lưu API và đối soát sau lưu trên giao diện mới.** "Danh sách phiếu" mà extension vẫn gọi là danh sách Bán hàng thực ra là màn hình **Hóa đơn điện tử**: bridge tìm bộ lọc `rdTrangThai_2` (Chưa phát hành) và chỉ màn này có control đó. Giao diện 10/2026 đổi radio thành dropdown, thêm cột Chọn/Chiết khấu vào lưới, nên cách cũ (đặt ô ngày + radio, Refresh, đọc DOM từng trang, nhấp đúp dòng) không chạy nữa.

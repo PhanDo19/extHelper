@@ -65,7 +65,9 @@ const guid = n => `${String(n).padStart(8, "0")}-aaaa-bbbb-cccc-${String(n).padS
     vm.createContext(box);
     vm.runInContext([
       constant(bridgeSource, "SALES_TABLE_ID"), constant(bridgeSource, "FORM_DATA_MARKER"),
-      ...["extractJsonObject", "isGuid", "formDataRecordId", "mapObject", "formAmount", "salesFormDataFromHtml",
+      // Request đọc đi qua fetchForRead; mock ném Error thường nên không bị thử lại.
+      "const READ_RETRY_DELAYS_MS = []; const wait = () => Promise.resolve();",
+      ...["isNetworkFetchError", "fetchForRead", "extractJsonObject", "isGuid", "formDataRecordId", "mapObject", "formAmount", "salesFormDataFromHtml",
         "readRoomHourlyRate", "readRoomHourlyRates"].map(name => fn(bridgeSource, name)),
       "this.SALES_TABLE_ID = SALES_TABLE_ID; this.readRoomHourlyRates = readRoomHourlyRates;"
     ].join("\n"), box);
