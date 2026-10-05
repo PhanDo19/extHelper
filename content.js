@@ -3827,9 +3827,61 @@
     location.assign(prompt.record.targetUrl);
   }
 
+  // Trang đăng nhập của website (/<cơ sở>/Login?Url=…): form POST thường, tài
+  // khoản "Admin" do website điền sẵn, không cần mật khẩu — người dùng chỉ bấm
+  // "Đăng nhập", rồi website tự quay về đúng URL trong `Url`. Lý do để bấm hộ được
+  // đúng chỉ có vậy, nên gặp gì khác thường thì để người dùng tự làm.
+  // Extension không bao giờ điền tài khoản hay mật khẩu.
+  function handoffLoginProblem() {
+    const form = [...document.querySelectorAll("form")].find(item => {
+      try {
+        return new URL(item.getAttribute("action") || "", location.href).pathname.toLowerCase() ===
+          `/${pageTenantSlug}/login`;
+      } catch {
+        return false;
+      }
+    });
+    if (!form) return "không thấy form đăng nhập của cơ sở này";
+    const userPass = document.getElementById("loginByUserPass");
+    if (!userPass || getComputedStyle(userPass).display === "none") {
+      return "website đang ở chế độ đăng nhập bằng mã số";
+    }
+    const verifyCode = document.getElementById("VerifyCode");
+    if (verifyCode && !verifyCode.closest(".hidden")) return "website đòi mã xác thực";
+    if (!String(document.getElementById("UserName")?.value || "").trim()) return "ô Tài khoản chưa được điền sẵn";
+    const error = String(document.getElementById("lblstatus")?.textContent || "").replace(/\s+/g, " ").trim();
+    if (error) return `website báo: ${error}`;
+    if (!document.getElementById("btnDangnhap")) return "không thấy nút Đăng nhập";
+    return "";
+  }
+
+  // Chỉ bấm MỘT lần cho mỗi lệnh chuyển: quay lại trang đăng nhập nghĩa là lần
+  // bấm trước không vào được — bấm tiếp chỉ gây đăng nhập sai lặp lại.
+  async function submitHandoffLogin(record, day, waitMessage) {
+    const showPanel = () => {
+      const panel = document.getElementById("it-panel");
+      if (panel) panel.hidden = false;
+    };
+    if (record.loginAttemptAt) {
+      showPanel();
+      setStatus(`Tự bấm Đăng nhập lần trước chưa vào được. ${waitMessage}`, "warn");
+      return;
+    }
+    const problem = handoffLoginProblem();
+    if (problem) {
+      showPanel();
+      setStatus(`Không tự đăng nhập: ${problem}. ${waitMessage}`, "warn");
+      return;
+    }
+    await InvoiceMappingStore.saveIssueHandoff({ ...record, loginAttemptAt: new Date().toISOString() });
+    setStatus(`Đang tự đăng nhập ${pageTenantLabel} để phát hành tiếp ngày ${viDay(day)}…`, "ok");
+    document.getElementById("btnDangnhap").click();
+  }
+
   // Chạy lúc khởi tạo ở mọi trang: nếu có lệnh chuyển dành cho cơ sở này thì mở
-  // màn Phát hành với đúng ngày cơ sở trước vừa làm. Trang đăng nhập (hoặc cookie
-  // còn của cơ sở khác) thì chờ — lệnh giữ nguyên tới khi đăng nhập xong.
+  // màn Phát hành với đúng ngày cơ sở trước vừa làm. Trang đăng nhập thì bấm hộ
+  // "Đăng nhập" một lần; cookie còn của cơ sở khác thì chờ — lệnh giữ nguyên tới
+  // khi đăng nhập xong.
   async function resumeIssueHandoff() {
     if (batchAutoResumeStarted || pendingNewInvoice) return;
     const record = await InvoiceMappingStore.loadIssueHandoff().catch(() => null);
@@ -3843,13 +3895,16 @@
       return;
     }
     const fromLabel = TENANT_LABELS[record.fromTenant] || record.fromTenant || "cơ sở trước";
+    const waitMessage =
+      `Đăng nhập ${pageTenantLabel} để phát hành tiếp ngày ${viDay(day)} (sau ${fromLabel}). ` +
+      "Đăng nhập xong extension tự mở màn Phát hành với đúng ngày này.";
+    if (isLoginPage()) {
+      await submitHandoffLogin(record, day, waitMessage);
+      return;
+    }
     const cookieTenant = activeShopFromCookie();
-    if (isLoginPage() || (cookieTenant && cookieTenant !== pageTenantSlug)) {
-      setStatus(
-        `Đăng nhập ${pageTenantLabel} để phát hành tiếp ngày ${viDay(day)} (sau ${fromLabel}). ` +
-        "Đăng nhập xong extension tự mở màn Phát hành với đúng ngày này.",
-        "warn"
-      );
+    if (cookieTenant && cookieTenant !== pageTenantSlug) {
+      setStatus(waitMessage, "warn");
       return;
     }
     // Website có thể đưa về trang chủ sau khi đăng nhập: mở lại màn Hóa đơn điện
@@ -3987,7 +4042,7 @@
     // thành mục mở ra được, tự mở khi đang có lượt chạy dở.
     node.innerHTML = `<div class="it-section-head">
       <b>Phát hành hóa đơn điện tử</b>
-      <small>Chọn hóa đơn rồi xác nhận một lần cho cả lô. Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small>
+      <small>Chọn hóa đơn rồi bấm Phát hành cho cả lô (chỉ hỏi lại khi có cảnh báo). Mặt hàng của hóa đơn phát hành thành công được ghi lại để xuất file hạch toán ở tab Kho.</small>
     </div>
     <div class="it-controls-row">
       <label title="Lô phát hành luôn đúng một ngày để số hóa đơn liên tục và xen kẽ được với cơ sở kia.">Ngày phát hành<input id="it-einvoice-from-date" type="date" value="${escapeHtml(fromDate)}"></label>
@@ -4195,7 +4250,7 @@
         <button id="it-sync-issued" type="button" title="Ghi sổ các hóa đơn đã phát hành trên website nhưng chưa có trong sổ hạch toán">Đồng bộ HĐ đã phát hành</button>
       </div>
       <div class="it-actions-group">
-        <button id="it-issue-einvoices" type="button" class="primary" ${eInvoiceSelection.size && !issuingInProgress ? "" : "disabled"}>Phát hành hóa đơn đã chọn</button>
+        <button id="it-issue-einvoices" type="button" class="primary" ${eInvoiceSelection.size && !issuingInProgress ? "" : "disabled"}>${escapeHtml(issueButtonLabel())}</button>
       </div>
     </div>
     <div id="it-einvoice-progress"></div>
@@ -4354,7 +4409,19 @@
     const count = document.getElementById("it-einvoice-selected-count");
     if (count) count.textContent = String(eInvoiceSelection.size);
     const button = document.getElementById("it-issue-einvoices");
-    if (button) button.disabled = !eInvoiceSelection.size || issuingInProgress;
+    if (button) {
+      button.disabled = !eInvoiceSelection.size || issuingInProgress;
+      button.textContent = issueButtonLabel();
+    }
+  }
+
+  // Nút Phát hành nêu luôn số hóa đơn và tổng tiền đang chọn: lô sạch không còn
+  // hộp xác nhận, nên đây là chỗ người dùng thấy mình sắp phát hành gì.
+  function issueButtonLabel() {
+    const selected = eInvoiceRows.filter(row => eInvoiceSelection.has(row.id) && !row.issued && !row.cancelled);
+    if (!selected.length) return "Phát hành hóa đơn đã chọn";
+    const total = selected.reduce((sum, row) => sum + (Number(row.grandTotal) || 0), 0);
+    return `Phát hành ${selected.length} hóa đơn · ${formatMoney(total)} đ`;
   }
 
   async function loadEInvoiceList() {
@@ -4586,7 +4653,15 @@
     const coordinationWarning = coordination.warnings.length
       ? `\n\n${coordination.warnings.map(item => `⚠ ${item.text}`).join("\n")}`
       : "";
-    const confirmed = window.confirm(
+    // Hộp xác nhận chỉ còn khi có điều người dùng PHẢI đọc trước khi phát hành:
+    // phiếu ngoài danh sách giao dịch (không thuộc luồng extension) hoặc cảnh báo
+    // chéo cơ sở (sai thứ tự, lô trước đứt giữa chừng, chưa import sao kê cơ sở
+    // kia…). Lô sạch thì bấm nút "Phát hành N hóa đơn · X đ" là đủ (yêu cầu
+    // 05/10/2026): các chặn cứng (lệch sao kê, trộn nhiều ngày) đã chạy ở trên, thứ
+    // tự cấp số đã chốt theo ngày → giờ giao dịch, còn hai ghi chú đọc mặt hàng từ
+    // web / sổ lệch web là việc extension tự xử lý trong lúc chạy.
+    const needsConfirm = Boolean(outside.length || coordination.warnings.length);
+    const confirmed = !needsConfirm || window.confirm(
       `Phát hành ${orderedTargets.length} hóa đơn với tổng tiền ${formatMoney(total)} đ?\n\n` +
       "Số hóa đơn sẽ được cấp theo đúng thứ tự này:\n" +
       orderedTargets.slice(0, 10).map((row, index) =>

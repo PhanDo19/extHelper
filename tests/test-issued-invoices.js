@@ -179,11 +179,21 @@ assert(sortFn.indexOf("requestedAt") < sortFn.indexOf("localeCompare(String(righ
 // Hộp thoại xác nhận phải nêu đúng thứ tự sẽ chạy, không phải thứ tự dòng trong
 // bảng — người dùng cần thấy trước dải số hóa đơn sắp được cấp.
 const confirmBlock = contentSource.slice(
-  contentSource.indexOf("const confirmed = window.confirm("),
+  contentSource.indexOf("const confirmed = !needsConfirm || window.confirm("),
   contentSource.indexOf("if (!confirmed)")
 );
 assert(confirmBlock.includes("orderedTargets") && !confirmBlock.includes("targets[0]"),
   "Hộp thoại phải liệt kê theo orderedTargets, không dùng thứ tự bảng");
+// Lô sạch không còn hộp xác nhận (bấm nút Phát hành là đủ, yêu cầu 05/10/2026),
+// nhưng phiếu ngoài danh sách giao dịch và cảnh báo chéo cơ sở vẫn PHẢI hỏi lại.
+assert(contentSource.includes("const needsConfirm = Boolean(outside.length || coordination.warnings.length);"),
+  "Chỉ bỏ hộp xác nhận khi không có phiếu ngoài giao dịch và không có cảnh báo chéo cơ sở");
+assert(confirmBlock.includes("outsideWarning") && confirmBlock.includes("coordinationWarning"),
+  "Hộp xác nhận (khi còn) phải nêu đủ cảnh báo");
+// Không còn hộp thoại thì nút phải nêu số hóa đơn và tổng tiền sẽ phát hành.
+assert.match(contentSource, /return `Phát hành \$\{selected\.length\} hóa đơn · \$\{formatMoney\(total\)\} đ`;/);
+assert(contentSource.includes("${escapeHtml(issueButtonLabel())}</button>"), "Nút Phát hành dùng nhãn có số lượng/tổng tiền");
+assert.match(contentSource, /button\.textContent = issueButtonLabel\(\);/, "Đổi lựa chọn thì nhãn nút cập nhật theo");
 
 // Hạn chờ phát hành phải tách theo đường chạy: thuần API thì ngắn, phải mở giao
 // diện thì giữ dài vì còn chuỗi polling Kendo.

@@ -26,12 +26,33 @@ const constant = name => {
 const KG_URL = "http://banhang.thuanvietsoft.com/pariskimgiang/Form?Modal=0&ID=9bc781f5-d316-4eba-94d8-26c4c2321faf&MenuID=2af9b881-2fff-41cb-b014-fe662ee351c2";
 const LD_URL = KG_URL.replace("/pariskimgiang/", "/parislinhdam/");
 
-function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coordination = Coordination.empty(), cookie = "", loginForm = false } = {}) {
+// Trang đăng nhập thật của website (đọc 05/10/2026, /parislinhdam/Login?Url=…):
+// form POST tới /<cơ sở>/Login, UserName điền sẵn "Admin", Password trống, nút
+// #btnDangnhap; #loginByUserPass ẩn khi bật chế độ đăng nhập bằng mã số; ô
+// VerifyCode nằm trong <li class="user hidden"> trừ khi website đòi mã xác thực.
+function loginPageElements({ action = "/parislinhdam/Login", userName = "Admin", touchMode = false,
+  verifyVisible = false, error = "" } = {}) {
+  const clicks = [];
+  return {
+    clicks,
+    form: { getAttribute: name => (name === "action" ? action : null) },
+    byId: {
+      loginByUserPass: { display: touchMode ? "none" : "block" },
+      VerifyCode: { closest: selector => (selector === ".hidden" && !verifyVisible ? {} : null) },
+      UserName: { value: userName },
+      lblstatus: { textContent: `\n    ${error}\n    ` },
+      btnDangnhap: { click: () => clicks.push(Date.now()) }
+    }
+  };
+}
+
+function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coordination = Coordination.empty(), cookie = "", login = null } = {}) {
   const timers = [];
   const statuses = [];
   const assigned = [];
   const opened = [];
   const storage = { handoff: stored };
+  const loginPage = login ? loginPageElements(login) : null;
   const statusNode = {
     className: "",
     children: [],
@@ -42,14 +63,17 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
   };
   const url = new URL(href);
   const box = {
-    timers, statuses, assigned, opened, storage, statusNode,
+    timers, statuses, assigned, opened, storage, statusNode, loginPage,
     URL,
     console,
     location: { href, pathname: url.pathname, assign: target => assigned.push(target) },
+    getComputedStyle: element => ({ display: element.display || "block" }),
     document: {
       cookie,
-      getElementById: id => (id === "it-status" ? statusNode : id === "it-panel" ? box.panel : null),
-      querySelector: selector => (loginForm && selector === 'input[type="password"]' ? {} : null),
+      getElementById: id => (id === "it-status" ? statusNode : id === "it-panel" ? box.panel
+        : loginPage?.byId[id] || null),
+      querySelector: selector => (loginPage && selector === 'input[type="password"]' ? {} : null),
+      querySelectorAll: selector => (loginPage && selector === "form" ? [loginPage.form] : []),
       createTextNode: text => ({ textContent: text }),
       createElement: () => ({ dataset: {}, addEventListener() {}, textContent: "" })
     },
@@ -84,6 +108,7 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
     "let issueCoordination = this.coordination;",
     fn("activeShopFromCookie"), fn("uiDateKey"), fn("setStatus"),
     fn("viDay"), fn("tenantPageUrl"), fn("isSamePageUrl"), fn("isLoginPage"), fn("issueHandoffTarget"),
+    fn("handoffLoginProblem"), fn("submitHandoffLogin"),
     fn("promptIssueHandoff"), fn("scheduleIssueHandoffRedirect"), fn("cancelIssueHandoffRedirect"),
     fn("stayAfterIssue"), fn("followIssueHandoff"), fn("resumeIssueHandoff"),
     "this.setStatus = setStatus; this.prompt = promptIssueHandoff; this.stay = stayAfterIssue;",
@@ -176,14 +201,61 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
   assert.match(arrived.text(), /Tiếp tục sau Paris Kim Giang: đã mở Phát hành ngày 02\/08\/2026\. Đã tải 12 hóa đơn[\s\S]*extension không tự phát hành/);
   assert.deepStrictEqual(arrived.assigned, []);
 
-  // 7. Trang đăng nhập (hoặc cookie còn của cơ sở cũ): chờ, giữ nguyên lệnh.
-  for (const options of [{ loginForm: true, cookie: "" }, { cookie: "shop=pariskimgiang" }]) {
-    const login = makeBox({ tenant: "parislinhdam", href: LD_URL, stored: { ...record }, ...options });
-    await login.resume();
-    assert.deepStrictEqual(login.opened, []);
-    assert.strictEqual(login.storage.handoff.targetTenant, "parislinhdam", "Lệnh phải sống qua bước đăng nhập");
-    assert.match(login.text(), /Đăng nhập Paris Linh Đàm để phát hành tiếp ngày 02\/08\/2026 \(sau Paris Kim Giang\)/);
+  // 7. Trang đăng nhập: tài khoản đã điền sẵn, không cần mật khẩu → bấm hộ
+  // "Đăng nhập" đúng một lần; không điền gì vào form.
+  const LOGIN_URL = "http://banhang.thuanvietsoft.com/parislinhdam/Login?Url=%2fparislinhdam%2fForm%3fModal%3d0";
+  const autoLogin = makeBox({ tenant: "parislinhdam", href: LOGIN_URL, stored: { ...record }, login: {} });
+  await autoLogin.resume();
+  assert.strictEqual(autoLogin.loginPage.clicks.length, 1, "Bấm hộ nút Đăng nhập");
+  assert(autoLogin.storage.handoff.loginAttemptAt, "Đánh dấu đã bấm để không bấm lặp");
+  assert.strictEqual(autoLogin.storage.handoff.targetTenant, "parislinhdam", "Lệnh phải sống qua bước đăng nhập");
+  assert.strictEqual(autoLogin.loginPage.byId.UserName.value, "Admin", "Không đụng vào ô Tài khoản");
+  assert.match(autoLogin.text(), /Đang tự đăng nhập Paris Linh Đàm để phát hành tiếp ngày 02\/08\/2026/);
+  assert.deepStrictEqual(autoLogin.opened, []);
+
+  // Quay lại trang đăng nhập sau lần bấm đó = không vào được: không bấm nữa.
+  const retry = makeBox({ tenant: "parislinhdam", href: LOGIN_URL, stored: { ...autoLogin.storage.handoff }, login: {} });
+  await retry.resume();
+  assert.strictEqual(retry.loginPage.clicks.length, 0, "Không bấm Đăng nhập lặp lại");
+  assert.strictEqual(retry.panel.hidden, false, "Mở panel để người dùng thấy lý do");
+  assert.match(retry.text(), /lần trước chưa vào được\. Đăng nhập Paris Linh Đàm để phát hành tiếp ngày 02\/08\/2026 \(sau Paris Kim Giang\)/);
+
+  // Form khác thường thì để người dùng tự đăng nhập.
+  for (const [login, reason] of [
+    [{ touchMode: true }, /chế độ đăng nhập bằng mã số/],
+    [{ verifyVisible: true }, /đòi mã xác thực/],
+    [{ userName: "" }, /ô Tài khoản chưa được điền sẵn/],
+    [{ error: "Tài khoản hoặc mật khẩu không đúng" }, /website báo: Tài khoản hoặc mật khẩu không đúng/],
+    [{ action: "/pariskimgiang/Login" }, /không thấy form đăng nhập của cơ sở này/]
+  ]) {
+    const odd = makeBox({ tenant: "parislinhdam", href: LOGIN_URL, stored: { ...record }, login });
+    await odd.resume();
+    assert.strictEqual(odd.loginPage.clicks.length, 0, `Không bấm khi ${reason}`);
+    assert.match(odd.text(), new RegExp(`Không tự đăng nhập: [^.]*${reason.source}`));
+    assert.strictEqual(odd.storage.handoff.loginAttemptAt, undefined);
   }
+
+  // Không có lệnh chuyển dành cho cơ sở này thì không bao giờ tự đăng nhập.
+  const noHandoff = makeBox({ tenant: "parislinhdam", href: LOGIN_URL, stored: null, login: {} });
+  await noHandoff.resume();
+  const otherTarget = makeBox({ tenant: "pariskimgiang", href: LOGIN_URL.replace(/parislinhdam/g, "pariskimgiang"),
+    stored: { ...record }, login: { action: "/pariskimgiang/Login" } });
+  await otherTarget.resume();
+  assert.strictEqual(noHandoff.loginPage.clicks.length + otherTarget.loginPage.clicks.length, 0);
+
+  // Cookie còn của cơ sở cũ (chưa ở trang đăng nhập): chờ, giữ nguyên lệnh.
+  const staleCookie = makeBox({ tenant: "parislinhdam", href: LD_URL, stored: { ...record }, cookie: "shop=pariskimgiang" });
+  await staleCookie.resume();
+  assert.deepStrictEqual(staleCookie.opened, []);
+  assert.strictEqual(staleCookie.storage.handoff.targetTenant, "parislinhdam");
+  assert.match(staleCookie.text(), /Đăng nhập Paris Linh Đàm để phát hành tiếp ngày 02\/08\/2026 \(sau Paris Kim Giang\)/);
+
+  // Đăng nhập xong website quay về đúng màn trong `Url`: mở Phát hành, xóa lệnh.
+  const afterLogin = makeBox({ tenant: "parislinhdam", href: LD_URL, stored: { ...autoLogin.storage.handoff },
+    cookie: "shop=parislinhdam" });
+  await afterLogin.resume();
+  assert.deepStrictEqual(afterLogin.opened, ["2026-08-02"]);
+  assert.strictEqual(afterLogin.storage.handoff, null);
 
   // 8. Đăng nhập xong website đưa về trang chủ: mở lại màn Hóa đơn điện tử một lần.
   const home = "http://banhang.thuanvietsoft.com/parislinhdam/Home";

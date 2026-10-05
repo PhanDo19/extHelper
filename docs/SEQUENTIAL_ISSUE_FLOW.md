@@ -108,12 +108,21 @@ cơ sở kia rồi chọn lại ngày. Nay:
 3. Bước kế ở chính cơ sở này (ngày kế): không chuyển trang, chỉ có nút **Tải
    ngày …**. Hết việc: xóa lệnh chuyển cũ, mời xuất file hạch toán như trước.
 4. Ở cơ sở đích, lúc khởi tạo:
-   - Trang đăng nhập, hoặc cookie `shop` còn của cơ sở cũ: chờ, giữ lệnh, nhắc
-     đăng nhập. Lệnh sống 12 giờ.
+   - Trang đăng nhập (`/<cơ sở>/Login?Url=…`, từ 1.29.24): website điền sẵn tài
+     khoản `Admin`, không cần mật khẩu, người dùng chỉ bấm **Đăng nhập** — nên
+     extension bấm hộ nút `#btnDangnhap` **một lần** cho mỗi lệnh chuyển
+     (`loginAttemptAt`), rồi website tự quay về đúng URL trong `Url`. Extension
+     không bao giờ điền tài khoản/mật khẩu. Không bấm, để người dùng tự đăng nhập,
+     khi: form không phải của cơ sở này, đang ở chế độ đăng nhập bằng mã số, ô
+     "Mã xác thực" hiện ra, ô Tài khoản trống, website đang báo lỗi, hoặc đã bấm
+     một lần mà vẫn quay lại trang đăng nhập. Không có lệnh chuyển thì không bao
+     giờ tự đăng nhập.
+   - Cookie `shop` còn của cơ sở cũ (không phải trang đăng nhập): chờ, giữ lệnh,
+     nhắc đăng nhập. Lệnh sống 12 giờ.
    - Đăng nhập xong mà website đưa về trang khác: mở lại màn Hóa đơn điện tử
      **một lần** (phát hành phải chạy ở đúng màn đó để gửi đúng tham số).
    - Ở đúng màn: xóa lệnh, mở panel → Phát hành với **ngày mang sang** và tải danh
-     sách (chỉ đọc). **Không tự phát hành** — người dùng vẫn chọn và xác nhận.
+     sách (chỉ đọc). **Không tự phát hành** — người dùng vẫn chọn và bấm Phát hành.
    - Bỏ qua lệnh quá hạn, lệnh cho ngày cơ sở này đã chốt xong, hoặc khi lô Batch
      đang tự chạy tiếp sau tải lại / tab phụ tạo phiếu.
 
@@ -187,7 +196,9 @@ flowchart TD
     L -- Có --> L1[Cảnh báo: sẽ đọc mặt hàng<br/>từ website qua LayDuLieuChiTiet] --> M
     L -- Không --> M
 
-    M[HỘP THOẠI XÁC NHẬN MỘT LẦN CHO CẢ LÔ<br/>số hóa đơn, tổng tiền, thứ tự sẽ phát hành<br/>dải số dự kiến tính từ sao kê đối chiếu<br/>+ mọi cảnh báo ở trên] --> N{Xác nhận?}
+    M{Có phiếu ngoài danh sách giao dịch<br/>hoặc cảnh báo chéo cơ sở?}
+    M -- Không: lô sạch --> O
+    M -- Có --> M1[HỘP THOẠI XÁC NHẬN MỘT LẦN CHO CẢ LÔ<br/>số hóa đơn, tổng tiền, thứ tự sẽ phát hành<br/>+ mọi cảnh báo ở trên] --> N{Xác nhận?}
     N -- Không --> Z4[Hủy, không gọi API nào]
     N -- Có --> O
 
@@ -261,6 +272,9 @@ sequenceDiagram
 | Cơ sở kia không có giao dịch ngày D | sao kê đối chiếu: 0 dòng | Chạy bình thường |
 
 Tất cả đều **chặn mềm**: nêu rõ trong hộp thoại xác nhận, người dùng quyết định.
+Từ 1.29.24 hộp thoại này chỉ hiện khi có ít nhất một cảnh báo trong bảng trên
+hoặc có phiếu ngoài danh sách giao dịch; lô sạch chạy ngay khi bấm nút **Phát hành
+N hóa đơn · X đ** (nút nêu sẵn số hóa đơn và tổng tiền đang chọn).
 Chặn cứng sẽ kẹt khi một cơ sở không có hóa đơn nào trong ngày — và với sao kê đối
 chiếu, trường hợp đó nay **phân biệt được** với "chưa chạy", nên cảnh báo chính xác
 hơn hẳn: `0 giao dịch` khác `chưa import` khác `có việc nhưng chưa chạy`.

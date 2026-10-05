@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.29.24 (2026-10-05)
+
+- **Chuyển cơ sở để phát hành tiếp thì tự bấm "Đăng nhập".** Trang đăng nhập (`/<cơ sở>/Login?Url=…`, đọc 05/10/2026) là form POST thường, website điền sẵn tài khoản `Admin`, không cần mật khẩu, và tự quay về đúng URL trong `Url` sau khi đăng nhập. Khi có lệnh chuyển dành cho cơ sở này, extension bấm hộ nút Đăng nhập **một lần**; không bao giờ điền tài khoản hay mật khẩu. Không bấm (để người dùng tự đăng nhập, panel nêu lý do) khi form không phải của cơ sở này, website đang ở chế độ đăng nhập bằng mã số, đòi mã xác thực, ô Tài khoản trống, đang báo lỗi, hoặc lần bấm trước vẫn quay lại trang đăng nhập.
+- **Phát hành lô sạch không còn hộp xác nhận.** Bấm nút là chạy; nút nay ghi **Phát hành N hóa đơn · X đ** theo lựa chọn hiện tại. Hộp xác nhận chỉ còn khi lô có phiếu ngoài danh sách giao dịch hoặc cảnh báo chéo cơ sở (sai thứ tự, lô trước đứt giữa chừng, chưa import sao kê cơ sở kia, cơ sở kia đã phát hành ngày sau…). Các chặn cứng (phiếu lệch sao kê, lô trộn nhiều ngày) giữ nguyên.
+
 ## 1.29.23 (2026-10-05)
 
 - **Phát hành xong một cơ sở thì tự chuyển sang cơ sở kế tiếp, mở sẵn đúng ngày.** Trước đây (Kim Giang/Linh Đàm dùng chung dải số) người dùng phải tự gõ URL cơ sở kia rồi chọn lại ngày phát hành.

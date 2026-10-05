@@ -53,7 +53,7 @@ Cập nhật 29/07/2026 từ `data (1).xlsx` + `KhoT5.xlsx`:
    - Phiếu mới: tự chọn phòng hát trống đúng đơn giá (không bao giờ chọn quầy BÁN LẺ), đọc form phòng bằng API rồi tạo và thanh toán phiếu bằng hai request API ngay trên tab danh sách. Không đọc được form phòng thì tự quay về cách mở tab Bán hàng phụ.
    - Sau mỗi phiếu, extension mở lại phiếu từ server và **đối soát sau lưu**; chỉ khi khớp tuyệt đối mới đánh dấu giao dịch đã xử lý và trừ tồn kho.
 8. Nếu một lần tạo phiếu mới báo lỗi mà chưa rõ website đã cấp số hay chưa, extension chặn tạo lại. Kiểm tra danh sách Bán hàng ngày đó rồi bấm **Đặt lại** giao dịch trước khi chạy tiếp.
-9. Vào tab **Giao dịch ngân hàng** → sub-tab **Phát hành hóa đơn**, chọn ngày, tích các hóa đơn cần phát hành rồi xác nhận một lần cho cả lô.
+9. Vào tab **Giao dịch ngân hàng** → sub-tab **Phát hành hóa đơn**, chọn ngày, tích các hóa đơn cần phát hành rồi bấm **Phát hành N hóa đơn · X đ** (chỉ hỏi xác nhận khi lô có cảnh báo).
 10. Sang tab Kho bấm **Xuất kho đã phát hành (Excel)** để lấy file `.xlsx` hạch toán gửi kế toán.
 
 ## Dashboard kế toán
@@ -162,7 +162,7 @@ Chi tiết Batch Review xem tại `docs/BATCH_REVIEW.md`.
 
 - Tạo phiếu mới không cần tab phụ dựa trên việc HTML của `GET AddEdit` chứa dữ liệu form (`new DataTransferJs(...)`). Điều này đã được suy ra từ cách form mở trên giao diện nhưng chưa được kiểm chứng trên website thật; bấm **Kiểm tra tạo phiếu không cần tab phụ** trước khi chạy lô. Nếu không đọc được, extension tự quay về tab phụ.
 - Sao kê có kiểm tra phiên bản giữa các tab: tab nào ghi dựa trên dữ liệu cũ sẽ bị từ chối và được nhắc tải lại trang (F5). Ánh xạ mặt hàng và các màn hình quản trị khác chưa có kiểm tra này, nên vẫn chỉ nên mở một tab cho mỗi cơ sở. Trên trang `http://` (không có Web Locks) hai lần ghi đúng cùng thời điểm vẫn có thể lọt kiểm tra.
-- Extension không tự phát hành hóa đơn điện tử khi chưa có xác nhận của người dùng, và không tự hủy hóa đơn.
+- Extension không tự phát hành hóa đơn điện tử khi người dùng chưa bấm nút Phát hành, và không tự hủy hóa đơn.
 # Mới trong MVP 0.4
 
 - Chọn giao dịch ngân hàng sẽ tự tìm phiếu chưa xuất đúng ngày giao dịch.
