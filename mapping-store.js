@@ -48,6 +48,9 @@
   // Lệnh "chuyển sang cơ sở kế tiếp để phát hành" ghi ở cơ sở vừa phát hành xong,
   // đọc ở cơ sở đích sau khi trang tải lại. Dùng chung, không qua tenantKey.
   const ISSUE_HANDOFF_KEY = "invoiceTargetIssueHandoffV1";
+  // Lượt tự động phát hành theo khoảng ngày: chạy xuyên các cơ sở dùng chung dải
+  // số nên trạng thái phải dùng chung, không qua tenantKey.
+  const AUTO_ISSUE_KEY = "invoiceTargetAutoIssueV1";
   // webCode cua quy tac uu tien chi dung o chi nhanh mac dinh; chi nhanh khac
   // phai tu chon lai ma hang tuong ung trong panel.
   const DEFAULT_PRIORITY_RULES = [
@@ -342,6 +345,20 @@
     return handoff;
   }
 
+  async function loadAutoIssueJob() {
+    if (!globalThis.chrome?.storage?.local) return null;
+    const stored = await chrome.storage.local.get(AUTO_ISSUE_KEY);
+    return stored[AUTO_ISSUE_KEY] || null;
+  }
+
+  async function saveAutoIssueJob(job) {
+    if (globalThis.chrome?.storage?.local) {
+      if (job) await chrome.storage.local.set({ [AUTO_ISSUE_KEY]: job });
+      else await chrome.storage.local.remove(AUTO_ISSUE_KEY);
+    }
+    return job;
+  }
+
   async function commitVerifiedInvoice(dataset, statement, ledger, sharedWarehouse) {
     if (globalThis.chrome?.storage?.local) {
       const statementKey = tenantKey(STATEMENT_BASE_KEY);
@@ -374,6 +391,7 @@
     saveMappingBackup, loadMappingBackup,
     importStockState, loadStockStateBackup, loadApiTemplate, saveApiTemplate, clearApiTemplate,
     loadIssuedInvoices, saveIssuedInvoices, loadSharedWarehouse, saveSharedWarehouse, currentTenant,
-    loadIssueCoordination, saveIssueCoordination, loadIssueHandoff, saveIssueHandoff
+    loadIssueCoordination, saveIssueCoordination, loadIssueHandoff, saveIssueHandoff,
+    loadAutoIssueJob, saveAutoIssueJob
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

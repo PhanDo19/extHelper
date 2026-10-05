@@ -597,6 +597,12 @@
 #it-panel .it-controls-row input, #it-panel .it-controls-row select { width: auto; min-width: 150px; }
 .it-day-nav { display: flex; gap: 6px; }
 #it-panel .it-day-nav button { min-height: 38px; padding: 8px 11px; white-space: nowrap; }
+/* Tự động phát hành theo khoảng ngày: tách khỏi hàng phát hành tay bằng một đường kẻ. */
+.it-auto-issue-row { align-items: center; padding-top: 10px; border-top: 1px dashed #d5dde8; }
+.it-auto-issue-row > b { color: #18365f; font-size: 13px; }
+#it-panel .it-auto-issue-row button[hidden] { display: none !important; }
+#it-panel .it-auto-issue-row button.danger { background: #fff1f0; border-color: #e5a29b; color: #b42318; }
+.it-auto-issue-row #it-auto-issue-progress { flex-basis: 100%; }
 .it-tool-section { margin: 0 0 10px; border: 1px solid #dce4ef; border-radius: 8px; background: #fbfcfe; }
 .it-tool-section > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 12px; color: #44566f; cursor: pointer; font-size: 12px; }
 .it-tool-section > summary small { color: #66758a; font-weight: 600; }

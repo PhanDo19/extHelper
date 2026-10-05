@@ -132,6 +132,40 @@ cơ sở kia rồi chọn lại ngày. Nay:
 
 Paris Nhơn có dải số riêng nên không tạo và không xóa lệnh chuyển.
 
+## Tự động phát hành theo khoảng ngày (từ 1.29.26)
+
+Hàng **Tự động phát hành** ở màn Phát hành: chọn Từ ngày – Đến ngày, bấm một lần,
+xác nhận một lần cho cả khoảng. Phát hành tay (chọn rồi bấm **Phát hành N hóa đơn ·
+X đ**) giữ nguyên.
+
+- **Thứ tự:** Kim Giang/Linh Đàm đi theo `firstPendingStep` rồi `nextHandoff(…,
+  Đến ngày)`: mỗi ngày theo dãy thứ tự phát hành, xong mọi cơ sở mới sang ngày kế;
+  cơ sở/ngày không có giao dịch hoặc đã chốt xong được bỏ qua. Paris Nhơn đi lần
+  lượt các ngày có giao dịch trong sao kê của chính Nhơn, không chuyển cơ sở.
+- **Mỗi bước** (luôn ở màn Hóa đơn điện tử của đúng cơ sở): tải danh sách ngày đó →
+  kiểm tra điều kiện dừng → tích sẵn → **đếm ngược 5 giây** (nút **Dừng tự động
+  phát hành**) → phát hành → bước kế. Sang cơ sở khác thì đếm ngược 5 giây rồi
+  chuyển trang, tự bấm Đăng nhập như luồng tay; trang đích chạy tiếp.
+- **Dừng hẳn** (không phát hành, không chuyển đi; có nút **Chạy tiếp tự động**) khi:
+  - còn giao dịch sao kê ngày đó chưa xử lý xong (khác Đã xử lý/Bỏ qua) — phát hành
+    lúc này thì phiếu còn lại sẽ phát hành sau cơ sở kia, đứt dải số;
+  - có phiếu của giao dịch sao kê lệch sao kê;
+  - lô cần người đọc: phiếu ngoài danh sách giao dịch, hoặc bất kỳ cảnh báo chéo cơ
+    sở nào (luồng tay sẽ hỏi xác nhận; luồng tự động không bao giờ tự bấm qua);
+  - lô vừa chạy không sạch: có hóa đơn lỗi, cảnh báo, thiếu mặt hàng, số không liên
+    tục, hoặc còn phiếu chưa phát hành;
+  - cookie `shop` đang là cơ sở khác; không mở được màn Hóa đơn điện tử; mọi lỗi khác.
+- **Ngày không còn gì để phát hành** (mọi phiếu của giao dịch đã phát hành): ghi chốt
+  `done` cho ngày đó rồi đi tiếp, để lần chạy lại không quay lại.
+- **Chạy tiếp** sau khi dừng: cùng khoảng ngày, bắt đầu lại từ bước còn việc sớm nhất.
+- **Trạng thái lượt chạy** ở `invoiceTargetAutoIssueV1` (khóa dùng chung):
+  `status` running/stopped/done, khoảng ngày, `scope` (`shared` hoặc `parisnhon`),
+  bước hiện tại, các bước đã chạy kèm số hóa đơn. Không cập nhật quá 12 giờ thì coi
+  như đã dừng. Trang bị tải lại giữa chừng (không có lệnh chuyển) **không** tự chạy
+  tiếp — chỉ hiện nút Chạy tiếp / Dừng.
+- Lệnh chuyển của lượt tự động mang cờ `auto`; lượt đã dừng/quá hạn thì trang đích
+  chỉ mở đúng ngày và tích sẵn như luồng tay.
+
 ## Thứ tự giữa hai cơ sở — cờ config
 
 Cơ sở nào phát hành trước trong cùng một ngày do **cờ config trên UI** quyết định.
@@ -323,4 +357,5 @@ chủ — quá hạn không bao giờ được kết luận là chưa phát hàn
 | Bước kế tiếp sau lô | `issue-coordination.js` — `nextHandoff` |
 | Lệnh chuyển cơ sở (dùng chung) | `mapping-store.js` — `loadIssueHandoff`/`saveIssueHandoff` |
 | Đếm ngược, Ở lại/Chuyển ngay, mở đúng ngày ở cơ sở đích | `content.js` — `promptIssueHandoff`, `stayAfterIssue`, `followIssueHandoff`, `resumeIssueHandoff` (gọi trong `init`) |
+| Tự động phát hành theo khoảng ngày | `issue-coordination.js` — `firstPendingStep`, `nextHandoff(…, untilDate)`; `mapping-store.js` — `loadAutoIssueJob`/`saveAutoIssueJob`; `content.js` — `startAutoIssue`, `runAutoIssueStep`, `autoIssueBlockers`, `continueAutoIssue`, `stopAutoIssue`, `issueSelectedEInvoices({ auto: true })` |
 | Ghi sổ từng hóa đơn | `content.js` — `InvoiceIssuedBook.record` + `saveIssuedInvoices` (giữ nguyên) |

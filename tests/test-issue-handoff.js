@@ -6,151 +6,12 @@
 // Không bao giờ tự phát hành ở cơ sở đích.
 
 const assert = require("assert");
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const Coordination = require("../issue-coordination.js");
-
-const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8").replace(/\r\n/g, "\n");
-function fn(name) {
-  let start = source.indexOf(`\n  async function ${name}(`);
-  if (start < 0) start = source.indexOf(`\n  function ${name}(`);
-  if (start < 0) throw new Error(`Không tìm thấy ${name}`);
-  return source.slice(start + 1, source.indexOf("\n  }\n", start) + 4);
-}
-const constant = name => {
-  const start = source.indexOf(`  const ${name} =`);
-  return source.slice(start, source.indexOf(";\n", start) + 1);
-};
-
-const KG_URL = "http://banhang.thuanvietsoft.com/pariskimgiang/Form?Modal=0&ID=9bc781f5-d316-4eba-94d8-26c4c2321faf&MenuID=2af9b881-2fff-41cb-b014-fe662ee351c2";
-const LD_URL = KG_URL.replace("/pariskimgiang/", "/parislinhdam/");
-
-// Trang đăng nhập thật của website (đọc 05/10/2026, /parislinhdam/Login?Url=…):
-// form POST tới /<cơ sở>/Login, UserName điền sẵn "Admin", Password trống, nút
-// #btnDangnhap; #loginByUserPass ẩn khi bật chế độ đăng nhập bằng mã số; ô
-// VerifyCode nằm trong <li class="user hidden"> trừ khi website đòi mã xác thực.
-function loginPageElements({ action = "/parislinhdam/Login", userName = "Admin", touchMode = false,
-  verifyVisible = false, error = "" } = {}) {
-  const clicks = [];
-  return {
-    clicks,
-    form: { getAttribute: name => (name === "action" ? action : null) },
-    byId: {
-      loginByUserPass: { display: touchMode ? "none" : "block" },
-      VerifyCode: { closest: selector => (selector === ".hidden" && !verifyVisible ? {} : null) },
-      UserName: { value: userName },
-      lblstatus: { textContent: `\n    ${error}\n    ` },
-      btnDangnhap: { click: () => clicks.push(Date.now()) }
-    }
-  };
-}
-
-function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coordination = Coordination.empty(), cookie = "", login = null } = {}) {
-  const timers = [];
-  const statuses = [];
-  const assigned = [];
-  const opened = [];
-  const storage = { handoff: stored };
-  const loginPage = login ? loginPageElements(login) : null;
-  const statusNode = {
-    className: "",
-    children: [],
-    classList: { contains: name => statusNode.className.split(/\s+/).includes(name) },
-    get firstChild() { return statusNode.children[0] || null; },
-    replaceChildren(...nodes) { statusNode.children = nodes; },
-    append(node) { statusNode.children.push(node); }
-  };
-  const url = new URL(href);
-  const box = {
-    timers, statuses, assigned, opened, storage, statusNode, loginPage,
-    URL,
-    console,
-    location: { href, pathname: url.pathname, assign: target => assigned.push(target) },
-    getComputedStyle: element => ({ display: element.display || "block" }),
-    document: {
-      cookie,
-      getElementById: id => (id === "it-status" ? statusNode : id === "it-panel" ? box.panel
-        : loginPage?.byId[id] || null),
-      querySelector: selector => (loginPage && selector === 'input[type="password"]' ? {} : null),
-      querySelectorAll: selector => (loginPage && selector === "form" ? [loginPage.form] : []),
-      createTextNode: text => ({ textContent: text }),
-      createElement: () => ({ dataset: {}, addEventListener() {}, textContent: "" })
-    },
-    panel: { hidden: true },
-    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
-    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
-    InvoiceIssueCoordination: Coordination,
-    InvoiceMappingStore: {
-      loadIssueHandoff: async () => storage.handoff,
-      saveIssueHandoff: async value => { storage.handoff = value; return value; }
-    },
-    renderWorkflowDashboard: () => {},
-    isInvalidRuntimeContext: () => false,
-    openAccountingDashboardAction: () => {},
-    syncTabsOffset: () => {},
-    parseUiDateTime: () => null,
-    // Danh sách website trả về cho ngày được mở; chỉ A thuộc giao dịch sao kê,
-    // khớp giao dịch và chưa phát hành.
-    listRows: [
-      { id: "A", invoiceNo: "HD-A" },
-      { id: "A2", invoiceNo: "HD-A2" },
-      { id: "B", invoiceNo: "HD-B", issued: true },
-      { id: "C", invoiceNo: "HD-C-ngoai-giao-dich" },
-      { id: "D", invoiceNo: "HD-D", mismatch: true },
-      { id: "E", invoiceNo: "HD-E", cancelled: true }
-    ],
-    linkedNos: ["HD-A", "HD-A2", "HD-B", "HD-D", "HD-E"],
-    rendered: 0
-  };
-  vm.createContext(box);
-  vm.runInContext([
-    `const pageTenantSlug = ${JSON.stringify(tenant)};`,
-    "const TENANT_LABELS = { parislinhdam: 'Paris Linh Đàm', pariskimgiang: 'Paris Kim Giang', parisnhon: 'Paris Nhơn' };",
-    "const pageTenantLabel = TENANT_LABELS[pageTenantSlug];",
-    "const RUNTIME_REFRESH_MESSAGE = 'reload';",
-    constant("ISSUE_HANDOFF_REDIRECT_SECONDS"),
-    constant("ISSUE_HANDOFF_TTL_MS"),
-    "let issueHandoffPrompt = null; let issueHandoffTimer = null; let issueHandoffTicking = false;",
-    "let batchAutoResumeStarted = false; let pendingNewInvoice = null; let issuingInProgress = false;",
-    "let issueCoordination = this.coordination;",
-    "let eInvoiceRows = []; let eInvoiceSelection = new Set(['C']);",
-    "async function openEInvoiceAdmin(day) {",
-    "  opened.push(day); eInvoiceRows = listRows.map(row => ({ ...row }));",
-    "  setStatus('Đã tải 6 hóa đơn; 4 hóa đơn chưa phát hành.', 'ok');",
-    "}",
-    "function statementInvoiceNos() { return new Set(linkedNos); }",
-    "function isStatementInvoice(row, linked) { return linked.has(row.invoiceNo); }",
-    "function statementInvoiceMatch(row) { return { valid: !row.mismatch }; }",
-    "function renderEInvoiceRows() { rendered += 1; }",
-    fn("preselectStatementInvoices"),
-    "this.selectionJson = () => JSON.stringify([...eInvoiceSelection].sort());",
-    fn("activeShopFromCookie"), fn("uiDateKey"), fn("setStatus"),
-    fn("viDay"), fn("tenantPageUrl"), fn("isSamePageUrl"), fn("isLoginPage"), fn("issueHandoffTarget"),
-    fn("handoffLoginProblem"), fn("submitHandoffLogin"),
-    fn("promptIssueHandoff"), fn("scheduleIssueHandoffRedirect"), fn("cancelIssueHandoffRedirect"),
-    fn("stayAfterIssue"), fn("followIssueHandoff"), fn("resumeIssueHandoff"),
-    "this.setStatus = setStatus; this.prompt = promptIssueHandoff; this.stay = stayAfterIssue;",
-    "this.follow = followIssueHandoff; this.resume = resumeIssueHandoff; this.pageUrl = tenantPageUrl;",
-    "this.hasTimer = () => Boolean(issueHandoffTimer);"
-  ].join("\n"), Object.assign(box, { coordination }));
-  box.text = () => statusNode.children.map(node => node.textContent).join(" | ");
-  box.selection = () => JSON.parse(box.selectionJson());
-  box.actions = () => statusNode.children.slice(1).map(node => node.dataset.action);
-  box.runTimer = () => {
-    const timer = timers.filter(item => !item.cleared && !item.ran).shift();
-    if (!timer) return false;
-    timer.ran = true;
-    timer.callback();
-    return true;
-  };
-  return box;
-}
+const { makeBox, fn, Coordination, KG_URL, LD_URL } = require("./issue-sandbox.js");
 
 (async () => {
-  // URL cùng màn Hóa đơn điện tử ở cơ sở khác: chỉ thay đoạn cơ sở.
+  // Màn Hóa đơn điện tử của cơ sở đích: cùng Form ID/MenuID ở mọi cơ sở.
   const probe = makeBox();
-  assert.strictEqual(probe.pageUrl("parislinhdam", KG_URL + "#x"), LD_URL);
+  assert.strictEqual(probe.pageUrl("parislinhdam"), LD_URL);
 
   // 1. Lô sạch ở Kim Giang → lưu lệnh chuyển, đếm ngược rồi tự chuyển sang Linh Đàm.
   const clean = makeBox();
@@ -229,8 +90,8 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
   assert(arrived.rendered >= 1, "Vẽ lại bảng để thấy ô đã tích và nút Phát hành N hóa đơn");
 
   // Ngày đó không còn gì của giao dịch sao kê để phát hành: không tích gì, nói rõ.
-  const nothingLeft = makeBox({ tenant: "parislinhdam", href: LD_URL, stored: { ...record }, cookie: "shop=parislinhdam" });
-  nothingLeft.listRows = nothingLeft.listRows.map(row => ({ ...row, issued: true }));
+  const nothingLeft = makeBox({ tenant: "parislinhdam", href: LD_URL, stored: { ...record }, cookie: "shop=parislinhdam",
+    listRows: [{ id: "A", invoiceNo: "HD-A", issued: true }, { id: "C", invoiceNo: "HD-C-ngoai-giao-dich" }] });
   await nothingLeft.resume();
   assert.deepStrictEqual(nothingLeft.selection(), []);
   assert.match(nothingLeft.text(), /Không có hóa đơn nào của giao dịch sao kê chờ phát hành ngày này/);
@@ -322,7 +183,7 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
   const init = fn("init");
   assert(init.indexOf("await restoreUiSession();") < init.indexOf("await resumeIssueHandoff()"),
     "Đọc lệnh chuyển sau khi khôi phục phiên");
-  assert.match(fn("resumeIssueHandoff"), /if \(batchAutoResumeStarted \|\| pendingNewInvoice\) return;/,
+  assert.match(fn("resumeIssueHandoff"), /if \(batchAutoResumeStarted \|\| pendingNewInvoice\) return false;/,
     "Không giành màn hình của lô Batch đang tự chạy tiếp hoặc tab tạo phiếu");
   const issue = fn("issueSelectedEInvoices");
   assert(!/location\.(assign|href\s*=)/.test(issue), "Phát hành không tự rời trang ngoài lệnh chuyển");

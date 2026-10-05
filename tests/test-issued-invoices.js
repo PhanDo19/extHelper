@@ -129,7 +129,7 @@ assert.match(contentSource, /function showStatementSubtab\(name\)/);
 const stockAdminIndex = contentSource.indexOf('id="it-stock-admin"');
 assert(contentSource.indexOf('id="it-export-issued"', stockAdminIndex) > stockAdminIndex,
   "Nút xuất hạch toán phải nằm trong tab Kho");
-assert.match(contentSource, /function issueSelectedEInvoices\(\)/);
+assert.match(contentSource, /async function issueSelectedEInvoices\(options = \{\}\)/);
 assert.match(contentSource, /function exportIssuedInvoices\(\)/);
 assert.match(contentSource, /function renderEInvoiceRows\(\)/);
 // Ghi sổ ngay sau từng hóa đơn để lô dừng giữa chừng vẫn có số liệu.
@@ -178,10 +178,8 @@ assert(sortFn.indexOf("requestedAt") < sortFn.indexOf("localeCompare(String(righ
 
 // Hộp thoại xác nhận phải nêu đúng thứ tự sẽ chạy, không phải thứ tự dòng trong
 // bảng — người dùng cần thấy trước dải số hóa đơn sắp được cấp.
-const confirmBlock = contentSource.slice(
-  contentSource.indexOf("const confirmed = !needsConfirm || window.confirm("),
-  contentSource.indexOf("if (!confirmed)")
-);
+const confirmStart = contentSource.indexOf("const confirmed = !needsConfirm || window.confirm(");
+const confirmBlock = contentSource.slice(confirmStart, contentSource.indexOf("if (!confirmed)", confirmStart));
 assert(confirmBlock.includes("orderedTargets") && !confirmBlock.includes("targets[0]"),
   "Hộp thoại phải liệt kê theo orderedTargets, không dùng thứ tự bảng");
 // Lô sạch không còn hộp xác nhận (bấm nút Phát hành là đủ, yêu cầu 05/10/2026),

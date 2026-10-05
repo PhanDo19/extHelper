@@ -103,6 +103,20 @@
   // Chuyển cơ sở phải đăng nhập lại (cookie phiên dùng chung domain), nên lệnh
   // chuyển phải sống qua bước đăng nhập; quá hạn thì bỏ, không tự mở trang cũ.
   const ISSUE_HANDOFF_TTL_MS = 12 * 60 * 60 * 1000;
+  // Màn Hóa đơn điện tử: cùng Form ID/MenuID ở mọi cơ sở (đã thấy ở Nhơn và Linh
+  // Đàm). Phát hành phải chạy ở đúng màn này để gửi đúng tham số của từng cơ sở.
+  const E_INVOICE_FORM_ID = "9bc781f5-d316-4eba-94d8-26c4c2321faf";
+  const E_INVOICE_PAGE_QUERY = `?Modal=0&ID=${E_INVOICE_FORM_ID}&MenuID=2af9b881-2fff-41cb-b014-fe662ee351c2`;
+  // Tự động phát hành theo khoảng ngày. Trạng thái lượt chạy nằm ở storage dùng
+  // chung (đi qua nhiều cơ sở, nhiều lần tải trang); cờ dưới đây chỉ để nút Dừng
+  // trong trang có tác dụng ngay ở lần đếm ngược kế tiếp.
+  let autoIssueStopRequested = false;
+  let autoIssueTimer = null;
+  // Đếm ngược trước mỗi lần tự phát hành / tự chuyển cơ sở: đủ để thấy và bấm Dừng.
+  const AUTO_ISSUE_COUNTDOWN_SECONDS = 5;
+  const AUTO_ISSUE_TTL_MS = 12 * 60 * 60 * 1000;
+  // Giao dịch sao kê ở các trạng thái này đã xong phần lập phiếu.
+  const AUTO_ISSUE_FINISHED_STATUSES = new Set(["done", "skipped", "ignored"]);
 
   // Một tháng ở Nhơn có tới 435 dòng số tiền, nên lô phải chạy được cả tháng.
   // Lô dài không làm website quá tải nhờ tự tải lại trang sau mỗi 15 phiếu
@@ -1861,6 +1875,9 @@
     // Sau lô phát hành: sang cơ sở/ngày kế tiếp ngay, hoặc ở lại trang này.
     else if (action === "handoff") followIssueHandoff().catch(error => setStatus(error.message, "error"));
     else if (action === "handoff-stay") stayAfterIssue();
+    // Tự động phát hành theo khoảng ngày.
+    else if (action === "auto-issue-stop") requestAutoIssueStop().catch(error => setStatus(error.message, "error"));
+    else if (action === "auto-issue-resume") resumeAutoIssue().catch(error => setStatus(error.message, "error"));
     else if (action === "export") exportAccountingReport().catch(error => setStatus(error.message, "error"));
     // Rà giao dịch lớn: mở màn sao kê và lọc sẵn về đúng nhóm cần kiểm, thay vì
     // thả người dùng vào danh sách đầy đủ rồi bắt tự tìm.
@@ -3708,15 +3725,13 @@
     return match ? `${match[3]}/${match[2]}/${match[1]}` : String(dateKey || "");
   }
 
-  // Cùng màn hình ở cơ sở khác: chỉ thay đoạn cơ sở đầu đường dẫn. Các cơ sở
-  // chạy cùng phần mềm nên màn Hóa đơn điện tử có cùng Form ID/MenuID.
-  function tenantPageUrl(tenant, href) {
-    const url = new URL(href);
-    const parts = url.pathname.split("/");
-    parts[1] = tenant;
-    url.pathname = parts.join("/");
-    url.hash = "";
-    return url.toString();
+  function eInvoicePageUrl(tenant) {
+    return `${location.origin}/${tenant}/Form${E_INVOICE_PAGE_QUERY}`;
+  }
+
+  function isEInvoicePage() {
+    const id = new URLSearchParams(location.search).get("ID") || "";
+    return id.toLowerCase() === E_INVOICE_FORM_ID && /\/form$/i.test(location.pathname);
   }
 
   function isSamePageUrl(left, right) {
@@ -3759,7 +3774,7 @@
       fromTenant: pageTenantSlug,
       targetTenant: handoff.tenant,
       dateKey: handoff.dateKey,
-      targetUrl: tenantPageUrl(handoff.tenant, location.href),
+      targetUrl: eInvoicePageUrl(handoff.tenant),
       createdAt: new Date().toISOString()
     };
     // Ghi ngay cả khi không tự chuyển: người dùng tự sang cơ sở kia sau đó vẫn
@@ -3865,10 +3880,6 @@
   // Chỉ bấm MỘT lần cho mỗi lệnh chuyển: quay lại trang đăng nhập nghĩa là lần
   // bấm trước không vào được — bấm tiếp chỉ gây đăng nhập sai lặp lại.
   async function submitHandoffLogin(record, day, waitMessage) {
-    const showPanel = () => {
-      const panel = document.getElementById("it-panel");
-      if (panel) panel.hidden = false;
-    };
     if (record.loginAttemptAt) {
       showPanel();
       setStatus(`Tự bấm Đăng nhập lần trước chưa vào được. ${waitMessage}`, "warn");
@@ -3889,42 +3900,51 @@
   // màn Phát hành với đúng ngày cơ sở trước vừa làm. Trang đăng nhập thì bấm hộ
   // "Đăng nhập" một lần; cookie còn của cơ sở khác thì chờ — lệnh giữ nguyên tới
   // khi đăng nhập xong.
+  // Trả true nếu đã xử lý lệnh chuyển dành cho trang này.
   async function resumeIssueHandoff() {
-    if (batchAutoResumeStarted || pendingNewInvoice) return;
+    if (batchAutoResumeStarted || pendingNewInvoice) return false;
     const record = await InvoiceMappingStore.loadIssueHandoff().catch(() => null);
-    if (!record || record.targetTenant !== pageTenantSlug) return;
+    if (!record || record.targetTenant !== pageTenantSlug) return false;
     const createdAt = Date.parse(record.createdAt || "");
     const day = uiDateKey(record.dateKey);
     const cursor = day ? InvoiceIssueCoordination.cursorFor(issueCoordination, pageTenantSlug, day) : null;
+    // Lệnh của tự động phát hành chỉ còn hiệu lực khi lượt chạy vẫn đang chạy.
+    const auto = Boolean(record.auto && await loadActiveAutoIssueJob());
     if (!day || !Number.isFinite(createdAt) || Date.now() - createdAt > ISSUE_HANDOFF_TTL_MS ||
-      cursor?.status === "done") {
+      (cursor?.status === "done" && !auto)) {
       await InvoiceMappingStore.saveIssueHandoff(null);
-      return;
+      return false;
     }
     const fromLabel = TENANT_LABELS[record.fromTenant] || record.fromTenant || "cơ sở trước";
     const waitMessage =
       `Đăng nhập ${pageTenantLabel} để phát hành tiếp ngày ${viDay(day)} (sau ${fromLabel}). ` +
-      "Đăng nhập xong extension tự mở màn Phát hành với đúng ngày này.";
+      (auto
+        ? "Đăng nhập xong extension tự phát hành tiếp (tự động phát hành đang chạy)."
+        : "Đăng nhập xong extension tự mở màn Phát hành với đúng ngày này.");
     if (isLoginPage()) {
       await submitHandoffLogin(record, day, waitMessage);
-      return;
+      return true;
     }
     const cookieTenant = activeShopFromCookie();
     if (cookieTenant && cookieTenant !== pageTenantSlug) {
       setStatus(waitMessage, "warn");
-      return;
+      return true;
     }
     // Website có thể đưa về trang chủ sau khi đăng nhập: mở lại màn Hóa đơn điện
     // tử một lần (phát hành phải chạy ở đúng màn đó), không lặp nếu vẫn lạc.
     if (record.targetUrl && !isSamePageUrl(record.targetUrl, location.href) && !record.landingRedirectAt) {
       await InvoiceMappingStore.saveIssueHandoff({ ...record, landingRedirectAt: new Date().toISOString() });
       location.assign(record.targetUrl);
-      return;
+      return true;
     }
     await InvoiceMappingStore.saveIssueHandoff(null);
-    const panel = document.getElementById("it-panel");
-    if (panel) panel.hidden = false;
-    syncTabsOffset();
+    showPanel();
+    if (auto) {
+      // Ngày này ở đây đã chốt xong (ai đó vừa làm) thì đi tiếp, không phát hành lại.
+      if (cursor?.status === "done") await continueAutoIssue(day);
+      else await runAutoIssueStep(day);
+      return true;
+    }
     await openEInvoiceAdmin(day);
     const selected = preselectStatementInvoices();
     // Giữ nguyên kết quả tải danh sách (kể cả cảnh báo sổ lệch web), chỉ thêm ngữ cảnh.
@@ -3937,6 +3957,18 @@
         : "Không có hóa đơn nào của giao dịch sao kê chờ phát hành ngày này."),
       kind
     );
+    return true;
+  }
+
+  // Lượt tự động đang chạy dở ở chính cơ sở này mà không có lệnh chuyển (trang bị
+  // tải lại giữa chừng): không tự chạy tiếp, chỉ mời chạy tiếp hoặc dừng.
+  async function announceAutoIssueJob() {
+    const job = await loadActiveAutoIssueJob();
+    if (!job || job.current?.tenant !== pageTenantSlug) return;
+    setStatus(`Tự động phát hành đang dở: ${autoIssueProgressText(job)}.`, "warn", [
+      { label: "Chạy tiếp tự động", action: "auto-issue-resume" },
+      { label: "Dừng tự động phát hành", action: "auto-issue-stop" }
+    ]);
   }
 
   // Vừa chuyển sang để phát hành tiếp: tích sẵn mọi hóa đơn chưa phát hành thuộc
@@ -3951,6 +3983,347 @@
       .map(row => row.id));
     renderEInvoiceRows();
     return eInvoiceSelection.size;
+  }
+
+  // ---- Tự động phát hành theo khoảng ngày -----------------------------------
+  //
+  // Người dùng chọn Từ ngày – Đến ngày và bấm một lần. Extension lặp: mở màn
+  // Phát hành đúng ngày → kiểm tra → tích sẵn → đếm ngược → phát hành → bước kế
+  // (cơ sở sau cùng ngày, hết thì ngày kế từ đầu dãy; Nhơn chỉ đi theo ngày),
+  // tự chuyển cơ sở và tự bấm Đăng nhập như luồng tay. DỪNG HẲN ngay khi có bất
+  // cứ gì cần người đọc: lỗi, cảnh báo, giao dịch sao kê chưa xử lý xong, phiếu
+  // lệch sao kê, cảnh báo chéo cơ sở, phiếu ngoài giao dịch. Bấm lại thì chạy tiếp
+  // từ bước còn việc sớm nhất (bước đã chốt xong tự được bỏ qua).
+
+  function autoIssueAppliesHere(job) {
+    if (!job) return false;
+    return job.scope === "shared"
+      ? InvoiceIssueCoordination.sharesInvoiceRange(pageTenantSlug)
+      : job.scope === pageTenantSlug;
+  }
+
+  async function loadActiveAutoIssueJob() {
+    const job = await InvoiceMappingStore.loadAutoIssueJob().catch(() => null);
+    if (!job || job.status !== "running" || !autoIssueAppliesHere(job)) return null;
+    const updatedAt = Date.parse(job.updatedAt || job.startedAt || "");
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > AUTO_ISSUE_TTL_MS) {
+      await InvoiceMappingStore.saveAutoIssueJob({ ...job, status: "stopped", stopReason: "quá 12 giờ không chạy tiếp" });
+      return null;
+    }
+    return job;
+  }
+
+  async function updateAutoIssueJob(patch) {
+    const job = await InvoiceMappingStore.loadAutoIssueJob().catch(() => null);
+    if (!job) return null;
+    const next = { ...job, ...(typeof patch === "function" ? patch(job) : patch), updatedAt: new Date().toISOString() };
+    await InvoiceMappingStore.saveAutoIssueJob(next);
+    renderAutoIssueControls(next);
+    return next;
+  }
+
+  function addDaysToDateKey(dateKey, days) {
+    const [year, month, day] = String(dateKey || "").split("-").map(Number);
+    const moved = new Date(Date.UTC(year, month - 1, day + days));
+    const part = number => String(number).padStart(2, "0");
+    return `${moved.getUTCFullYear()}-${part(moved.getUTCMonth() + 1)}-${part(moved.getUTCDate())}`;
+  }
+
+  // Ngày có giao dịch sao kê của chính cơ sở này — cho Nhơn (dải số riêng, không
+  // có sao kê đối chiếu dùng chung).
+  function ownStatementDays(fromDate, untilDate) {
+    return [...new Set((statementDataset.transactions || [])
+      .filter(item => Math.round(Number(item.credit) || 0) > 0)
+      .map(item => uiDateKey(item.transactionDate))
+      .filter(day => day && day >= fromDate && day <= untilDate))].sort();
+  }
+
+  // Bước còn việc kế tiếp trong khoảng của lượt chạy. `after` = bước vừa xong
+  // ({ tenant, dateKey }); bỏ trống = bước đầu tiên.
+  function nextAutoIssueStep(job, after) {
+    if (job.scope === "shared") {
+      return after
+        ? InvoiceIssueCoordination.nextHandoff(issueCoordination, after.tenant, after.dateKey, job.toDate)
+        : InvoiceIssueCoordination.firstPendingStep(issueCoordination, job.fromDate, job.toDate);
+    }
+    const day = ownStatementDays(after ? addDaysToDateKey(after.dateKey, 1) : job.fromDate, job.toDate)[0];
+    return day ? { tenant: job.scope, dateKey: day } : null;
+  }
+
+  async function reloadIssueCoordination() {
+    issueCoordination = InvoiceIssueCoordination.normalize(
+      await InvoiceMappingStore.loadIssueCoordination(issueCoordination)
+    );
+  }
+
+  function showPanel() {
+    const panel = document.getElementById("it-panel");
+    if (panel) panel.hidden = false;
+    syncTabsOffset();
+  }
+
+  // Đếm ngược có nút Dừng. Trả false nếu bị dừng (tại đây hoặc ở tab khác).
+  function autoIssueCountdown(label, job) {
+    if (autoIssueTimer) clearTimeout(autoIssueTimer);
+    return new Promise(resolve => {
+      let remaining = AUTO_ISSUE_COUNTDOWN_SECONDS;
+      const tick = async () => {
+        autoIssueTimer = null;
+        if (autoIssueStopRequested) return resolve(false);
+        if (remaining <= 0) return resolve(Boolean(await loadActiveAutoIssueJob()));
+        setStatus(
+          `${label} sau ${remaining} giây… (tự động phát hành ${viDay(job.fromDate)} – ${viDay(job.toDate)})`,
+          "warn",
+          [{ label: "Dừng tự động phát hành", action: "auto-issue-stop" }]
+        );
+        remaining -= 1;
+        autoIssueTimer = setTimeout(tick, 1000);
+      };
+      tick();
+    });
+  }
+
+  async function startAutoIssue() {
+    if (issuingInProgress) throw new Error("Đang phát hành, chờ lô hiện tại xong rồi mới bật tự động.");
+    const fromDate = uiDateKey(document.getElementById("it-auto-issue-from")?.value);
+    const toDate = uiDateKey(document.getElementById("it-auto-issue-to")?.value);
+    if (!fromDate || !toDate) throw new Error("Chọn đủ Từ ngày và Đến ngày để tự động phát hành.");
+    if (fromDate > toDate) throw new Error("Từ ngày phải trước hoặc bằng Đến ngày.");
+    await reloadIssueCoordination();
+    const shared = InvoiceIssueCoordination.sharesInvoiceRange(pageTenantSlug);
+    const now = new Date().toISOString();
+    const job = {
+      kind: "invoice-target-auto-issue",
+      status: "running",
+      scope: shared ? "shared" : pageTenantSlug,
+      fromDate,
+      toDate,
+      startedTenant: pageTenantSlug,
+      startedAt: now,
+      updatedAt: now,
+      steps: []
+    };
+    const step = nextAutoIssueStep(job, null);
+    if (!step) {
+      return setStatus(
+        `Từ ${viDay(fromDate)} đến ${viDay(toDate)} không còn ngày nào cần phát hành` +
+        (shared ? " (theo sao kê đối chiếu và chốt tiến độ của các cơ sở)." : " (theo sao kê của cơ sở này)."),
+        "warn"
+      );
+    }
+    const order = shared
+      ? issueCoordination.tenantOrder.map(slug => TENANT_LABELS[slug] || slug).join(" → ")
+      : pageTenantLabel;
+    // Một lần xác nhận cho cả khoảng ngày: sau đó extension tự chạy qua nhiều
+    // cơ sở và nhiều ngày, phát hành không hoàn tác được.
+    const confirmed = window.confirm(
+      `Tự động phát hành từ ${viDay(fromDate)} đến ${viDay(toDate)}?\n\n` +
+      `Mỗi ngày theo thứ tự: ${order}. Bắt đầu: ${TENANT_LABELS[step.tenant] || step.tenant} ngày ${viDay(step.dateKey)}.\n\n` +
+      "Extension sẽ tự chuyển cơ sở, tự bấm Đăng nhập và tự phát hành mọi hóa đơn thuộc giao dịch sao kê khớp giao dịch, " +
+      "từng ngày một, đếm ngược 5 giây trước mỗi bước (có nút Dừng).\n\n" +
+      "Dừng ngay khi có lỗi, cảnh báo, giao dịch sao kê chưa xử lý xong, phiếu lệch sao kê hoặc cảnh báo chéo cơ sở.\n" +
+      "Hóa đơn đã phát hành không thể tự hủy trong extension."
+    );
+    if (!confirmed) return setStatus("Đã hủy tự động phát hành.", "warn");
+    autoIssueStopRequested = false;
+    await InvoiceMappingStore.saveAutoIssueJob(job);
+    renderAutoIssueControls(job);
+    await goToAutoIssueStep(job, step);
+  }
+
+  // Chạy tiếp lượt đã dừng (cùng khoảng ngày), từ bước còn việc sớm nhất.
+  async function resumeAutoIssue() {
+    if (issuingInProgress) throw new Error("Đang phát hành, chờ lô hiện tại xong.");
+    const stored = await InvoiceMappingStore.loadAutoIssueJob();
+    if (!stored || !autoIssueAppliesHere(stored)) throw new Error("Không có lượt tự động phát hành nào để chạy tiếp ở cơ sở này.");
+    await reloadIssueCoordination();
+    autoIssueStopRequested = false;
+    const job = { ...stored, status: "running", stopReason: "", updatedAt: new Date().toISOString() };
+    const step = nextAutoIssueStep(job, null);
+    await InvoiceMappingStore.saveAutoIssueJob(job);
+    renderAutoIssueControls(job);
+    if (!step) return finishAutoIssue(job);
+    await goToAutoIssueStep(job, step);
+  }
+
+  async function goToAutoIssueStep(job, step) {
+    const current = await updateAutoIssueJob({ current: step });
+    if (!current) return;
+    if (step.tenant === pageTenantSlug && isEInvoicePage()) {
+      await runAutoIssueStep(step.dateKey);
+      return;
+    }
+    // Sang cơ sở khác (hoặc mở màn Hóa đơn điện tử của chính cơ sở này): dùng
+    // chung lệnh chuyển với luồng tay, đánh dấu `auto` để trang đích chạy tiếp.
+    const record = {
+      fromTenant: pageTenantSlug,
+      targetTenant: step.tenant,
+      dateKey: step.dateKey,
+      targetUrl: eInvoicePageUrl(step.tenant),
+      createdAt: new Date().toISOString(),
+      auto: true
+    };
+    await InvoiceMappingStore.saveIssueHandoff(record);
+    if (step.tenant !== pageTenantSlug) {
+      const go = await autoIssueCountdown(
+        `Tự chuyển sang ${TENANT_LABELS[step.tenant] || step.tenant} để phát hành ngày ${viDay(step.dateKey)}`, current);
+      if (!go) return;
+    }
+    location.assign(record.targetUrl);
+  }
+
+  // Những gì bắt buộc người dùng xử lý trước khi phát hành ngày này ở cơ sở này.
+  function autoIssueBlockers(day) {
+    const problems = [];
+    const cookieTenant = activeShopFromCookie();
+    if (cookieTenant && cookieTenant !== pageTenantSlug) {
+      problems.push(`trình duyệt đang đăng nhập cơ sở "${cookieTenant}"`);
+    }
+    // Phát hành khi còn giao dịch chưa lập phiếu thì phiếu đó sẽ phải phát hành
+    // sau, chen vào sau cơ sở kia — số hóa đơn trong ngày không còn liền mạch.
+    const unfinished = (statementDataset.transactions || []).filter(item =>
+      uiDateKey(item.transactionDate) === day && Math.round(Number(item.credit) || 0) > 0 &&
+      !AUTO_ISSUE_FINISHED_STATUSES.has(item.status));
+    if (unfinished.length) {
+      problems.push(`còn ${unfinished.length} giao dịch sao kê chưa xử lý xong (` +
+        unfinished.slice(0, 3).map(item => `${formatMoney(item.credit)}đ`).join(", ") +
+        `${unfinished.length > 3 ? "…" : ""})`);
+    }
+    const linked = statementInvoiceNos();
+    const mismatched = eInvoiceRows.filter(row => uiDateKey(row.dateKey) === day && !row.issued && !row.cancelled &&
+      isStatementInvoice(row, linked) && !statementInvoiceMatch(row).valid);
+    if (mismatched.length) {
+      problems.push(`${mismatched.length} phiếu lệch giao dịch sao kê (` +
+        mismatched.slice(0, 3).map(row => row.invoiceNo).join(", ") + `${mismatched.length > 3 ? "…" : ""})`);
+    }
+    return problems;
+  }
+
+  async function runAutoIssueStep(day) {
+    const job = await loadActiveAutoIssueJob();
+    if (!job || autoIssueStopRequested) return;
+    const where = `${pageTenantLabel} ngày ${viDay(day)}`;
+    try {
+      if (!isEInvoicePage()) {
+        return stopAutoIssue(`${where}: không mở được màn Hóa đơn điện tử (phát hành phải chạy ở đúng màn đó).`);
+      }
+      showPanel();
+      await openEInvoiceAdmin(day);
+      const blockers = autoIssueBlockers(day);
+      if (blockers.length) return stopAutoIssue(`${where}: ${blockers.join("; ")}.`);
+      const selected = preselectStatementInvoices();
+      if (!selected) {
+        // Không còn gì để phát hành: chốt xong để bước sau (và lần chạy lại)
+        // không quay lại đây.
+        await markAutoIssueDayDone(day);
+        await recordAutoIssueStep(day, 0);
+        return continueAutoIssue(day);
+      }
+      const total = eInvoiceRows.filter(row => eInvoiceSelection.has(row.id))
+        .reduce((sum, row) => sum + (Number(row.grandTotal) || 0), 0);
+      const go = await autoIssueCountdown(`Tự phát hành ${selected} hóa đơn · ${formatMoney(total)} đ — ${where}`, job);
+      if (!go) return;
+      const result = await issueSelectedEInvoices({ auto: true });
+      if (!result || result.blocked) {
+        return stopAutoIssue(`${where}: ${result?.blocked || "không phát hành được"}.`);
+      }
+      await recordAutoIssueStep(day, result.succeeded);
+      if (!result.clean) {
+        return stopAutoIssue(`${where}: ${result.summary}`, result.kind === "ok" ? "warn" : result.kind);
+      }
+      if (autoIssueStopRequested || !await loadActiveAutoIssueJob()) {
+        return setStatus(`${result.summary} Đã dừng tự động phát hành theo yêu cầu.`, "warn",
+          [{ label: "Chạy tiếp tự động", action: "auto-issue-resume" }]);
+      }
+      return continueAutoIssue(day);
+    } catch (error) {
+      return stopAutoIssue(`${where}: ${error.message}`);
+    }
+  }
+
+  async function markAutoIssueDayDone(day) {
+    if (!InvoiceIssueCoordination.sharesInvoiceRange(pageTenantSlug)) return;
+    await reloadIssueCoordination();
+    if (InvoiceIssueCoordination.cursorFor(issueCoordination, pageTenantSlug, day)?.status === "done") return;
+    const issuedNumbers = eInvoiceRows
+      .filter(row => row.issued && uiDateKey(row.dateKey) === day)
+      .map(row => String(row.soHoaDon || "").trim()).filter(Boolean);
+    const reached = InvoiceIssueCoordination.checkContinuity(issuedNumbers);
+    issueCoordination = InvoiceIssueCoordination.markCursor(issueCoordination, pageTenantSlug, day, {
+      status: "done",
+      lastSoHoaDon: reached.to == null ? "" : String(reached.to),
+      count: 0
+    });
+    await InvoiceMappingStore.saveIssueCoordination(issueCoordination);
+  }
+
+  async function recordAutoIssueStep(day, issued) {
+    await updateAutoIssueJob(job => ({
+      steps: [...(job.steps || []), { tenant: pageTenantSlug, dateKey: day, issued, at: new Date().toISOString() }]
+    }));
+  }
+
+  async function continueAutoIssue(day) {
+    const job = await loadActiveAutoIssueJob();
+    if (!job || autoIssueStopRequested) return;
+    await reloadIssueCoordination();
+    const step = nextAutoIssueStep(job, { tenant: pageTenantSlug, dateKey: day });
+    if (!step) return finishAutoIssue(job);
+    await goToAutoIssueStep(job, step);
+  }
+
+  async function finishAutoIssue(job) {
+    const done = await updateAutoIssueJob({ status: "done", current: null }) || job;
+    const issued = (done.steps || []).reduce((sum, step) => sum + (Number(step.issued) || 0), 0);
+    await InvoiceMappingStore.saveIssueHandoff(null).catch(() => {});
+    setStatus(
+      `Tự động phát hành xong ${viDay(done.fromDate)} – ${viDay(done.toDate)}: đã phát hành ${issued} hóa đơn. ` +
+      "Bước cuối: xuất file hạch toán.",
+      "ok",
+      { label: "Xuất file hạch toán", action: "issued-export" }
+    );
+  }
+
+  async function stopAutoIssue(reason, kind = "error") {
+    autoIssueStopRequested = true;
+    await updateAutoIssueJob({ status: "stopped", stopReason: reason }).catch(() => null);
+    // Lệnh chuyển đang chờ (nếu có) thôi tự phát hành, nhưng vẫn giữ để cơ sở
+    // đích mở đúng ngày nếu người dùng tự sang.
+    const record = await InvoiceMappingStore.loadIssueHandoff().catch(() => null);
+    if (record?.auto) {
+      await InvoiceMappingStore.saveIssueHandoff({ ...record, auto: false }).catch(() => {});
+    }
+    setStatus(`Đã dừng tự động phát hành — ${reason}`, kind,
+      [{ label: "Chạy tiếp tự động", action: "auto-issue-resume" }]);
+  }
+
+  async function requestAutoIssueStop() {
+    await stopAutoIssue(issuingInProgress
+      ? "theo yêu cầu; lô ngày đang chạy vẫn chạy hết rồi mới dừng."
+      : "theo yêu cầu.", "warn");
+  }
+
+  function autoIssueProgressText(job) {
+    const issued = (job.steps || []).reduce((sum, step) => sum + (Number(step.issued) || 0), 0);
+    const state = { running: "Đang chạy", stopped: "Đã dừng", done: "Đã xong" }[job.status] || job.status;
+    return `${state} ${viDay(job.fromDate)} – ${viDay(job.toDate)} · đã phát hành ${issued} hóa đơn` +
+      (job.status === "running" && job.current
+        ? ` · đang ở ${TENANT_LABELS[job.current.tenant] || job.current.tenant} ngày ${viDay(job.current.dateKey)}`
+        : "") +
+      (job.status === "stopped" && job.stopReason ? ` · ${job.stopReason}` : "");
+  }
+
+  function renderAutoIssueControls(job) {
+    const relevant = autoIssueAppliesHere(job) ? job : null;
+    const running = relevant?.status === "running";
+    const start = document.getElementById("it-auto-issue-start");
+    const stop = document.getElementById("it-auto-issue-stop");
+    const resume = document.getElementById("it-auto-issue-resume");
+    const progress = document.getElementById("it-auto-issue-progress");
+    if (start) start.hidden = running;
+    if (stop) stop.hidden = !running;
+    if (resume) resume.hidden = relevant?.status !== "stopped";
+    if (progress) progress.textContent = relevant ? autoIssueProgressText(relevant) : "";
   }
 
   // Ba tra cứu dưới đây trước kia quét tuyến tính toàn bộ sổ đối soát, sao kê và
@@ -4078,6 +4451,15 @@
       ${tenantOrderControl}
       <button id="it-load-einvoice" type="button" class="primary">Tải danh sách</button>
     </div>
+    <div class="it-controls-row it-auto-issue-row" title="Tự phát hành lần lượt từng ngày trong khoảng (Kim Giang/Linh Đàm: luân phiên theo thứ tự phát hành, tự chuyển cơ sở và đăng nhập). Dừng ngay khi có lỗi hoặc cảnh báo.">
+      <b>Tự động phát hành</b>
+      <label>Từ ngày<input id="it-auto-issue-from" type="date" value="${escapeHtml(fromDate)}"></label>
+      <label>Đến ngày<input id="it-auto-issue-to" type="date" value="${escapeHtml(toDate)}"></label>
+      <button id="it-auto-issue-start" type="button">Tự động phát hành</button>
+      <button id="it-auto-issue-resume" type="button" hidden>Chạy tiếp</button>
+      <button id="it-auto-issue-stop" type="button" class="danger" hidden>Dừng tự động</button>
+      <small id="it-auto-issue-progress" class="it-muted"></small>
+    </div>
     <details class="it-tool-section" id="it-buyer-fix-section">
       <summary><b>Sửa người mua / TM-CK</b><small id="it-buyer-fix-progress"></small></summary>
       <div class="it-tool-body">
@@ -4095,6 +4477,24 @@
     node.querySelector("#it-load-einvoice")?.addEventListener("click", () => {
       loadEInvoiceList().catch(error => setStatus(error.message, "error"));
     });
+    node.querySelector("#it-auto-issue-start")?.addEventListener("click", () => {
+      startAutoIssue().catch(error => setStatus(error.message, "error"));
+    });
+    node.querySelector("#it-auto-issue-resume")?.addEventListener("click", () => {
+      resumeAutoIssue().catch(error => setStatus(error.message, "error"));
+    });
+    node.querySelector("#it-auto-issue-stop")?.addEventListener("click", () => {
+      requestAutoIssueStop().catch(error => setStatus(error.message, "error"));
+    });
+    // Lượt đang có (chạy/dừng) thì hiện đúng khoảng ngày và tiến độ của nó.
+    InvoiceMappingStore.loadAutoIssueJob().then(job => {
+      if (!autoIssueAppliesHere(job)) return;
+      const from = node.querySelector("#it-auto-issue-from");
+      const to = node.querySelector("#it-auto-issue-to");
+      if (from && job.fromDate) from.value = job.fromDate;
+      if (to && job.toDate) to.value = job.toDate;
+      renderAutoIssueControls(job);
+    }).catch(() => {});
     node.querySelector("#it-buyer-fix-start")?.addEventListener("click", () => {
       startBuyerFixJob().catch(error => setStatus(`Không bắt đầu được sửa người mua/TM-CK: ${error.message}`, "error"));
     });
@@ -4603,10 +5003,15 @@
     );
   }
 
-  async function issueSelectedEInvoices() {
-    if (issuingInProgress) return;
+  // options.auto: gọi từ tự động phát hành — không bao giờ mở hộp xác nhận (lô cần
+  // người đọc thì trả { blocked } để dừng hẳn), và trả kết quả thay vì tự chuyển cơ sở.
+  async function issueSelectedEInvoices(options = {}) {
+    const auto = Boolean(options.auto);
+    if (issuingInProgress) return auto ? { blocked: "đang có lô phát hành khác chạy" } : undefined;
     const targets = eInvoiceRows.filter(row => eInvoiceSelection.has(row.id) && !row.issued && !row.cancelled);
-    if (!targets.length) return setStatus("Chưa chọn hóa đơn nào để phát hành.", "error");
+    if (!targets.length) {
+      return auto ? { blocked: "không có hóa đơn nào được chọn" } : setStatus("Chưa chọn hóa đơn nào để phát hành.", "error");
+    }
     // Thứ tự phát hành = thứ tự máy chủ cấp số hóa đơn, nên chốt ngay từ đây và
     // dùng chung cho cả hộp thoại xác nhận lẫn vòng chạy. Người dùng phải nhìn
     // thấy đúng thứ tự sẽ chạy, không phải thứ tự dòng trong bảng.
@@ -4685,6 +5090,14 @@
     // tự cấp số đã chốt theo ngày → giờ giao dịch, còn hai ghi chú đọc mặt hàng từ
     // web / sổ lệch web là việc extension tự xử lý trong lúc chạy.
     const needsConfirm = Boolean(outside.length || coordination.warnings.length);
+    if (auto && needsConfirm) {
+      return {
+        blocked: "cần người kiểm tra trước khi phát hành: " + [
+          outside.length ? `${outside.length} phiếu không thuộc danh sách giao dịch` : "",
+          ...coordination.warnings.map(item => item.text)
+        ].filter(Boolean).join("; ")
+      };
+    }
     const confirmed = !needsConfirm || window.confirm(
       `Phát hành ${orderedTargets.length} hóa đơn với tổng tiền ${formatMoney(total)} đ?\n\n` +
       "Số hóa đơn sẽ được cấp theo đúng thứ tự này:\n" +
@@ -4914,6 +5327,24 @@
       (warnings.length ? ` ${warnings.length} hóa đơn có cảnh báo nhưng đã xác nhận phát hành.` : "") +
       (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : "");
     const summaryKind = failures.length ? "error" : warnings.length ? "warn" : "ok";
+    // Còn phiếu của giao dịch sao kê ngày này chưa phát hành (người dùng không
+    // chọn hết) thì chưa xong cơ sở này: không tự chuyển.
+    const leftHere = eInvoiceRows.filter(row => !row.issued && !row.cancelled &&
+      uiDateKey(row.dateKey) === batchDateKey && isStatementInvoice(row, linkedNos)).length;
+    const clean = !failures.length && !warnings.length && !missingItems && !leftHere &&
+      !(continuity && !continuity.ok);
+    // Tự động phát hành tự quyết bước kế tiếp (và dừng nếu lô không sạch).
+    if (auto) {
+      return {
+        clean,
+        succeeded,
+        kind: summaryKind,
+        exportAction,
+        summary: summary +
+          (leftHere ? ` Còn ${leftHere} hóa đơn của giao dịch ngày ${viDay(batchDateKey)} chưa phát hành.` : "") +
+          (continuity && !continuity.ok ? " Số hóa đơn trong ngày không liên tục, xem chi tiết bên dưới." : "")
+      };
+    }
     // Bước kế tiếp: cơ sở ĐỨNG SAU còn giao dịch cùng ngày (bỏ qua cơ sở không có
     // việc, bắt chờ cơ sở rỗng sẽ kẹt cả chuỗi), hết thì ngày kế tiếp từ đầu dãy.
     // Các cơ sở chung domain nên không mở song song được: phải chuyển hẳn trang.
@@ -4934,12 +5365,6 @@
       );
       return;
     }
-    // Còn phiếu của giao dịch sao kê ngày này chưa phát hành (người dùng không
-    // chọn hết) thì chưa xong cơ sở này: không tự chuyển.
-    const leftHere = eInvoiceRows.filter(row => !row.issued && !row.cancelled &&
-      uiDateKey(row.dateKey) === batchDateKey && isStatementInvoice(row, linkedNos)).length;
-    const clean = !failures.length && !warnings.length && !missingItems && !leftHere &&
-      !(continuity && !continuity.ok);
     await promptIssueHandoff(handoff, {
       message: summary +
         (leftHere ? ` Còn ${leftHere} hóa đơn của giao dịch ngày ${viDay(batchDateKey)} chưa phát hành ở cơ sở này.` : ""),
@@ -10997,7 +11422,11 @@
     mount();
     await restoreUiSession();
     // Vừa phát hành xong ở cơ sở kia và chuyển sang đây: mở Phát hành đúng ngày.
-    await resumeIssueHandoff().catch(error => setStatus(error.message, "error"));
+    const handedOff = await resumeIssueHandoff().catch(error => {
+      setStatus(error.message, "error");
+      return true;
+    });
+    if (!handedOff) await announceAutoIssueJob().catch(error => console.error("Không đọc được lượt tự động phát hành", error));
     // Cookie `shop` co the bi tab khac ghi de bat ky luc nao sau khi panel da mo,
     // nen phai kiem tra lai dinh ky chu khong chi mot lan luc khoi tao.
     if (!warnOnTenantMismatch()) {

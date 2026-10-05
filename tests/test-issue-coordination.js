@@ -273,6 +273,28 @@ assert(coordBlock.includes("ISSUE_COORDINATION_KEY"), "load/save phải dùng đ
   assert.deepStrictEqual(Coordination.nextHandoff(reversedFlow, "pariskimgiang", "2026-08-01"),
     { tenant: "parislinhdam", dateKey: "2026-08-01" });
   assert.strictEqual(Coordination.nextHandoff(done(reversedFlow, "parislinhdam", "2026-08-01"), "parislinhdam", "2026-08-01"), null);
+
+  // Tự động phát hành theo khoảng ngày: bước đầu tiên còn việc, và không vượt quá Đến ngày.
+  let ranged = Coordination.recordStatement(Coordination.empty(), "parislinhdam",
+    [...rows("2026-08-01", 1), ...rows("2026-08-03", 1)]);
+  ranged = Coordination.recordStatement(ranged, "pariskimgiang", [...rows("2026-08-02", 1), ...rows("2026-08-03", 1)]);
+  assert.deepStrictEqual(Coordination.firstPendingStep(ranged, "2026-08-01", "2026-08-03"),
+    { tenant: "parislinhdam", dateKey: "2026-08-01" });
+  assert.deepStrictEqual(Coordination.firstPendingStep(ranged, "2026-08-02", "2026-08-02"),
+    { tenant: "pariskimgiang", dateKey: "2026-08-02" }, "Linh Đàm không có giao dịch 02/08 thì bỏ qua");
+  assert.strictEqual(Coordination.firstPendingStep(ranged, "2026-08-04", "2026-08-31"), null);
+  ranged = done(ranged, "parislinhdam", "2026-08-01");
+  assert.deepStrictEqual(Coordination.firstPendingStep(ranged, "2026-08-01", "2026-08-03"),
+    { tenant: "pariskimgiang", dateKey: "2026-08-02" }, "Chạy lại thì bỏ qua bước đã chốt xong");
+  assert.strictEqual(Coordination.nextHandoff(ranged, "parislinhdam", "2026-08-01", "2026-08-01"), null,
+    "Không đi quá Đến ngày");
+  assert.deepStrictEqual(Coordination.nextHandoff(ranged, "parislinhdam", "2026-08-01", "2026-08-02"),
+    { tenant: "pariskimgiang", dateKey: "2026-08-02" });
+  // Sang tháng/năm mới không lệch ngày.
+  const yearEnd = Coordination.recordStatement(Coordination.empty(), "parislinhdam",
+    [...rows("2026-12-31", 1), ...rows("2027-01-01", 1)]);
+  assert.deepStrictEqual(Coordination.nextHandoff(done(yearEnd, "parislinhdam", "2026-12-31"), "parislinhdam", "2026-12-31"),
+    { tenant: "parislinhdam", dateKey: "2027-01-01" });
 }
 
 // Lệnh chuyển cơ sở ghi ở cơ sở này, đọc ở cơ sở kia: khóa dùng chung.

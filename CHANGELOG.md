@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.29.26 (2026-10-05)
+
+- **Tự động phát hành theo khoảng ngày; phát hành tay giữ nguyên.** Màn Phát hành có hàng **Tự động phát hành** (Từ ngày – Đến ngày). Bấm và xác nhận một lần, extension tự đi từng ngày: Kim Giang/Linh Đàm luân phiên theo thứ tự phát hành (xong mọi cơ sở trong ngày mới sang ngày kế, bỏ qua cơ sở/ngày không có việc hoặc đã chốt xong), tự chuyển cơ sở và tự bấm Đăng nhập; Paris Nhơn đi lần lượt các ngày có giao dịch trong sao kê của Nhơn. Mỗi lần phát hành hoặc chuyển cơ sở đều đếm ngược 5 giây kèm nút **Dừng tự động phát hành**.
+  - Dừng hẳn, có nút **Chạy tiếp tự động**, khi: còn giao dịch sao kê ngày đó chưa xử lý xong, có phiếu lệch sao kê, lô có phiếu ngoài giao dịch hoặc cảnh báo chéo cơ sở (luồng tự động không bao giờ tự bấm qua hộp xác nhận), lô vừa chạy có lỗi/cảnh báo/thiếu mặt hàng/số không liên tục, cookie đang là cơ sở khác, hoặc lỗi bất kỳ.
+  - Chạy tiếp bắt đầu lại từ bước còn việc sớm nhất. Ngày không còn gì để phát hành được ghi chốt xong. Trang bị tải lại giữa chừng không tự chạy tiếp, chỉ hiện nút Chạy tiếp/Dừng. Lượt không cập nhật quá 12 giờ coi như đã dừng.
+  - Phát hành luôn chạy ở màn Hóa đơn điện tử của đúng cơ sở (mở màn đó trước nếu đang ở trang khác), để gửi đúng tham số website của từng cơ sở. Lệnh chuyển của luồng tay cũng mở thẳng màn này.
+
 ## 1.29.25 (2026-10-05)
 
 - **Vừa chuyển sang cơ sở kế tiếp (hoặc bấm "Tải ngày …") thì tự tích sẵn hóa đơn cần phát hành.** Tích mọi hóa đơn chưa phát hành, chưa hủy, thuộc giao dịch sao kê và khớp giao dịch — đúng tập "Chọn tất cả" chọn được; lựa chọn cũ bị thay. Phiếu ngoài giao dịch hoặc lệch sao kê không bao giờ được tích sẵn. Chỉ chọn: người dùng kiểm tra rồi bấm **Phát hành N hóa đơn · X đ**. Ngày đó không còn gì thì báo rõ.

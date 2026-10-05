@@ -78,7 +78,8 @@ Sub-tab **Phát hành hóa đơn** nằm trong tab **Giao dịch ngân hàng**, 
 - Lô chạy tuần tự; hóa đơn lỗi được liệt kê riêng và không chặn các hóa đơn còn lại.
 - Mỗi hóa đơn thành công được ghi sổ ngay, nên dừng giữa chừng vẫn giữ đủ số liệu phần đã chạy.
 - Sổ phát hành khóa theo ID hóa đơn: chạy lại lô chỉ ghi đè, không cộng dồn số lượng.
-- Kim Giang và Linh Đàm dùng chung dải số: phát hành xong một cơ sở, extension tự chuyển sang màn Hóa đơn điện tử của cơ sở kế tiếp sau 8 giây (có nút **Ở lại trang này**), và sau khi đăng nhập lại thì mở sẵn bước Phát hành với **đúng ngày** cơ sở trước vừa làm, tích sẵn các hóa đơn thuộc giao dịch sao kê. Lô có lỗi/cảnh báo thì không tự chuyển, chỉ có nút **Chuyển sang …**. Không bao giờ tự phát hành ở cơ sở đích. Xem `docs/SEQUENTIAL_ISSUE_FLOW.md`.
+- Kim Giang và Linh Đàm dùng chung dải số: phát hành xong một cơ sở, extension tự chuyển sang màn Hóa đơn điện tử của cơ sở kế tiếp sau 8 giây (có nút **Ở lại trang này**), và sau khi đăng nhập lại thì mở sẵn bước Phát hành với **đúng ngày** cơ sở trước vừa làm, tích sẵn các hóa đơn thuộc giao dịch sao kê. Lô có lỗi/cảnh báo thì không tự chuyển, chỉ có nút **Chuyển sang …**. Ở luồng tay, cơ sở đích không tự phát hành. Xem `docs/SEQUENTIAL_ISSUE_FLOW.md`.
+- **Tự động phát hành** (hàng riêng ở màn Phát hành): chọn Từ ngày – Đến ngày, bấm và xác nhận một lần; extension tự phát hành từng ngày, luân phiên Kim Giang/Linh Đàm theo thứ tự phát hành (Nhơn: lần lượt các ngày), tự chuyển cơ sở và đăng nhập, đếm ngược 5 giây kèm nút **Dừng** trước mỗi bước. Dừng hẳn khi có giao dịch chưa xử lý xong, phiếu lệch sao kê, cảnh báo chéo cơ sở, phiếu ngoài giao dịch hoặc lô có lỗi/cảnh báo; bấm **Chạy tiếp** sau khi xử lý.
 
 ## File hạch toán (Excel)
 
@@ -162,7 +163,7 @@ Chi tiết Batch Review xem tại `docs/BATCH_REVIEW.md`.
 
 - Tạo phiếu mới không cần tab phụ dựa trên việc HTML của `GET AddEdit` chứa dữ liệu form (`new DataTransferJs(...)`). Điều này đã được suy ra từ cách form mở trên giao diện nhưng chưa được kiểm chứng trên website thật; bấm **Kiểm tra tạo phiếu không cần tab phụ** trước khi chạy lô. Nếu không đọc được, extension tự quay về tab phụ.
 - Sao kê có kiểm tra phiên bản giữa các tab: tab nào ghi dựa trên dữ liệu cũ sẽ bị từ chối và được nhắc tải lại trang (F5). Ánh xạ mặt hàng và các màn hình quản trị khác chưa có kiểm tra này, nên vẫn chỉ nên mở một tab cho mỗi cơ sở. Trên trang `http://` (không có Web Locks) hai lần ghi đúng cùng thời điểm vẫn có thể lọt kiểm tra.
-- Extension không tự phát hành hóa đơn điện tử khi người dùng chưa bấm nút Phát hành, và không tự hủy hóa đơn.
+- Extension chỉ phát hành hóa đơn điện tử khi người dùng bấm nút Phát hành hoặc đã bật Tự động phát hành cho đúng khoảng ngày đó, và không tự hủy hóa đơn.
 # Mới trong MVP 0.4
 
 - Chọn giao dịch ngân hàng sẽ tự tìm phiếu chưa xuất đúng ngày giao dịch.

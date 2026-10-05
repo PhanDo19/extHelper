@@ -229,24 +229,46 @@
   //   2. Hết thì sang NGÀY KẾ TIẾP có sao kê, bắt đầu lại từ ĐẦU dãy — đúng
   //      quy trình: xong cả hai cơ sở ngày D rồi mới sang ngày D+1.
   // Trả { tenant, dateKey } (có thể chính cơ sở này ở ngày kế) hoặc null.
-  function nextHandoff(state, tenant, dateKey) {
+  // `untilDate` (tùy chọn): không đi quá ngày này — dùng cho tự động phát hành
+  // trong một khoảng ngày.
+  function nextHandoff(state, tenant, dateKey, untilDate) {
     const next = normalize(state);
     const slug = normalizeTenant(tenant);
     const day = text(dateKey);
     if (!slug || !day) return null;
-    const pending = (candidate, date) =>
-      Boolean(statementSummary(next, candidate, date)?.count) &&
-      cursorFor(next, candidate, date)?.status !== "done";
     for (const candidate of tenantsAfter(next, slug)) {
-      if (pending(candidate, day)) return { tenant: candidate, dateKey: day };
+      if (hasPendingWork(next, candidate, day)) return { tenant: candidate, dateKey: day };
     }
-    const laterDays = [...new Set(next.tenantOrder.flatMap(candidate =>
+    return firstPendingStep(next, nextDay(day), untilDate);
+  }
+
+  // Cơ sở có giao dịch ngày đó (theo sao kê đối chiếu) mà chưa chốt xong.
+  function hasPendingWork(state, tenant, dateKey) {
+    return Boolean(statementSummary(state, tenant, dateKey)?.count) &&
+      cursorFor(state, tenant, dateKey)?.status !== "done";
+  }
+
+  function nextDay(dateKey) {
+    const [year, month, day] = text(dateKey).split("-").map(Number);
+    const moved = new Date(Date.UTC(year, month - 1, day + 1));
+    const part = number => String(number).padStart(2, "0");
+    return `${moved.getUTCFullYear()}-${part(moved.getUTCMonth() + 1)}-${part(moved.getUTCDate())}`;
+  }
+
+  // Bước còn việc SỚM NHẤT trong [fromDate, untilDate]: ngày tăng dần, trong
+  // một ngày theo dãy thứ tự cơ sở. Là điểm bắt đầu (và bắt đầu lại sau khi
+  // dừng) của tự động phát hành; các bước đã chốt xong tự được bỏ qua.
+  function firstPendingStep(state, fromDate, untilDate) {
+    const next = normalize(state);
+    const from = text(fromDate);
+    const until = text(untilDate);
+    const days = [...new Set(next.tenantOrder.flatMap(candidate =>
       Object.keys(next.statements[candidate]?.days || {})))]
-      .filter(date => date > day)
+      .filter(date => (!from || date >= from) && (!until || date <= until))
       .sort();
-    for (const date of laterDays) {
+    for (const date of days) {
       for (const candidate of next.tenantOrder) {
-        if (pending(candidate, date)) return { tenant: candidate, dateKey: date };
+        if (hasPendingWork(next, candidate, date)) return { tenant: candidate, dateKey: date };
       }
     }
     return null;
@@ -387,6 +409,7 @@
     cursorFor,
     latestIssuedDate,
     nextHandoff,
+    firstPendingStep,
     evaluate,
     checkContinuity
   };
