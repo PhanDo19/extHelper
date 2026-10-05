@@ -66,7 +66,7 @@ for (const fn of ["workflowSnapshot", "renderWorkflowDashboard", "showHomeDashbo
   assert(content.includes(`function ${fn}(`), `Thiếu ${fn}`);
 }
 assert(content.includes('const ignoredTransactions = transactions.filter'), "Dashboard phải tách giao dịch Bỏ qua khỏi số đã đối soát");
-assert(content.includes('function openEInvoiceAdmin()'), "Thiếu bước mở màn phát hành hóa đơn trực tiếp");
+assert(content.includes('function openEInvoiceAdmin(dateKey)'), "Thiếu bước mở màn phát hành hóa đơn trực tiếp");
 assert(content.includes('function suggestedEInvoiceRange()'), "Phát hành phải kế thừa khoảng ngày của Batch Review");
 assert(content.includes('await loadEInvoiceList();'), "Mở bước phát hành phải tự tải danh sách");
 assert(content.includes('/5 bước đã sẵn sàng'), "Dashboard phải hiển thị đủ 5 bước kế toán");

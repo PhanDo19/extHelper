@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.29.23 (2026-10-05)
+
+- **Phát hành xong một cơ sở thì tự chuyển sang cơ sở kế tiếp, mở sẵn đúng ngày.** Trước đây (Kim Giang/Linh Đàm dùng chung dải số) người dùng phải tự gõ URL cơ sở kia rồi chọn lại ngày phát hành.
+  - `nextHandoff` tính bước kế: cơ sở đứng sau trong dãy còn giao dịch cùng ngày và chưa chốt xong; hết thì ngày kế tiếp có sao kê, bắt đầu từ đầu dãy (LĐ xong 01/08 → KG 01/08 → LĐ 02/08).
+  - Lô sạch (không lỗi, không cảnh báo, không thiếu mặt hàng, số liên tục, không sót phiếu của giao dịch sao kê ngày đó): đếm ngược 8 giây rồi tự sang màn Hóa đơn điện tử của cơ sở kia, có nút **Chuyển ngay** / **Ở lại trang này**; thông báo khác xuất hiện trong lúc đếm thì hủy chuyển. Lô có vấn đề: không tự chuyển, chỉ có nút **Chuyển sang …**.
+  - Ở cơ sở đích: chờ qua bước đăng nhập (lệnh giữ 12 giờ); đăng nhập xong mở lại màn Hóa đơn điện tử một lần nếu website đưa về trang khác; rồi mở panel → Phát hành với **ngày của cơ sở trước** và tải danh sách. Không tự phát hành.
+  - Bước kế ở chính cơ sở này (ngày kế): nút **Tải ngày …**, không chuyển trang. Paris Nhơn (dải số riêng) không đổi.
+- Dòng trạng thái nhận được nhiều nút.
+
 ## 1.29.22 (2026-10-05)
 
 - **Sửa lỗi mức "Lập ở …" của một giao dịch bị gán sang giao dịch kế tiếp, khiến phiếu bị lưu và đối soát ở tổng sai.** Ca thật Linh Đàm: 01/07 dòng 6 (4.155.000đ) và dòng 7 (2.233.000đ) mang mức 1.699.999đ của dòng 5 (1.700.000đ); 04/07 dòng 33 (2.883.000đ) mang 3.734.999đ của dòng 32; 16/07 dòng 125 (2.152.000đ) mang 3.162.999đ của dòng 124. Bốn phiếu HD0126070016/005/058/268 đã lưu ở tổng sai (chưa phát hành HĐĐT); 42 mức Lập ở còn lại đều đúng −1đ.

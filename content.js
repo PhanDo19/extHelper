@@ -89,6 +89,20 @@
   let issuingInProgress = false;
   let statementSubtab = "statement";
   let showEInvoicesOutsideStatement = false;
+  // Bước kế tiếp sau lô phát hành vừa xong ({ handoff, message, kind, extra }),
+  // để nút "Ở lại"/"Chuyển sang …" trên dòng trạng thái biết phải làm gì.
+  let issueHandoffPrompt = null;
+  let issueHandoffTimer = null;
+  let issueHandoffTicking = false;
+  // Lô Batch đang tự chạy tiếp sau khi tải lại trang: không để lệnh chuyển cơ sở
+  // giành màn hình của nó.
+  let batchAutoResumeStarted = false;
+  // Phát hành xong một cơ sở thì tự chuyển sang cơ sở kế tiếp sau vài giây,
+  // đủ để đọc tổng kết và bấm "Ở lại" nếu cần.
+  const ISSUE_HANDOFF_REDIRECT_SECONDS = 8;
+  // Chuyển cơ sở phải đăng nhập lại (cookie phiên dùng chung domain), nên lệnh
+  // chuyển phải sống qua bước đăng nhập; quá hạn thì bỏ, không tự mở trang cũ.
+  const ISSUE_HANDOFF_TTL_MS = 12 * 60 * 60 * 1000;
 
   // Một tháng ở Nhơn có tới 435 dòng số tiền, nên lô phải chạy được cả tháng.
   // Lô dài không làm website quá tải nhờ tự tải lại trang sau mỗi 15 phiếu
@@ -1340,6 +1354,7 @@
         // Xóa cờ TRƯỚC khi chạy để một lần tải lại nữa không lặp vô hạn; số lần
         // đã thử được giữ để giới hạn vẫn có hiệu lực qua nhiều lần tải lại.
         await saveBatchUiSession({ panelOpen: true, autoResumeAttempts: Number(stored.autoResumeAttempts) || 0 });
+        batchAutoResumeStarted = true;
         void continueAfterAutoReload(resume);
         return;
       }
@@ -1843,6 +1858,9 @@
     // Xuất file hạch toán là việc cuối của quy trình. Cho gọi thẳng từ dòng trạng
     // thái vừa báo phát hành xong, không bắt kế toán sang tab Kho tìm nút.
     else if (action === "issued-export") exportIssuedInvoices().catch(error => setStatus(error.message, "error"));
+    // Sau lô phát hành: sang cơ sở/ngày kế tiếp ngay, hoặc ở lại trang này.
+    else if (action === "handoff") followIssueHandoff().catch(error => setStatus(error.message, "error"));
+    else if (action === "handoff-stay") stayAfterIssue();
     else if (action === "export") exportAccountingReport().catch(error => setStatus(error.message, "error"));
     // Rà giao dịch lớn: mở màn sao kê và lọc sẵn về đúng nhóm cần kiểm, thay vì
     // thả người dùng vào danh sách đầy đủ rồi bắt tự tìm.
@@ -2280,16 +2298,21 @@
       kind = "error";
       next = { label: "Tải lại trang", action: "reload" };
     }
+    // Đang đếm ngược tự chuyển cơ sở mà có thông báo khác (người dùng vừa thao
+    // tác, hoặc có lỗi) thì hủy chuyển: không rời trang khi đang có việc khác.
+    if (issueHandoffTimer && !issueHandoffTicking) cancelIssueHandoffRedirect();
     node.className = `it-status ${kind || ""}`;
     // Dựng bằng DOM node: message có thể chứa số phiếu, diễn giải sao kê hoặc
     // thông báo lỗi lấy từ website, không được diễn giải như thẻ HTML.
     node.replaceChildren(document.createTextNode(message));
-    if (next?.label && next?.action) {
+    // `next` là một nút hoặc danh sách nút (ví dụ "Chuyển sang …" + "Xuất file").
+    for (const item of Array.isArray(next) ? next : [next]) {
+      if (!item?.label || !item?.action) continue;
       const button = document.createElement("button");
       button.type = "button";
       button.className = "it-status-next";
-      button.dataset.action = next.action;
-      button.textContent = next.label;
+      button.dataset.action = item.action;
+      button.textContent = item.label;
       button.addEventListener("click", () => openAccountingDashboardAction({ target: button }));
       node.append(button);
     }
@@ -3656,11 +3679,199 @@
     return { fromDate, toDate: fromDate };
   }
 
-  async function openEInvoiceAdmin() {
+  async function openEInvoiceAdmin(dateKey) {
     statementSubtab = "einvoice";
     setStatementMode(true);
     showStatementSubtab("einvoice");
+    // Ngày mang sang từ cơ sở vừa phát hành xong: đặt trước khi tải danh sách để
+    // người dùng không phải chọn lại.
+    const day = uiDateKey(dateKey);
+    if (day) {
+      const fromInput = document.getElementById("it-einvoice-from-date");
+      const toInput = document.getElementById("it-einvoice-to-date");
+      if (fromInput) fromInput.value = day;
+      if (toInput) toInput.value = day;
+    }
     await loadEInvoiceList();
+  }
+
+  // ---- Chuyển cơ sở sau khi phát hành -------------------------------------
+  //
+  // Kim Giang và Linh Đàm dùng chung dải số: xong một cơ sở trong ngày thì phải
+  // sang cơ sở kia, rồi mới sang ngày kế. Hai cơ sở chung domain nên không mở
+  // song song được — phải chuyển hẳn trang (thường phải đăng nhập lại). Lệnh
+  // chuyển được ghi vào storage dùng chung để cơ sở đích, sau khi đăng nhập, tự
+  // mở màn Phát hành với đúng ngày đó. Không bao giờ tự phát hành.
+
+  function viDay(dateKey) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || ""));
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : String(dateKey || "");
+  }
+
+  // Cùng màn hình ở cơ sở khác: chỉ thay đoạn cơ sở đầu đường dẫn. Các cơ sở
+  // chạy cùng phần mềm nên màn Hóa đơn điện tử có cùng Form ID/MenuID.
+  function tenantPageUrl(tenant, href) {
+    const url = new URL(href);
+    const parts = url.pathname.split("/");
+    parts[1] = tenant;
+    url.pathname = parts.join("/");
+    url.hash = "";
+    return url.toString();
+  }
+
+  function isSamePageUrl(left, right) {
+    try {
+      const a = new URL(left);
+      const b = new URL(right);
+      return a.pathname.toLowerCase() === b.pathname.toLowerCase() &&
+        a.search.toLowerCase() === b.search.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+
+  function isLoginPage() {
+    if (/\/(Account\/)?(Log[Ii]n|DangNhap)/i.test(location.pathname)) return true;
+    return Boolean(document.querySelector('input[type="password"]'));
+  }
+
+  function issueHandoffTarget(handoff) {
+    const label = TENANT_LABELS[handoff.tenant] || handoff.tenant;
+    return handoff.tenant === pageTenantSlug
+      ? `ngày ${viDay(handoff.dateKey)} ở cơ sở này`
+      : `${label} để phát hành ngày ${viDay(handoff.dateKey)}`;
+  }
+
+  // Gọi khi lô phát hành vừa xong và còn việc ở cơ sở/ngày khác. `autoRedirect`
+  // chỉ bật khi lô sạch (không lỗi, không cảnh báo, không còn phiếu sót trong
+  // ngày): có gì cần đọc thì để người dùng tự bấm chuyển.
+  async function promptIssueHandoff(handoff, { message, kind, autoRedirect, extra }) {
+    cancelIssueHandoffRedirect();
+    const prompt = { handoff, message, kind, extra: extra || [], record: null };
+    issueHandoffPrompt = prompt;
+    if (handoff.tenant === pageTenantSlug) {
+      // Cùng cơ sở, ngày kế: không cần chuyển trang, chỉ mời tải ngày đó.
+      setStatus(`${message} Tiếp theo: ${issueHandoffTarget(handoff)}.`, kind,
+        [{ label: `Tải ngày ${viDay(handoff.dateKey)}`, action: "handoff" }, ...prompt.extra]);
+      return;
+    }
+    prompt.record = {
+      fromTenant: pageTenantSlug,
+      targetTenant: handoff.tenant,
+      dateKey: handoff.dateKey,
+      targetUrl: tenantPageUrl(handoff.tenant, location.href),
+      createdAt: new Date().toISOString()
+    };
+    // Ghi ngay cả khi không tự chuyển: người dùng tự sang cơ sở kia sau đó vẫn
+    // được mở sẵn đúng ngày.
+    await InvoiceMappingStore.saveIssueHandoff(prompt.record)
+      .catch(error => console.error("Không lưu được lệnh chuyển cơ sở", error));
+    if (autoRedirect) scheduleIssueHandoffRedirect(prompt);
+    else stayAfterIssue("");
+  }
+
+  function scheduleIssueHandoffRedirect(prompt) {
+    cancelIssueHandoffRedirect();
+    let remaining = ISSUE_HANDOFF_REDIRECT_SECONDS;
+    const tick = () => {
+      issueHandoffTimer = null;
+      if (issueHandoffPrompt !== prompt) return;
+      if (remaining <= 0) {
+        location.assign(prompt.record.targetUrl);
+        return;
+      }
+      issueHandoffTicking = true;
+      try {
+        setStatus(
+          `${prompt.message} Tự chuyển sang ${issueHandoffTarget(prompt.handoff)} sau ${remaining} giây…`,
+          prompt.kind,
+          [{ label: "Chuyển ngay", action: "handoff" }, { label: "Ở lại trang này", action: "handoff-stay" }]
+        );
+      } finally {
+        issueHandoffTicking = false;
+      }
+      remaining -= 1;
+      issueHandoffTimer = setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  function cancelIssueHandoffRedirect() {
+    if (issueHandoffTimer) clearTimeout(issueHandoffTimer);
+    issueHandoffTimer = null;
+  }
+
+  function stayAfterIssue(note = " Đã ở lại trang này.") {
+    cancelIssueHandoffRedirect();
+    const prompt = issueHandoffPrompt;
+    if (!prompt) return;
+    setStatus(
+      `${prompt.message}${note} Tiếp theo: ${issueHandoffTarget(prompt.handoff)}.`,
+      prompt.kind,
+      [{ label: `Chuyển sang ${TENANT_LABELS[prompt.handoff.tenant] || prompt.handoff.tenant}`, action: "handoff" },
+        ...prompt.extra]
+    );
+  }
+
+  async function followIssueHandoff() {
+    cancelIssueHandoffRedirect();
+    const prompt = issueHandoffPrompt;
+    if (!prompt) return;
+    if (issuingInProgress) throw new Error("Đang phát hành, chưa chuyển được.");
+    if (!prompt.record) {
+      issueHandoffPrompt = null;
+      await openEInvoiceAdmin(prompt.handoff.dateKey);
+      return;
+    }
+    await InvoiceMappingStore.saveIssueHandoff({ ...prompt.record, createdAt: new Date().toISOString() });
+    location.assign(prompt.record.targetUrl);
+  }
+
+  // Chạy lúc khởi tạo ở mọi trang: nếu có lệnh chuyển dành cho cơ sở này thì mở
+  // màn Phát hành với đúng ngày cơ sở trước vừa làm. Trang đăng nhập (hoặc cookie
+  // còn của cơ sở khác) thì chờ — lệnh giữ nguyên tới khi đăng nhập xong.
+  async function resumeIssueHandoff() {
+    if (batchAutoResumeStarted || pendingNewInvoice) return;
+    const record = await InvoiceMappingStore.loadIssueHandoff().catch(() => null);
+    if (!record || record.targetTenant !== pageTenantSlug) return;
+    const createdAt = Date.parse(record.createdAt || "");
+    const day = uiDateKey(record.dateKey);
+    const cursor = day ? InvoiceIssueCoordination.cursorFor(issueCoordination, pageTenantSlug, day) : null;
+    if (!day || !Number.isFinite(createdAt) || Date.now() - createdAt > ISSUE_HANDOFF_TTL_MS ||
+      cursor?.status === "done") {
+      await InvoiceMappingStore.saveIssueHandoff(null);
+      return;
+    }
+    const fromLabel = TENANT_LABELS[record.fromTenant] || record.fromTenant || "cơ sở trước";
+    const cookieTenant = activeShopFromCookie();
+    if (isLoginPage() || (cookieTenant && cookieTenant !== pageTenantSlug)) {
+      setStatus(
+        `Đăng nhập ${pageTenantLabel} để phát hành tiếp ngày ${viDay(day)} (sau ${fromLabel}). ` +
+        "Đăng nhập xong extension tự mở màn Phát hành với đúng ngày này.",
+        "warn"
+      );
+      return;
+    }
+    // Website có thể đưa về trang chủ sau khi đăng nhập: mở lại màn Hóa đơn điện
+    // tử một lần (phát hành phải chạy ở đúng màn đó), không lặp nếu vẫn lạc.
+    if (record.targetUrl && !isSamePageUrl(record.targetUrl, location.href) && !record.landingRedirectAt) {
+      await InvoiceMappingStore.saveIssueHandoff({ ...record, landingRedirectAt: new Date().toISOString() });
+      location.assign(record.targetUrl);
+      return;
+    }
+    await InvoiceMappingStore.saveIssueHandoff(null);
+    const panel = document.getElementById("it-panel");
+    if (panel) panel.hidden = false;
+    syncTabsOffset();
+    await openEInvoiceAdmin(day);
+    // Giữ nguyên kết quả tải danh sách (kể cả cảnh báo sổ lệch web), chỉ thêm ngữ cảnh.
+    const status = document.getElementById("it-status");
+    const kind = ["error", "warn", "ok"].find(name => status?.classList.contains(name)) || "ok";
+    setStatus(
+      `Tiếp tục sau ${fromLabel}: đã mở Phát hành ngày ${viDay(day)}. ${status?.firstChild?.textContent || ""} ` +
+      "Kiểm tra rồi bấm Phát hành — extension không tự phát hành.",
+      kind
+    );
   }
 
   // Ba tra cứu dưới đây trước kia quét tuyến tính toàn bộ sổ đối soát, sao kê và
@@ -4597,33 +4808,46 @@
     // đơn phát hành được và mọi hóa đơn đều đọc đủ mặt hàng — thiếu mặt hàng mà
     // xuất luôn thì file hạch toán bị hụt dòng, phải kiểm tra trước.
     const canExportIssued = succeeded > 0 && !missingItems && !failures.length;
-    // Nhắc chuyển cơ sở kế tiếp trong dãy. Với ba cơ sở trở lên, phải tìm cơ sở
-    // ĐỨNG SAU GẦN NHẤT mà ngày này còn giao dịch — bỏ qua cơ sở không có việc,
-    // vì bắt chờ một cơ sở rỗng sẽ làm kẹt cả chuỗi.
-    let handoffNote = "";
-    if (batchDateKey && succeeded > 0) {
-      for (const nextTenant of coordination.nextTenants || []) {
-        const pending = InvoiceIssueCoordination.statementSummary(
-          issueCoordination, nextTenant, batchDateKey
-        );
-        if (!pending?.count) continue;
-        // Các cơ sở dùng chung một domain nên cookie phiên ghi đè nhau: không thể
-        // mở song song nhiều tab đã đăng nhập. Phải chuyển hẳn sang cơ sở kế tiếp.
-        handoffNote =
-          ` Tiếp theo: chuyển sang ${TENANT_LABELS[nextTenant] || nextTenant} (đăng nhập lại) ` +
-          `và phát hành cùng ngày ${batchDateKey} — ${pending.count} giao dịch — trước khi sang ngày kế.`;
-        break;
-      }
-    }
-    setStatus(
-      `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` + handoffNote +
+    const exportAction = canExportIssued ? { label: "Xuất file hạch toán", action: "issued-export" } : null;
+    const summary =
+      `Đã phát hành ${succeeded}/${targets.length} hóa đơn.` +
       (failures.length ? ` ${failures.length} hóa đơn lỗi, xem chi tiết bên dưới.` : "") +
       (warnings.length ? ` ${warnings.length} hóa đơn có cảnh báo nhưng đã xác nhận phát hành.` : "") +
-      (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : "") +
-      (canExportIssued ? " Bước cuối: xuất file hạch toán cho kỳ này." : ""),
-      failures.length ? "error" : warnings.length ? "warn" : "ok",
-      canExportIssued ? { label: "Xuất file hạch toán", action: "issued-export" } : undefined
-    );
+      (missingItems ? ` ${missingItems} hóa đơn chưa đọc được mặt hàng; hãy kiểm tra trước khi xuất file hạch toán.` : "");
+    const summaryKind = failures.length ? "error" : warnings.length ? "warn" : "ok";
+    // Bước kế tiếp: cơ sở ĐỨNG SAU còn giao dịch cùng ngày (bỏ qua cơ sở không có
+    // việc, bắt chờ cơ sở rỗng sẽ kẹt cả chuỗi), hết thì ngày kế tiếp từ đầu dãy.
+    // Các cơ sở chung domain nên không mở song song được: phải chuyển hẳn trang.
+    const handoff = batchDateKey && succeeded > 0
+      ? InvoiceIssueCoordination.nextHandoff(issueCoordination, pageTenantSlug, batchDateKey)
+      : null;
+    if (!handoff) {
+      // Không còn cơ sở/ngày nào chờ: bỏ lệnh chuyển cũ (nếu có) để cơ sở kia
+      // không tự mở một ngày đã xong. Nhơn có dải số riêng, không đụng tới lệnh này.
+      if (batchDateKey && succeeded > 0 && InvoiceIssueCoordination.sharesInvoiceRange(pageTenantSlug)) {
+        await InvoiceMappingStore.saveIssueHandoff(null)
+          .catch(error => console.error("Không xóa được lệnh chuyển cơ sở", error));
+      }
+      setStatus(
+        summary + (canExportIssued ? " Bước cuối: xuất file hạch toán cho kỳ này." : ""),
+        summaryKind,
+        exportAction || undefined
+      );
+      return;
+    }
+    // Còn phiếu của giao dịch sao kê ngày này chưa phát hành (người dùng không
+    // chọn hết) thì chưa xong cơ sở này: không tự chuyển.
+    const leftHere = eInvoiceRows.filter(row => !row.issued && !row.cancelled &&
+      uiDateKey(row.dateKey) === batchDateKey && isStatementInvoice(row, linkedNos)).length;
+    const clean = !failures.length && !warnings.length && !missingItems && !leftHere &&
+      !(continuity && !continuity.ok);
+    await promptIssueHandoff(handoff, {
+      message: summary +
+        (leftHere ? ` Còn ${leftHere} hóa đơn của giao dịch ngày ${viDay(batchDateKey)} chưa phát hành ở cơ sở này.` : ""),
+      kind: summaryKind,
+      autoRedirect: clean,
+      extra: exportAction ? [exportAction] : []
+    });
   }
 
   // Một mã web có thể nhận tồn từ nhiều dòng kho; gộp tên kho theo mã web để
@@ -10673,6 +10897,8 @@
     refreshMappingState();
     mount();
     await restoreUiSession();
+    // Vừa phát hành xong ở cơ sở kia và chuyển sang đây: mở Phát hành đúng ngày.
+    await resumeIssueHandoff().catch(error => setStatus(error.message, "error"));
     // Cookie `shop` co the bi tab khac ghi de bat ky luc nao sau khi panel da mo,
     // nen phai kiem tra lai dinh ky chu khong chi mot lan luc khoi tao.
     if (!warnOnTenantMismatch()) {

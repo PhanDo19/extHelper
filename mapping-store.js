@@ -45,6 +45,9 @@
   // So hoa don dien tu la dai dung chung cua ca hai co so, nen co thu tu, bang
   // sao ke doi chieu va chot tien do phat hanh KHONG duoc tach theo tenantKey.
   const ISSUE_COORDINATION_KEY = "invoiceTargetIssueCoordinationV1";
+  // Lệnh "chuyển sang cơ sở kế tiếp để phát hành" ghi ở cơ sở vừa phát hành xong,
+  // đọc ở cơ sở đích sau khi trang tải lại. Dùng chung, không qua tenantKey.
+  const ISSUE_HANDOFF_KEY = "invoiceTargetIssueHandoffV1";
   // webCode cua quy tac uu tien chi dung o chi nhanh mac dinh; chi nhanh khac
   // phai tu chon lai ma hang tuong ung trong panel.
   const DEFAULT_PRIORITY_RULES = [
@@ -325,6 +328,20 @@
     return state;
   }
 
+  async function loadIssueHandoff() {
+    if (!globalThis.chrome?.storage?.local) return null;
+    const stored = await chrome.storage.local.get(ISSUE_HANDOFF_KEY);
+    return stored[ISSUE_HANDOFF_KEY] || null;
+  }
+
+  async function saveIssueHandoff(handoff) {
+    if (globalThis.chrome?.storage?.local) {
+      if (handoff) await chrome.storage.local.set({ [ISSUE_HANDOFF_KEY]: handoff });
+      else await chrome.storage.local.remove(ISSUE_HANDOFF_KEY);
+    }
+    return handoff;
+  }
+
   async function commitVerifiedInvoice(dataset, statement, ledger, sharedWarehouse) {
     if (globalThis.chrome?.storage?.local) {
       const statementKey = tenantKey(STATEMENT_BASE_KEY);
@@ -357,6 +374,6 @@
     saveMappingBackup, loadMappingBackup,
     importStockState, loadStockStateBackup, loadApiTemplate, saveApiTemplate, clearApiTemplate,
     loadIssuedInvoices, saveIssuedInvoices, loadSharedWarehouse, saveSharedWarehouse, currentTenant,
-    loadIssueCoordination, saveIssueCoordination
+    loadIssueCoordination, saveIssueCoordination, loadIssueHandoff, saveIssueHandoff
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

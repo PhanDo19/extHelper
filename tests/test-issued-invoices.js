@@ -118,7 +118,7 @@ assert(contentSource.includes('data-screen="einvoice"'),
   "Menu chuyển bước phải có lối vào bước Phát hành");
 assert(contentSource.includes('id="it-manage-einvoice"'),
   "Dashboard phải có lối tắt rõ ràng tới bước Phát hành hóa đơn");
-assert(contentSource.includes('function openEInvoiceAdmin()'),
+assert(contentSource.includes('function openEInvoiceAdmin(dateKey)'),
   "Lối tắt phát hành phải mở đúng sub-tab Giao dịch, không tạo màn hình dữ liệu riêng");
 // Section phát hành phải được render bên trong tab Giao dịch.
 const statementAdminIndex = contentSource.indexOf("function renderStatementAdmin");

@@ -222,6 +222,36 @@
     return latest;
   }
 
+  // Bước kế tiếp sau khi `tenant` phát hành xong ngày `dateKey`, để tự chuyển
+  // sang đúng cơ sở thay vì bắt người dùng tự gõ URL:
+  //   1. Cùng ngày: cơ sở ĐỨNG SAU trong dãy thứ tự còn giao dịch ngày đó và
+  //      chưa chốt xong (bỏ qua cơ sở không có việc, như nhắc chuyển cơ sở).
+  //   2. Hết thì sang NGÀY KẾ TIẾP có sao kê, bắt đầu lại từ ĐẦU dãy — đúng
+  //      quy trình: xong cả hai cơ sở ngày D rồi mới sang ngày D+1.
+  // Trả { tenant, dateKey } (có thể chính cơ sở này ở ngày kế) hoặc null.
+  function nextHandoff(state, tenant, dateKey) {
+    const next = normalize(state);
+    const slug = normalizeTenant(tenant);
+    const day = text(dateKey);
+    if (!slug || !day) return null;
+    const pending = (candidate, date) =>
+      Boolean(statementSummary(next, candidate, date)?.count) &&
+      cursorFor(next, candidate, date)?.status !== "done";
+    for (const candidate of tenantsAfter(next, slug)) {
+      if (pending(candidate, day)) return { tenant: candidate, dateKey: day };
+    }
+    const laterDays = [...new Set(next.tenantOrder.flatMap(candidate =>
+      Object.keys(next.statements[candidate]?.days || {})))]
+      .filter(date => date > day)
+      .sort();
+    for (const date of laterDays) {
+      for (const candidate of next.tenantOrder) {
+        if (pending(candidate, date)) return { tenant: candidate, dateKey: date };
+      }
+    }
+    return null;
+  }
+
   // Toàn bộ cảnh báo chéo cơ sở cho một ngày. Tất cả đều là CHẶN MỀM: nêu rõ
   // trong hộp thoại xác nhận rồi để người dùng quyết định. Chặn cứng sẽ kẹt khi
   // một cơ sở không có hóa đơn nào trong ngày.
@@ -356,6 +386,7 @@
     markCursor,
     cursorFor,
     latestIssuedDate,
+    nextHandoff,
     evaluate,
     checkContinuity
   };

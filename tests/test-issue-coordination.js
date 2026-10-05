@@ -231,6 +231,54 @@ assert(!/tenantKey\(ISSUE_COORDINATION_KEY\)/.test(storeSource),
   "Khóa điều phối phải dùng chung, không qua tenantKey");
 assert(coordBlock.includes("ISSUE_COORDINATION_KEY"), "load/save phải dùng đúng khóa dùng chung");
 
+// --- Bước kế tiếp sau khi một cơ sở phát hành xong (tự chuyển cơ sở) ---------
+
+{
+  const rows = (date, count) => Array.from({ length: count }, (_, index) =>
+    ({ transactionDate: date, credit: 100000 + index, requestedAt: `${date}T1${index}:00:00` }));
+  let flow = Coordination.recordStatement(Coordination.empty(), "parislinhdam",
+    [...rows("2026-08-01", 2), ...rows("2026-08-02", 1)]);
+  flow = Coordination.recordStatement(flow, "pariskimgiang",
+    [...rows("2026-08-01", 3), ...rows("2026-08-03", 2)]);
+  const done = (state, tenant, date) => Coordination.markCursor(state, tenant, date, { status: "done", count: 1 });
+
+  // Linh Đàm xong 01/08 → Kim Giang cùng ngày (đứng sau trong dãy).
+  flow = done(flow, "parislinhdam", "2026-08-01");
+  assert.deepStrictEqual(Coordination.nextHandoff(flow, "parislinhdam", "2026-08-01"),
+    { tenant: "pariskimgiang", dateKey: "2026-08-01" });
+  // Kim Giang xong 01/08 → ngày kế, bắt đầu lại từ đầu dãy: Linh Đàm 02/08.
+  flow = done(flow, "pariskimgiang", "2026-08-01");
+  assert.deepStrictEqual(Coordination.nextHandoff(flow, "pariskimgiang", "2026-08-01"),
+    { tenant: "parislinhdam", dateKey: "2026-08-02" });
+  // Linh Đàm xong 02/08, Kim Giang không có giao dịch 02/08 → bỏ qua cơ sở rỗng,
+  // sang 03/08 ở chỗ còn việc (chính Kim Giang).
+  flow = done(flow, "parislinhdam", "2026-08-02");
+  assert.deepStrictEqual(Coordination.nextHandoff(flow, "parislinhdam", "2026-08-02"),
+    { tenant: "pariskimgiang", dateKey: "2026-08-03" });
+  // Cùng cơ sở ngày kế: vẫn trả về để mời tải ngày đó, không chuyển trang.
+  const onlyKg = Coordination.recordStatement(Coordination.empty(), "pariskimgiang",
+    [...rows("2026-08-01", 1), ...rows("2026-08-02", 1)]);
+  assert.deepStrictEqual(Coordination.nextHandoff(done(onlyKg, "pariskimgiang", "2026-08-01"), "pariskimgiang", "2026-08-01"),
+    { tenant: "pariskimgiang", dateKey: "2026-08-02" });
+  // Hết việc → null; Nhơn (dải riêng) không bao giờ chuyển.
+  flow = done(flow, "pariskimgiang", "2026-08-03");
+  assert.strictEqual(Coordination.nextHandoff(flow, "pariskimgiang", "2026-08-03"), null);
+  assert.strictEqual(Coordination.nextHandoff(flow, "parisnhon", "2026-08-01"), null);
+  // Đổi thứ tự (Kim Giang trước): Kim Giang xong 01/08 → Linh Đàm cùng ngày.
+  let reversedFlow = Coordination.setTenantOrder(
+    Coordination.recordStatement(Coordination.recordStatement(Coordination.empty(), "parislinhdam", rows("2026-08-01", 1)),
+      "pariskimgiang", rows("2026-08-01", 1)),
+    ["pariskimgiang", "parislinhdam"]);
+  reversedFlow = done(reversedFlow, "pariskimgiang", "2026-08-01");
+  assert.deepStrictEqual(Coordination.nextHandoff(reversedFlow, "pariskimgiang", "2026-08-01"),
+    { tenant: "parislinhdam", dateKey: "2026-08-01" });
+  assert.strictEqual(Coordination.nextHandoff(done(reversedFlow, "parislinhdam", "2026-08-01"), "parislinhdam", "2026-08-01"), null);
+}
+
+// Lệnh chuyển cơ sở ghi ở cơ sở này, đọc ở cơ sở kia: khóa dùng chung.
+assert(/ISSUE_HANDOFF_KEY = "[^"]+"/.test(storeSource), "Thiếu khóa lưu lệnh chuyển cơ sở");
+assert(!/tenantKey\(ISSUE_HANDOFF_KEY\)/.test(storeSource), "Lệnh chuyển cơ sở phải dùng khóa chung");
+
 // --- Đấu nối trong content.js ---------------------------------------------
 
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
@@ -309,7 +357,15 @@ assert(finallyBlock.includes("saveIssueCoordination"),
 // Lưu hỏng cũng không được kéo theo cả luồng: bắt lỗi tại chỗ.
 assert(/try \{[\s\S]{0,200}saveIssueCoordination[\s\S]{0,200}catch/.test(finallyBlock),
   "Lỗi khi lưu chốt phải được bắt tại chỗ, không ném ra khỏi finally");
-assert(issueFlow.includes("handoffNote"), "Xong phải nhắc chuyển sang cơ sở còn lại");
+// Xong một cơ sở thì chuyển sang bước kế tiếp do nextHandoff tính (cơ sở sau
+// trong dãy còn việc cùng ngày, hết thì ngày kế từ đầu dãy).
+assert(issueFlow.includes("InvoiceIssueCoordination.nextHandoff(issueCoordination, pageTenantSlug, batchDateKey)"),
+  "Xong phải tính bước kế tiếp theo dãy thứ tự, không phải 'cơ sở kia'");
+assert(issueFlow.indexOf("const handoff =") > issueFlow.indexOf("} finally {"),
+  "Chỉ tính bước kế tiếp SAU khi chốt done của cơ sở này đã ghi");
+assert(/autoRedirect: clean/.test(issueFlow) &&
+  /const clean = !failures\.length && !warnings\.length && !missingItems && !leftHere/.test(issueFlow),
+  "Chỉ tự chuyển khi lô sạch; có lỗi/cảnh báo/phiếu sót thì để người dùng tự bấm");
 
 // Cờ thứ tự là thiết lập dùng chung nên khi đổi phải đọc lại rồi mới ghi, tránh
 // xóa mất chốt mà tab kia vừa ghi vào cùng bản ghi.
@@ -319,11 +375,5 @@ const tenantPicker = contentSource.slice(
 assert(tenantPicker.indexOf("loadIssueCoordination") < tenantPicker.indexOf("saveIssueCoordination"),
   "Đổi thứ tự phải đọc lại bản ghi dùng chung trước khi ghi đè");
 assert(contentSource.includes('id="it-einvoice-tenant-order"'), "Thiếu ô thứ tự phát hành");
-// Nhắc chuyển cơ sở phải đi theo dãy thứ tự, và bỏ qua cơ sở không có giao dịch
-// ngày đó — bắt chờ một cơ sở rỗng sẽ làm kẹt cả chuỗi.
-assert(issueFlow.includes("coordination.nextTenants"),
-  "Nhắc chuyển tiếp phải dựa vào dãy thứ tự, không phải 'cơ sở kia'");
-assert(/for \(const nextTenant of coordination\.nextTenants[\s\S]{0,400}if \(!pending\?\.count\) continue;/.test(issueFlow),
-  "Phải bỏ qua cơ sở kế tiếp không có giao dịch ngày đó");
 
 console.log("Issue coordination tests passed");

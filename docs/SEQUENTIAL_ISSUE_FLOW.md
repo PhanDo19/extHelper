@@ -86,6 +86,39 @@ trạng thái, URL cuối cùng sau chuyển hướng, dấu vết form đăng n
 và dừng hẳn cả luồng phát hành lẫn luồng lưu phiếu. Không có bước này thì
 `JSON.parse` thất bại lặng lẽ và lô chạy tiếp như không có gì xảy ra.
 
+## Tự chuyển cơ sở sau khi phát hành (từ 1.29.23)
+
+Trước đây phát hành xong một cơ sở chỉ có dòng nhắc; người dùng phải tự gõ URL
+cơ sở kia rồi chọn lại ngày. Nay:
+
+1. Lô xong, `InvoiceIssueCoordination.nextHandoff(state, tenant, ngày)` tính bước
+   kế tiếp: cơ sở **đứng sau** trong dãy còn giao dịch ngày đó và chưa chốt xong
+   (bỏ qua cơ sở không có việc); hết thì **ngày kế tiếp** có sao kê, bắt đầu lại
+   từ **đầu dãy**. Ví dụ dãy Linh Đàm → Kim Giang: LĐ xong 01/08 → KG 01/08; KG
+   xong 01/08 → LĐ 02/08.
+2. Bước kế ở cơ sở khác: ghi lệnh chuyển `invoiceTargetIssueHandoffV1` (khóa dùng
+   chung, không qua `tenantKey`) gồm cơ sở đích, **ngày**, URL màn Hóa đơn điện tử
+   của cơ sở đích (chỉ thay đoạn cơ sở trong URL hiện tại).
+   - Lô **sạch** (không lỗi, không cảnh báo, không thiếu mặt hàng, số liên tục,
+     không còn phiếu của giao dịch sao kê ngày đó chưa phát hành): đếm ngược
+     8 giây rồi tự chuyển, có nút **Chuyển ngay** / **Ở lại trang này**. Mọi thông
+     báo khác xuất hiện trong lúc đếm (người dùng thao tác, lỗi) đều hủy chuyển.
+   - Lô có vấn đề: không tự chuyển; dòng trạng thái có nút **Chuyển sang …** (và
+     **Xuất file hạch toán** nếu đủ điều kiện) để người dùng đọc xong rồi tự bấm.
+3. Bước kế ở chính cơ sở này (ngày kế): không chuyển trang, chỉ có nút **Tải
+   ngày …**. Hết việc: xóa lệnh chuyển cũ, mời xuất file hạch toán như trước.
+4. Ở cơ sở đích, lúc khởi tạo:
+   - Trang đăng nhập, hoặc cookie `shop` còn của cơ sở cũ: chờ, giữ lệnh, nhắc
+     đăng nhập. Lệnh sống 12 giờ.
+   - Đăng nhập xong mà website đưa về trang khác: mở lại màn Hóa đơn điện tử
+     **một lần** (phát hành phải chạy ở đúng màn đó để gửi đúng tham số).
+   - Ở đúng màn: xóa lệnh, mở panel → Phát hành với **ngày mang sang** và tải danh
+     sách (chỉ đọc). **Không tự phát hành** — người dùng vẫn chọn và xác nhận.
+   - Bỏ qua lệnh quá hạn, lệnh cho ngày cơ sở này đã chốt xong, hoặc khi lô Batch
+     đang tự chạy tiếp sau tải lại / tab phụ tạo phiếu.
+
+Paris Nhơn có dải số riêng nên không tạo và không xóa lệnh chuyển.
+
 ## Thứ tự giữa hai cơ sở — cờ config
 
 Cơ sở nào phát hành trước trong cùng một ngày do **cờ config trên UI** quyết định.
@@ -176,7 +209,7 @@ flowchart TD
     X -- Không --> Y[Ghi chốt tiến độ<br/>ngày, tenant, SOHOADON cuối, xong lúc]
 
     Y --> Y1[Kiểm tra tính liên tục<br/>SOHOADON trong ngày có đứt quãng?<br/>có số của cơ sở kia chèn giữa?]
-    Y1 --> Y2[Nhắc chuyển cơ sở:<br/>Ngày 01/07 Linh Đàm xong tới 124.<br/>Chuyển sang Kim Giang - đăng nhập lại -<br/>phát hành cùng ngày 01/07 trước khi sang 02/07]
+    Y1 --> Y2[nextHandoff: cơ sở sau còn việc cùng ngày,<br/>hết thì ngày kế từ đầu dãy.<br/>Ghi lệnh chuyển kèm ngày; lô sạch thì<br/>đếm ngược 8s rồi tự sang Kim Giang 01/07]
     Y2 --> Y3{Đã phát hành được<br/>và không thiếu mặt hàng?}
     Y3 -- Có --> Y4[Mời xuất file hạch toán]
     Y3 -- Không --> Y5[Nêu rõ số hóa đơn lỗi / thiếu mặt hàng]
@@ -201,8 +234,10 @@ sequenceDiagram
     LD->>SV: phatHanhHoaDon #3
     SV-->>LD: SOHOADON 124
     LD->>S: Ghi chốt {01/07, parislinhdam, 124, xong}
-    Note over LD: Nhắc: chuyển sang Kim Giang (đăng nhập lại), cùng ngày 01/07
+    LD->>S: Ghi lệnh chuyển {Kim Giang, 01/07}
+    Note over LD: Tự chuyển sang Kim Giang sau 8 giây (đăng nhập lại)
 
+    KG->>S: Đọc lệnh chuyển — mở Phát hành ngày 01/07, xóa lệnh
     KG->>S: Đọc chốt — Linh Đàm xong 01/07 tới 124
     Note over KG: Không cảnh báo: cùng ngày, cơ sở kia đã xong
     KG->>SV: phatHanhHoaDon #1
@@ -267,4 +302,7 @@ chủ — quá hạn không bao giờ được kết luận là chưa phát hàn
 | Trích bảng đối chiếu khi import | `content.js` — `importStatementFile`, sau khi parse |
 | Cờ thứ tự cơ sở (dùng chung, mặc định `parislinhdam`) | `mapping-store.js` + UI ở bước 5 |
 | Kiểm tra liên tục sau lô | `content.js` — sau vòng lặp, đọc `issuedInvoiceBook` |
+| Bước kế tiếp sau lô | `issue-coordination.js` — `nextHandoff` |
+| Lệnh chuyển cơ sở (dùng chung) | `mapping-store.js` — `loadIssueHandoff`/`saveIssueHandoff` |
+| Đếm ngược, Ở lại/Chuyển ngay, mở đúng ngày ở cơ sở đích | `content.js` — `promptIssueHandoff`, `stayAfterIssue`, `followIssueHandoff`, `resumeIssueHandoff` (gọi trong `init`) |
 | Ghi sổ từng hóa đơn | `content.js` — `InvoiceIssuedBook.record` + `saveIssuedInvoices` (giữ nguyên) |
