@@ -64,6 +64,8 @@ function makeBox({ saveError = null, serverSaved = true }) {
     "function findStatementTransaction(id) { return (statementDataset.transactions || []).find(item => String(item.id) === String(id)); }",
     fn("verificationFailureText"),
     fn("isUncertainSaveError"),
+    "const GRAND_OVERRIDE_MAX_DIFF = 100; const formatMoney = value => String(value);",
+    fn("planGrandMismatchError"),
     fn("saveBatchEntryViaApi"),
     "this.save = saveBatchEntryViaApi; this.isUncertain = isUncertainSaveError;",
     "this.state = () => ({ transaction: statementDataset.transactions[0], entry: batchPlans[0] });"

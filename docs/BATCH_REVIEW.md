@@ -51,6 +51,14 @@ Nút **Lưu API N phiếu đã Accept** xử lý tuần tự, dừng ở lỗi �
 - Tab phụ gặp lỗi (không có phòng trống, không áp được phương án…) thì báo về ngay; tab gốc dừng lô với đúng lý do.
 - Gỡ chặn: kiểm tra danh sách Bán hàng ngày đó. Có phiếu rồi → **Đặt lại** giao dịch và **Tạo Batch Review** để gắn đúng phiếu; chưa có → **Đặt lại** rồi chạy lại.
 
+## Mức "Lập ở …" (làm tròn VAT)
+
+- Sao kê không biểu diễn được theo VAT 10% của website thì người dùng chọn một mức "Lập ở …" (`acceptedGrandOverride`). Mọi ca thật đều lệch đúng **−1đ** (46 giao dịch Linh Đàm T7).
+- Từ 1.29.22 mức này chỉ được dùng khi lệch sao kê không quá **100đ** (`GRAND_OVERRIDE_MAX_DIFF`). Mức lệch xa hơn là bị gán nhầm: Batch Review bỏ qua nó, Lưu API (phiếu có sẵn, phiếu mới, tab phụ) chặn mọi phương án có tổng lệch sao kê quá ngưỡng, bảng Batch Review và sao kê hiện cảnh báo đỏ.
+- Nút "Lập ở …" và mọi nút khác trên dòng Batch Review tìm giao dịch theo **mã giao dịch**, không theo vị trí dòng; chỉ nhận mức có trong danh sách của chính giao dịch đó, và khóa các nút "Lập ở" tới khi tính lại xong.
+- Ca lỗi thật (Linh Đàm, phát hiện 05/10/2026): lúc tính lại riêng một giao dịch, dòng đó tạm rút khỏi `batchPlans` nên các dòng sau dồn lên một chỗ trong khi bảng cũ vẫn hiển thị; bấm lại nút "Lập ở" đã gán mức của dòng trên sang dòng dưới — 01/07 dòng 5 → 6 → 7, 04/07 dòng 32 → 33, 16/07 dòng 124 → 125. Bốn phiếu HD0126070016/005/058/268 bị lưu và đối soát ở tổng sai (chưa phát hành HĐĐT).
+- Sửa giao dịch đã lưu sai tổng: ở bảng sao kê, dòng đó có nút **Hoàn kho & lập lại** (xem `RESTOCK.md`).
+
 ## Phiên làm việc
 
 - Phiên Batch Review (danh sách phương án, khoảng ngày, giới hạn, giao dịch đang tạo phiếu mới) được lưu vào `chrome.storage.local` và khôi phục khi tải lại trang. Phiên chỉ lưu `transactionId`; dữ liệu giao dịch được liên kết lại với bản sao kê mới nhất.

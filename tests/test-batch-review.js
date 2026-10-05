@@ -189,6 +189,7 @@ vm.runInContext(
   `${extractConst("LARGE_STATEMENT_MIN_SINGING_MINUTES")}; ${extractConst("LARGE_STATEMENT_THRESHOLD")}; ` +
   `${extractFunction("minimumSingingMinutes")}; ` +
   `const formatMoney = value => String(value); ` +
+  `${extractConst("GRAND_OVERRIDE_MAX_DIFF")} ${extractFunction("grandOverrideFor")}; ` +
   `${extractFunction("newInvoicePlanValidationError")}; ` +
   "this.newInvoicePlanValidationError = newInvoicePlanValidationError;",
   sandbox
@@ -1503,7 +1504,7 @@ async function runBuildBatchReview({ transactions, issuedMatches, issuedThrows, 
     ensureWebsiteRoomRates: async () => ""
   };
   vm.createContext(box);
-  vm.runInContext(`${extractConst("MAX_BATCH_TRANSACTIONS")}; ${extractFunction("buildBatchReview")}; this.buildBatchReview = buildBatchReview;`, box);
+  vm.runInContext(`${extractConst("MAX_BATCH_TRANSACTIONS")}; ${extractConst("GRAND_OVERRIDE_MAX_DIFF")} ${extractFunction("grandOverrideFor")}; ${extractFunction("buildBatchReview")}; this.buildBatchReview = buildBatchReview;`, box);
   await box.buildBatchReview();
   if (box.lastStatus?.kind !== "ok") {
     throw new Error(`Batch Review test flow did not complete: ${box.lastStatus?.message || "unknown error"}`);
@@ -1992,6 +1993,7 @@ vm.runInContext(
   // Giờ ra phải dùng hàm THẬT: stub trả chuỗi cố định làm mọi phép kiểm tra
   // thời lượng trong sandbox này trở nên vô nghĩa.
   `${extractFunction("recommendCheckOut")}; this.recommendCheckOut = recommendCheckOut; ` +
+  `${extractConst("GRAND_OVERRIDE_MAX_DIFF")} ${extractFunction("grandOverrideFor")}; ` +
   `${extractFunction("newInvoicePlanValidationError")}; ` +
   `${extractConst("NEW_INVOICE_CHECKIN_START_MINUTES")} ${extractConst("NEW_INVOICE_CHECKIN_STEP_MINUTES")} ` +
   `${extractConst("NEW_INVOICE_CHECKIN_LAST_MINUTES")} const NEW_INVOICE_CHECKIN_SLOT_COUNT = Math.floor((NEW_INVOICE_CHECKIN_LAST_MINUTES - NEW_INVOICE_CHECKIN_START_MINUTES) / NEW_INVOICE_CHECKIN_STEP_MINUTES) + 1; ` +

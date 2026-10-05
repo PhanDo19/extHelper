@@ -14,6 +14,15 @@ Nút **Hoàn kho theo khoảng ngày** nằm ở màn hình **Kho vật lý**.
    Batch Review hiện tại.
 4. Bấm **Tạo Batch Review** để lập lại phương án.
 
+## Hoàn kho riêng một giao dịch lưu sai tổng
+
+Từ 1.29.22, giao dịch đã đối soát mà mức "Lập ở" bị gán nhầm (lệch sao kê quá 100đ) có nút **Hoàn kho & lập lại** ngay trên dòng sao kê:
+
+- Trả về kho đúng phần sổ đối soát đã trừ cho **riêng giao dịch đó**; các giao dịch khác cùng ngày không bị đụng (khác Hoàn kho theo khoảng ngày).
+- Xóa mức "Lập ở" sai và ghi chú "do website làm tròn VAT" sai; giao dịch về Chờ xử lý nhưng **giữ liên kết phiếu**.
+- Tạo Batch Review cho ngày đó: phiếu đang gắn được ưu tiên đầu tiên, nên Accept + Lưu API sẽ lưu lại **chính phiếu đó** theo đúng số tiền sao kê.
+- Hoàn kho theo khoảng ngày cũng xóa mức "Lập ở" bị gán nhầm của các giao dịch được hoàn.
+
 ## Phạm vi
 
 Chỉ tác động dữ liệu **trong extension**: tồn kho riêng của cơ sở, kho vật lý dùng

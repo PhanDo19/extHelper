@@ -546,6 +546,8 @@
 .it-transaction-head strong { color: #18365f; font-size: 13px; white-space: nowrap; }
 .it-batch-transaction small { display: block; margin-top: 3px; overflow: hidden; color: #66758a; text-overflow: ellipsis; white-space: nowrap; }
 .it-batch-transaction small.it-override-note { color: #8a5500; font-weight: 700; }
+/* Mức "Lập ở" bị gán nhầm từ giao dịch khác (lệch sao kê quá mức làm tròn VAT). */
+.it-batch-transaction small.it-override-invalid, #it-statement-admin small.it-override-invalid { color: #b42318; font-weight: 700; }
 .it-new-invoice-tag { display: inline-block; padding: 2px 7px; border-radius: 999px; color: #805600; background: #fff3d6; font-size: 11px; font-weight: 700; }
 /* Ô Phương án: Hàng/Giờ/VAT thẳng cột số, giờ vào–ra một dòng. */
 .it-plan-breakdown { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; max-width: 170px; }

@@ -675,7 +675,7 @@
     // đây so với sao kê gốc nên phương án lệch đúng 1đ bị hủy kèm luôn mức đã
     // chọn, giao dịch quay về "không biểu diễn được" và không bao giờ tạo được
     // phiếu (Kim Giang 03/10/2026, sao kê 1.282.000đ).
-    const grand = Math.round(Number(transaction?.acceptedGrandOverride || transaction?.credit || plan.targetGrand || 0));
+    const grand = Math.round(Number(grandOverrideFor(transaction) || transaction?.credit || plan.targetGrand || 0));
     const goods = Math.round(Number(plan.goods || 0));
     const hour = Math.round(Number(plan.hour || 0));
     const hourFromTime = Math.round(Number(plan.hourFromTime || 0));
@@ -4786,20 +4786,73 @@
           (room ? `<br><small>${escapeHtml(room)}</small>` : "") +
           `<br><button class="it-open-invoice" type="button" title="Mở phiếu ${escapeHtml(invoiceNo)} trên website">Mở phiếu</button>`
         : "—";
-      return `<tr data-transaction-id="${escapeHtml(item.id)}" class="${item.blockedNote ? "it-blocked" : ""}">
+      // Mức "Lập ở" lệch sao kê quá mức làm tròn VAT là bị gán nhầm: ghi chú
+      // "do website làm tròn VAT" khi đó là SAI, phải báo rõ và chỉ cách sửa.
+      const invalidOverride = hasInvalidGrandOverride(item);
+      const overrideAmount = Math.round(Number(item.acceptedGrandOverride) || 0);
+      const noteHtml = invalidOverride
+        ? `<br><small class="it-blocked-note it-override-invalid">⚠ Mức "Lập ở ${formatMoney(overrideAmount)}đ" lệch sao kê ` +
+          `${formatMoney(overrideAmount - Math.round(Number(item.credit) || 0))}đ — bị gán nhầm từ giao dịch khác. ` +
+          (item.status === "done"
+            ? `Phiếu ${escapeHtml(invoiceNo || "")} đã lưu sai tổng: bấm "Hoàn kho & lập lại".`
+            : 'Bấm "Dùng lại tổng sao kê" ở Batch Review rồi tính lại.') + "</small>"
+        : (item.blockedNote ? `<br><small class="it-blocked-note" title="${escapeHtml(item.blockedNote)}">⚠ ${escapeHtml(item.blockedNote)}</small>` : "");
+      return `<tr data-transaction-id="${escapeHtml(item.id)}" class="${item.blockedNote || invalidOverride ? "it-blocked" : ""}">
       <td><b>${escapeHtml(item.transactionDate)}</b><br><small>${escapeHtml(item.requestedAt)}</small></td>
       <td class="it-statement-description" title="${escapeHtml(item.description)}"><span>${escapeHtml(item.description)}</span>${item.reference ? `<small>${escapeHtml(item.reference)}</small>` : ""}</td>
       <td class="it-statement-invoice">${invoiceCell}</td>
-      <td class="it-money">${formatMoney(item.credit)}</td><td><span class="it-bank-status ${escapeHtml(item.status)}">${escapeHtml(statusLabels[item.status] || item.status)}</span>${item.blockedNote ? `<br><small class="it-blocked-note" title="${escapeHtml(item.blockedNote)}">⚠ ${escapeHtml(item.blockedNote)}</small>` : ""}</td>
+      <td class="it-money">${formatMoney(item.credit)}</td><td><span class="it-bank-status ${escapeHtml(item.status)}">${escapeHtml(statusLabels[item.status] || item.status)}</span>${noteHtml}</td>
       <td>${item.status === "review"
         ? '<button class="it-confirm-revenue" type="button" title="Xác nhận đây là doanh thu và đưa vào luồng lập phiếu">Là doanh thu</button>'
-        : ""}<button class="it-use-transaction" type="button">Chọn</button><button class="it-skip-transaction" type="button">Bỏ qua</button>${["planned", "batch_ready"].includes(item.status) && (invoiceNo || item.pendingPlan || item.batchApprovedPlan) ? '<button class="it-reset-statement-transaction" type="button" title="Gỡ phiếu đã mất hoặc phương án cũ và đưa giao dịch về Chờ xử lý">Làm lại</button>' : ""}</td></tr>`;
+        : ""}<button class="it-use-transaction" type="button">Chọn</button><button class="it-skip-transaction" type="button">Bỏ qua</button>${["planned", "batch_ready"].includes(item.status) && (invoiceNo || item.pendingPlan || item.batchApprovedPlan) ? '<button class="it-reset-statement-transaction" type="button" title="Gỡ phiếu đã mất hoặc phương án cũ và đưa giao dịch về Chờ xử lý">Làm lại</button>' : ""}${item.status === "done" && invalidOverride ? '<button class="it-restock-transaction" type="button" title="Trả về kho đúng số đã trừ cho giao dịch này, xóa mức lập sai và đưa về Chờ xử lý; lần lập lại sẽ lưu lại chính phiếu này theo đúng số tiền sao kê">Hoàn kho & lập lại</button>' : ""}</td></tr>`;
     }).join("") || '<tr><td colspan="6">Không có giao dịch phù hợp.</td></tr>';
     body.querySelectorAll(".it-confirm-revenue").forEach(button => button.addEventListener("click", confirmRevenueTransaction));
     body.querySelectorAll(".it-use-transaction").forEach(button => button.addEventListener("click", useBankTransaction));
     body.querySelectorAll(".it-skip-transaction").forEach(button => button.addEventListener("click", skipBankTransaction));
     body.querySelectorAll(".it-open-invoice").forEach(button => button.addEventListener("click", openStatementInvoice));
     body.querySelectorAll(".it-reset-statement-transaction").forEach(button => button.addEventListener("click", resetStatementTransaction));
+    body.querySelectorAll(".it-restock-transaction").forEach(button => button.addEventListener("click", restockOneTransaction));
+  }
+
+  // Sửa MỘT giao dịch đã đối soát nhưng lưu sai tổng vì mức "Lập ở" bị gán nhầm:
+  // hoàn kho đúng phần sổ đã trừ, xóa mức sai, đưa về Chờ xử lý nhưng GIỮ liên
+  // kết phiếu để Batch Review lưu lại chính phiếu đó với đúng số tiền sao kê.
+  // Không đụng các giao dịch khác cùng ngày (khác Hoàn kho theo khoảng ngày).
+  async function restockOneTransaction(event) {
+    const row = event.target.closest("tr");
+    const transaction = findStatementTransaction(row?.dataset.transactionId);
+    try {
+      assertRuntimeContext();
+      if (!transaction || transaction.status !== "done") throw new Error("Chỉ hoàn kho được giao dịch đã đối soát.");
+      if (!hasInvalidGrandOverride(transaction)) throw new Error("Giao dịch này không có mức lập bị gán nhầm.");
+      const matches = ledgerEntriesInDateRange("", "")
+        .filter(({ transaction: linked }) => String(linked?.id) === String(transaction.id));
+      if (!matches.length) throw new Error("Không thấy giao dịch này trong sổ đối soát để hoàn kho.");
+      const preview = summarizeRestockPreview(matches);
+      const invoiceNo = String(transaction.invoiceNo || "");
+      const confirmed = window.confirm(
+        `Hoàn kho giao dịch ${transaction.transactionDate} · ${formatMoney(transaction.credit)}đ (phiếu ${invoiceNo || "?"})?\n\n` +
+        `Phiếu đang lưu ở ${formatMoney(transaction.acceptedGrandOverride)}đ vì mức "Lập ở" bị gán nhầm.\n` +
+        `Sẽ trả về kho:\n${preview.slice(0, 12).map(item => `  ${item.name}: +${item.qty}`).join("\n")}\n\n` +
+        "Giao dịch về Chờ xử lý, giữ liên kết phiếu: Tạo Batch Review cho ngày đó rồi Accept và Lưu API để lưu lại " +
+        "chính phiếu này theo đúng số tiền sao kê. Các giao dịch khác cùng ngày không bị đụng."
+      );
+      if (!confirmed) return setStatus("Đã hủy hoàn kho; tồn kho và sao kê không thay đổi.", "warn");
+      await restockLedgerEntries(matches, { keepInvoiceLink: true });
+      batchPlans = batchPlans.filter(entry => String(entry.transactionId) !== String(transaction.id));
+      await saveBatchUiSession({ panelOpen: true });
+      refreshMappingState();
+      renderStatementRows();
+      renderStatementAdmin();
+      renderBatchPlans();
+      setStatus(
+        `Đã hoàn kho giao dịch ${transaction.transactionDate} · ${formatMoney(transaction.credit)}đ và xóa mức lập sai. ` +
+        `Tạo Batch Review cho ngày ${transaction.transactionDate} để lưu lại phiếu ${invoiceNo} theo đúng số tiền.`,
+        "ok"
+      );
+    } catch (error) {
+      setStatus(`Không hoàn kho được: ${error.message} Tồn kho và sao kê chưa thay đổi.`, "error");
+    }
   }
 
   async function resetStatementTransaction(event) {
@@ -4872,7 +4925,7 @@
       if (!target) {
         const issued = await request("findIssuedInvoiceByAmount", {
           dateKey: transaction.transactionDate,
-          amount: transaction.acceptedGrandOverride || transaction.credit
+          amount: grandOverrideFor(transaction) || transaction.credit
         });
         target = (issued.rows || issued.matches || []).find(item => String(item.invoiceNo) === invoiceNo);
       }
@@ -5189,7 +5242,10 @@
 
   // Trả số lượng về kho và đưa giao dịch về "chưa xử lý" để Batch Review lập
   // lại. Ghi một lần xuống storage để không có trạng thái nửa vời khi lỗi.
-  async function restockLedgerEntries(matches) {
+  // `keepInvoiceLink`: giữ số phiếu trên giao dịch để lần lập lại dùng lại CHÍNH
+  // phiếu đó (rankInvoiceCandidates đưa phiếu đang gắn lên đầu) và lưu lại với
+  // đúng số tiền — dùng khi sửa một giao dịch đã lưu sai tổng.
+  async function restockLedgerEntries(matches, options = {}) {
     if (!matches.length) throw new Error("Không có giao dịch đã đối soát nào trong khoảng ngày đã chọn.");
     // Đọc lại kho chung ngay trước khi ghi: tab/cơ sở khác có thể vừa đổi tồn.
     const latestSharedWarehouse = InvoiceSharedWarehouse.normalize(
@@ -5213,9 +5269,19 @@
       transaction.status = "pending";
       transaction.restockedAt = new Date().toISOString();
       transaction.restockedNote = transaction.invoiceNo
-        ? `Đã hoàn kho; phiếu ${transaction.invoiceNo} vẫn còn trên website, cần kiểm tra/xóa thủ công.`
+        ? (options.keepInvoiceLink
+          ? `Đã hoàn kho; lần lập lại sẽ lưu lại phiếu ${transaction.invoiceNo} theo đúng số tiền sao kê.`
+          : `Đã hoàn kho; phiếu ${transaction.invoiceNo} vẫn còn trên website, cần kiểm tra/xóa thủ công.`)
         : "Đã hoàn kho để lập lại phương án.";
-      transaction.invoiceNo = "";
+      if (!options.keepInvoiceLink) transaction.invoiceNo = "";
+      // Mức "Lập ở" bị gán nhầm không được sống qua lần lập lại; ghi chú lệch cũ
+      // (kể cả "do website làm tròn VAT") sẽ được Batch Review ghi lại nếu còn đúng.
+      if (hasInvalidGrandOverride(transaction)) {
+        delete transaction.acceptedGrandOverride;
+        delete transaction.acceptedGrandOverrideAt;
+      }
+      transaction.blockedNote = "";
+      transaction.blockedAt = "";
       transaction.verifiedAt = "";
       transaction.ledgerId = "";
       transaction.reconciledAt = "";
@@ -8146,7 +8212,7 @@
           } else {
             const slotIndex = takeNewInvoiceSlot(transaction.transactionDate);
             const plan = chooseNewInvoiceRoomPlan(
-              transaction, workingInventory, productUsage, slotIndex, transaction.acceptedGrandOverride
+              transaction, workingInventory, productUsage, slotIndex, grandOverrideFor(transaction)
             );
             noteBlockedTransaction(transaction, plan);
             batchPlans.push({
@@ -8304,7 +8370,7 @@
             scan = rebasedCandidateScan;
           }
           const plan = calculateBatchPlan(
-            scan, transaction, workingInventory, productUsage, transaction.acceptedGrandOverride
+            scan, transaction, workingInventory, productUsage, grandOverrideFor(transaction)
           );
           noteBlockedTransaction(transaction, plan);
           batchPlans.push({
@@ -8569,11 +8635,14 @@
           ${planItems.length ? detailToggleHtml(detailId, `${usedItems || planItems.length} mã`) : ""}`;
       const overrideGrand = Math.round(Number(entry.transaction.acceptedGrandOverride) || 0);
       return `<tr class="it-batch-row ${escapeHtml(entry.status)}">
-        <td><input class="it-batch-select" type="checkbox" data-index="${index}" ${entry.status === "ready" ? "checked" : "disabled"}></td>
+        <td><input class="it-batch-select" type="checkbox" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}" ${entry.status === "ready" ? "checked" : "disabled"}></td>
         <td class="it-batch-transaction">
           <div class="it-transaction-head"><b>${escapeHtml(entry.transaction.transactionDate)}</b><strong>${formatMoney(entry.transaction.credit)}</strong></div>
           ${overrideGrand && overrideGrand !== Math.round(Number(entry.transaction.credit) || 0)
-            ? `<small class="it-override-note">lập ở ${formatMoney(overrideGrand)}đ</small>` : ""}
+            ? (hasInvalidGrandOverride(entry.transaction)
+              ? `<small class="it-override-note it-override-invalid" title="Mức này lệch sao kê quá mức làm tròn VAT nên bị gán nhầm; extension không dùng nó.">⚠ mức lập ở ${formatMoney(overrideGrand)}đ bị gán nhầm — không dùng</small>`
+              : `<small class="it-override-note">lập ở ${formatMoney(overrideGrand)}đ</small>`)
+            : ""}
           <small title="${escapeHtml(entry.transaction.description || "")}">${escapeHtml(entry.transaction.description || "")}</small>
         </td>
         <td>${plan.invoiceNo || entry.transaction.invoiceNo
@@ -8587,26 +8656,26 @@
           ${entry.reason ? `<small class="it-batch-reason">${escapeHtml(entry.reason)}</small>` : ""}
         </td>
         <td class="it-row-actions">
-          ${entry.status === "needs_choice" && (entry.candidates || []).length ? `<select class="it-unissued-choice" data-index="${index}">
+          ${entry.status === "needs_choice" && (entry.candidates || []).length ? `<select class="it-unissued-choice" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">
             <option value="">— Chọn phiếu chưa xuất —</option>
             ${(entry.candidates || []).map(candidate => `<option value="${escapeHtml(candidate.invoiceNo)}">${escapeHtml(candidate.invoiceNo)} · ${formatMoney(candidate.grandTotal)}</option>`).join("")}
           </select>` : ""}
-          ${entry.status === "already_issued" && (entry.candidates || []).length > 1 ? `<select class="it-issued-choice" data-index="${index}">
+          ${entry.status === "already_issued" && (entry.candidates || []).length > 1 ? `<select class="it-issued-choice" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">
             <option value="">— Chọn HĐ đã xuất —</option>
             ${(entry.candidates || []).map(candidate => `<option value="${escapeHtml(candidate.invoiceNo)}" ${String(candidate.invoiceNo) === String(entry.plan?.invoiceNo || "") ? "selected" : ""}>${escapeHtml(candidate.invoiceNo)} · ${formatMoney(candidate.grandTotal)}</option>`).join("")}
           </select>` : ""}
-          ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<button class="it-confirm-issued it-act-main" type="button" data-index="${index}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
-          ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<button class="it-save-new-api it-act-main" type="button" data-index="${index}">Tạo, lưu API và đối soát</button>` : ""}
+          ${entry.status === "already_issued" && entry.plan?.invoiceNo ? `<button class="it-confirm-issued it-act-main" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">Xác nhận đã có HĐ ${escapeHtml(entry.plan.invoiceNo)}</button>` : ""}
+          ${entry.status === "batch_ready" && plan.requiresNewInvoice ? `<button class="it-save-new-api it-act-main" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">Tạo, lưu API và đối soát</button>` : ""}
           ${entry.status === "batch_ready" && !plan.requiresNewInvoice
-            ? `<button class="it-save-api it-act-main" type="button" data-index="${index}">Lưu API & đối soát</button>`
+            ? `<button class="it-save-api it-act-main" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">Lưu API & đối soát</button>`
             : ""}
           ${entry.status === "planned"
-            ? `<button class="it-verify-batch it-act-main" type="button" data-index="${index}">Đối soát sau lưu${plan.requiresNewInvoice ? " & cập nhật kho" : ""}</button>`
+            ? `<button class="it-verify-batch it-act-main" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">Đối soát sau lưu${plan.requiresNewInvoice ? " & cập nhật kho" : ""}</button>`
             : ""}
           ${entry.status === "lookup_error" ? `<button class="it-retry-batch it-act-main" type="button">Thử dò lại</button>` : ""}
           ${(entry.plan?.reachableAlternatives || []).length ? entry.plan.reachableAlternatives.map(value => {
             const diff = value - Number(entry.transaction.credit || 0);
-            return `<button class="it-apply-rounded it-act-main" type="button" data-index="${index}" data-grand="${value}" ` +
+            return `<button class="it-apply-rounded it-act-main" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}" data-grand="${value}" ` +
               `title="Lập hóa đơn ở ${formatMoney(value)}đ và ghi chú phần lệch ${diff > 0 ? "+" : ""}${formatMoney(diff)}đ">` +
               `Lập ở ${formatMoney(value)}đ (${diff > 0 ? "+" : ""}${formatMoney(diff)}đ)</button>`;
           }).join("") : ""}
@@ -8616,16 +8685,16 @@
             // thì tab đó không có gì để áp dụng và đứng yên.
             ? ((entry.plan?.reachableAlternatives || []).length
               ? `<small class="it-action-hint">Chọn mức "Lập ở …" → Accept → Lưu API: phiếu mới được tạo bằng API ngay tại tab này, không mở tab phụ.</small>`
-              : `<button class="it-open-pos" type="button" data-index="${index}">Mở tab Bán hàng mới để tạo phiếu</button>`)
+              : `<button class="it-open-pos" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">Mở tab Bán hàng mới để tạo phiếu</button>`)
             : ""}
           ${["batch_ready", "planned"].includes(entry.status) && !plan.requiresNewInvoice
-            ? `<button class="it-apply-accepted" type="button" data-index="${index}">${entry.status === "planned" ? "Mở và áp dụng lại phương án" : "Mở và áp dụng phương án"}</button>`
+            ? `<button class="it-apply-accepted" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}">${entry.status === "planned" ? "Mở và áp dụng lại phương án" : "Mở và áp dụng phương án"}</button>`
             : ""}
           ${["batch_ready", "planned"].includes(entry.status)
-            ? `<button class="it-recalculate-accepted" type="button" data-index="${index}" title="${entry.status === "planned" ? "Bỏ dữ liệu đang chờ lưu trên form, hoàn reservation và tính phương án khác" : "Bỏ phương án hiện tại, hoàn reservation tồn kho và tính một tổ hợp khác"}">Tính toán lại</button>`
+            ? `<button class="it-recalculate-accepted" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}" title="${entry.status === "planned" ? "Bỏ dữ liệu đang chờ lưu trên form, hoàn reservation và tính phương án khác" : "Bỏ phương án hiện tại, hoàn reservation tồn kho và tính một tổ hợp khác"}">Tính toán lại</button>`
             : ""}
           ${entry.transaction.acceptedGrandOverride && !["planned", "done"].includes(entry.status)
-            ? `<button class="it-reset-rounded" type="button" data-index="${index}" ` +
+            ? `<button class="it-reset-rounded" type="button" data-index="${index}" data-transaction-id="${escapeHtml(String(entry.transactionId || ""))}" ` +
               `title="Xóa mức tổng điều chỉnh và tính lại từ đúng số tiền sao kê">Dùng lại tổng sao kê ${formatMoney(entry.transaction.credit)}đ</button>`
             : ""}
         </td>
@@ -8693,7 +8762,7 @@
 
   async function verifyBatchSavedInvoice(event) {
     const button = event.target.closest("button");
-    const index = Number(button?.dataset.index);
+    const index = batchIndexFromButton(button);
     const entry = batchPlans[index];
     const transaction = findStatementTransaction(entry?.transactionId);
     const plan = transaction?.pendingPlan || entry?.plan;
@@ -8788,7 +8857,7 @@
   }
 
   async function chooseUnissuedInvoice(event) {
-    const index = Number(event.target.dataset.index);
+    const index = batchIndexFromButton(event.target);
     const entry = batchPlans[index];
     const invoiceNo = String(event.target.value || "");
     if (!entry || entry.status !== "needs_choice" || !invoiceNo) return;
@@ -8807,7 +8876,7 @@
   }
 
   async function chooseIssuedInvoice(event) {
-    const index = Number(event.target.dataset.index);
+    const index = batchIndexFromButton(event.target);
     const entry = batchPlans[index];
     const invoiceNo = String(event.target.value || "");
     if (!entry || entry.status !== "already_issued") return;
@@ -8822,7 +8891,7 @@
 
   async function approveBatchPlans() {
     const selectedIndexes = Array.from(document.querySelectorAll(".it-batch-select:checked"))
-      .map(input => Number(input.dataset.index));
+      .map(input => batchIndexFromButton(input));
     if (!selectedIndexes.length) return setStatus("Hãy chọn ít nhất một phương án sẵn sàng.", "error");
     for (const index of selectedIndexes) {
       const entry = batchPlans[index];
@@ -8852,17 +8921,54 @@
     );
   }
 
+  // Mức "Lập ở …" chỉ để bù phần website làm tròn VAT: mọi ca thật đều lệch
+  // đúng -1đ so với sao kê (46 giao dịch Linh Đàm T7). Mức lệch xa hơn ngưỡng
+  // này là bị gán nhầm và KHÔNG BAO GIỜ được dùng để lập hay lưu hóa đơn.
+  const GRAND_OVERRIDE_MAX_DIFF = 100;
+
+  function grandOverrideFor(transaction) {
+    const override = Math.round(Number(transaction?.acceptedGrandOverride) || 0);
+    if (!override) return 0;
+    const credit = Math.round(Number(transaction?.credit) || 0);
+    return Math.abs(override - credit) <= GRAND_OVERRIDE_MAX_DIFF ? override : 0;
+  }
+
+  function hasInvalidGrandOverride(transaction) {
+    return Math.round(Number(transaction?.acceptedGrandOverride) || 0) > 0 && !grandOverrideFor(transaction);
+  }
+
+  // Tổng của phương án sắp lưu phải khớp sao kê (cho phép phần làm tròn VAT).
+  function planGrandMismatchError(plan, transaction) {
+    const target = Math.round(Number(plan?.grand ?? plan?.targetGrand) || 0);
+    const credit = Math.round(Number(transaction?.credit) || 0);
+    if (!target || !credit || Math.abs(target - credit) <= GRAND_OVERRIDE_MAX_DIFF) return "";
+    return `Phương án ${plan?.invoiceNo || "phiếu mới"} lập ở ${formatMoney(target)}đ nhưng sao kê là ${formatMoney(credit)}đ ` +
+      `(lệch ${target > credit ? "+" : ""}${formatMoney(target - credit)}đ, quá mức làm tròn VAT): không lưu. ` +
+      'Bấm "Dùng lại tổng sao kê" rồi Tính toán lại giao dịch này.';
+  }
+
   // Số tiền sao kê không tạo được hóa đơn khớp tuyệt đối (website làm tròn VAT).
   // Người dùng chọn một mức gần nhất; lựa chọn được lưu trên giao dịch để lần
   // tính lại nào cũng dùng đúng mức đó.
   async function acceptRoundedGrand(event) {
     const button = event.target.closest("button");
-    const entry = batchPlans[Number(button?.dataset.index)];
+    const entry = batchPlans[batchIndexFromButton(button)];
     const grand = Math.round(Number(button?.dataset.grand) || 0);
     const transaction = findStatementTransaction(entry?.transactionId);
     if (!transaction || !grand) {
-      return setStatus("Không xác định được giao dịch hoặc mức tiền đã chọn.", "error");
+      return setStatus("Không xác định được giao dịch hoặc mức tiền đã chọn (bảng đang tính lại? hãy chờ xong rồi bấm).", "error");
     }
+    // Chỉ nhận một mức có trong danh sách của CHÍNH giao dịch này và sát sao kê.
+    const allowed = (entry.plan?.reachableAlternatives || []).map(value => Math.round(Number(value) || 0));
+    if (!allowed.includes(grand) || Math.abs(grand - Math.round(Number(transaction.credit) || 0)) > GRAND_OVERRIDE_MAX_DIFF) {
+      return setStatus(
+        `Mức ${formatMoney(grand)}đ không thuộc các mức lập được của giao dịch ${transaction.transactionDate} · ` +
+        `${formatMoney(transaction.credit)}đ; không đổi gì.`,
+        "error"
+      );
+    }
+    // Khóa mọi nút "Lập ở" tới khi tính lại xong, để bấm lặp không chạy chồng.
+    document.querySelectorAll(".it-apply-rounded").forEach(item => { item.disabled = true; });
     const difference = grand - Math.round(Number(transaction.credit) || 0);
     transaction.acceptedGrandOverride = grand;
     transaction.acceptedGrandOverrideAt = new Date().toISOString();
@@ -8888,7 +8994,7 @@
 
   async function resetRoundedGrand(event) {
     const button = event.target.closest("button");
-    const entry = batchPlans[Number(button?.dataset.index)];
+    const entry = batchPlans[batchIndexFromButton(button)];
     const transaction = findStatementTransaction(entry?.transactionId);
     if (!transaction?.acceptedGrandOverride) {
       return setStatus("Giao dịch này không có mức tổng điều chỉnh để xóa.", "error");
@@ -8913,7 +9019,7 @@
 
   async function recalculateAcceptedBatchPlan(event) {
     const button = event.target.closest("button");
-    const index = Number(button?.dataset.index);
+    const index = batchIndexFromButton(button);
     const entry = batchPlans[index];
     const transaction = (statementDataset.transactions || []).find(item =>
       String(item.id) === String(entry?.transactionId || "")
@@ -8973,7 +9079,7 @@
 
   async function applyAcceptedBatchPlan(event) {
     const button = event.target.closest("button");
-    const index = Number(button?.dataset.index);
+    const index = batchIndexFromButton(button);
     const entry = batchPlans[index];
     // Reconciliation replaces statementDataset with a cloned snapshot. Never
     // mutate entry.transaction here because it may belong to the previous
@@ -9079,6 +9185,18 @@
     }
   }
 
+  // Nút trên dòng Batch Review tìm giao dịch theo MÃ, không theo vị trí. Lúc tính
+  // lại riêng một giao dịch, dòng đó tạm bị rút khỏi batchPlans nên các dòng sau
+  // dồn lên một chỗ trong khi bảng cũ vẫn hiển thị; bấm lại nút lúc đó từng gán
+  // mức "Lập ở" của dòng này sang dòng kế tiếp (Linh Đàm: 1.699.999đ của giao
+  // dịch 1.700.000đ rơi vào 4.155.000đ rồi 2.233.000đ). Không còn trong
+  // batchPlans thì trả -1 để thao tác dừng, không rơi sang dòng khác.
+  function batchIndexFromButton(button) {
+    const transactionId = String(button?.dataset?.transactionId || "");
+    if (transactionId) return batchPlans.findIndex(entry => String(entry.transactionId) === transactionId);
+    return Number(button?.dataset?.index);
+  }
+
   function batchButtonProxy(index, button) {
     if (button) return button;
     return {
@@ -9146,6 +9264,9 @@
     let transaction = findStatementTransaction(entry.transactionId);
     if (!transaction) throw new Error("Không tìm thấy giao dịch sao kê của dòng đã chọn.");
 
+    // Tổng phương án phải khớp sao kê (trừ phần làm tròn VAT) TRƯỚC khi mở phiếu.
+    const grandMismatch = planGrandMismatchError(entry.plan || transaction.batchApprovedPlan, transaction);
+    if (grandMismatch) throw new Error(grandMismatch);
     const proxy = batchButtonProxy(index, button);
     const applyResult = await openAcceptedInvoiceForApi(index, proxy);
     entry = batchPlans[index];
@@ -9296,6 +9417,8 @@
     const plan = entry.plan || transaction.batchApprovedPlan;
     const planError = newInvoicePlanValidationError(plan, transaction);
     if (planError) throw new Error(await discardInvalidNewInvoicePlan(transaction, planError));
+    const grandMismatch = planGrandMismatchError(plan, transaction);
+    if (grandMismatch) throw new Error(grandMismatch);
     // Bị chặn vì lần tạo trước đã gửi API: chỉ được gắn lại đúng phiếu đã cấp số
     // khi đọc lại thấy đã đóng bill khớp phương án; không thì ném lý do chặn.
     const submitted = newInvoiceAttemptBlockReason(transaction)
@@ -9552,6 +9675,8 @@
     const transactionId = String(entry.transactionId || "");
     const blockReason = newInvoiceAttemptBlockReason(findStatementTransaction(transactionId));
     if (blockReason) throw new Error(blockReason);
+    const grandMismatch = planGrandMismatchError(entry.plan, findStatementTransaction(transactionId));
+    if (grandMismatch) throw new Error(grandMismatch);
     // Chỉ tính lỗi worker ghi SAU mốc này; lỗi của lần chạy trước bị bỏ qua.
     const workerStartedAt = new Date().toISOString();
     const opened = await openPosForNewInvoice({ target: { dataset: { index: String(index) } } });
@@ -9642,7 +9767,7 @@
 
   async function saveNewAcceptedBatchPlanViaApi(event) {
     const button = event.target.closest("button");
-    const index = Number(button?.dataset.index);
+    const index = batchIndexFromButton(button);
     try {
       if (button) {
         button.disabled = true;
@@ -9670,7 +9795,7 @@
 
   async function saveAcceptedBatchPlanViaApi(event) {
     const button = event.target.closest("button");
-    const index = Number(button?.dataset.index);
+    const index = batchIndexFromButton(button);
     const transactionId = String(batchPlans[index]?.transactionId || "");
     try {
       if (button) {
@@ -10058,7 +10183,7 @@
   }
 
   async function confirmAlreadyIssued(event) {
-    const index = Number(event.target.dataset.index);
+    const index = batchIndexFromButton(event.target);
     const entry = batchPlans[index];
     if (!entry || entry.status !== "already_issued") return;
     const invoiceNo = entry.plan?.invoiceNo;
@@ -10109,7 +10234,7 @@
   }
 
   async function openPosForNewInvoice(event) {
-    const index = Number(event.target.dataset.index);
+    const index = batchIndexFromButton(event.target);
     const entry = batchPlans[index];
     if (!entry) return;
     const t = findStatementTransaction(entry.transactionId) || entry.transaction;

@@ -102,7 +102,8 @@ for (const legacy of ["unissuedRadio", "findInvoiceRowAcrossPages", "waitForInvo
 }
 
 for (const roundedGrandGuard of [
-  "amount: transaction.acceptedGrandOverride || transaction.credit",
+  // Mức "Lập ở" chỉ dùng khi sát sao kê (grandOverrideFor), không dùng mức bị gán nhầm.
+  "amount: grandOverrideFor(transaction) || transaction.credit",
   "async function resetRoundedGrand(event)",
   "delete transaction.acceptedGrandOverride",
   'table.querySelectorAll(".it-reset-rounded")'

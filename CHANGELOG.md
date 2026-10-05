@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.29.22 (2026-10-05)
+
+- **Sửa lỗi mức "Lập ở …" của một giao dịch bị gán sang giao dịch kế tiếp, khiến phiếu bị lưu và đối soát ở tổng sai.** Ca thật Linh Đàm: 01/07 dòng 6 (4.155.000đ) và dòng 7 (2.233.000đ) mang mức 1.699.999đ của dòng 5 (1.700.000đ); 04/07 dòng 33 (2.883.000đ) mang 3.734.999đ của dòng 32; 16/07 dòng 125 (2.152.000đ) mang 3.162.999đ của dòng 124. Bốn phiếu HD0126070016/005/058/268 đã lưu ở tổng sai (chưa phát hành HĐĐT); 42 mức Lập ở còn lại đều đúng −1đ.
+  - Nguyên nhân: tính lại riêng một giao dịch tạm rút dòng đó khỏi `batchPlans` nên các dòng sau dồn lên một chỗ trong khi bảng cũ vẫn hiển thị; nút "Lập ở" tìm dòng theo vị trí (`data-index`), bấm lại lúc đó rơi sang dòng kế.
+  - Mọi nút/ô chọn trên dòng Batch Review mang `data-transaction-id`; `batchIndexFromButton` tìm theo mã giao dịch (không còn trong `batchPlans` thì dừng, không rơi sang dòng khác).
+  - "Lập ở" chỉ nhận mức có trong danh sách của chính giao dịch, lệch sao kê ≤ 100đ, và khóa các nút "Lập ở" tới khi tính lại xong.
+  - Lưới an toàn: Batch Review không dùng mức Lập ở lệch sao kê quá 100đ (`grandOverrideFor`); Lưu API (phiếu có sẵn, phiếu mới, tab phụ) chặn phương án có tổng lệch sao kê quá 100đ (`planGrandMismatchError`).
+- **Sửa dữ liệu đã hỏng:** dòng sao kê "Đã xử lý" mang mức Lập ở bị gán nhầm hiện cảnh báo đỏ và nút **Hoàn kho & lập lại** — hoàn kho riêng giao dịch đó, xóa mức sai, giữ liên kết phiếu để lần lập lại lưu lại chính phiếu đó theo đúng số tiền sao kê. Hoàn kho theo khoảng ngày cũng xóa mức bị gán nhầm.
+
 ## 1.29.21 (2026-10-05)
 
 - **Phát hành gửi đúng tham số website của từng cơ sở.** Giao diện được cấu hình riêng theo cơ sở: Paris Nhơn đã sang giao diện mới (`phatHanhHoaDon(id, kyHieu)`), Linh Đàm vẫn giao diện cũ (`phatHanhHoaDon(id)`, đọc trên trang thật 05/10/2026). Trước đây extension luôn gửi `{ id, kyHieu: "" }`; nay `phatHanhHoaDonPayload` đọc tên tham số từ chính hàm service của trang đang mở. Không đọc được hàm thì giữ cách của giao diện mới. Cơ sở nào được website chuyển sang giao diện mới sẽ tự theo, không cần sửa code.

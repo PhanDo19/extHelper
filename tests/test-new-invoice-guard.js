@@ -254,6 +254,8 @@ async function runApply(options) {
   vm.runInContext(
     "var statementDataset = { transactions: [] };\n" +
     `${extractFunction(contentSource, "newInvoiceAttemptBlockReason")}\n` +
+    "const GRAND_OVERRIDE_MAX_DIFF = 100; const formatMoney = value => String(value);\n" +
+    `${extractFunction(contentSource, "planGrandMismatchError")}\n` +
     `${extractFunction(contentSource, "saveNewBatchEntryViaWorker")}\n` +
     "function findStatementTransaction(id) { return statementDataset.transactions.find(item => String(item.id) === String(id)); }\n" +
     "async function openPosForNewInvoice() { this.openCalls += 1; return { opened: true, tabId: 7 }; }\n" +

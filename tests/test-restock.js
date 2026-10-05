@@ -63,8 +63,9 @@ function makeBox({ mappings, transactions, ledgerEntries, warehouseItems }) {
   vm.runInContext(
     [
       "ledgerEntriesInDateRange", "summarizeRestockPreview",
-      "restoreVerifiedStock", "restockLedgerEntries"
+      "restoreVerifiedStock", "grandOverrideFor", "hasInvalidGrandOverride", "restockLedgerEntries"
     ].map(extractFunction).join(";\n") +
+    ";\nconst GRAND_OVERRIDE_MAX_DIFF = 100" +
     ";\nthis.ledgerEntriesInDateRange = ledgerEntriesInDateRange;" +
     "this.summarizeRestockPreview = summarizeRestockPreview;" +
     "this.restockLedgerEntries = restockLedgerEntries;",
@@ -183,6 +184,34 @@ async function main() {
     // Hoàn lần hai trên dữ liệu đã cập nhật: không còn gì để hoàn.
     assert.strictEqual(box.ledgerEntriesInDateRange("2026-07-01", "2026-07-31").length, 0,
       "Đã hoàn rồi thì không hoàn lại được nữa");
+  }
+
+  // --- Hoàn kho riêng một giao dịch đã lưu sai tổng (mức "Lập ở" bị gán nhầm) -----
+  // Ca thật Linh Đàm 01/07: dòng 6 (4.155.000đ) mang mức 1.699.999đ của dòng 5.
+  {
+    const transactions = baseTransactions();
+    transactions[0].credit = 4155000;
+    transactions[0].acceptedGrandOverride = 1699999;
+    transactions[0].acceptedGrandOverrideAt = "2026-10-02T10:00:00.000Z";
+    transactions[0].blockedNote = "Hóa đơn lập ở 1.699.999đ, lệch -2.455.001đ so với sao kê 4.155.000đ do website làm tròn VAT.";
+    transactions[1].credit = 1700000;
+    transactions[1].acceptedGrandOverride = 1699999;
+    const box = makeBox({ mappings: baseMappings(), transactions, ledgerEntries: baseLedger(), warehouseItems: baseWarehouse() });
+    const matches = box.ledgerEntriesInDateRange("", "").filter(m => m.transaction.id === "t1");
+    assert.strictEqual(matches.length, 1);
+    await box.restockLedgerEntries(matches, { keepInvoiceLink: true });
+    const statement = box.committed.statement.transactions;
+    const t1 = statement.find(item => item.id === "t1");
+    assert.strictEqual(t1.status, "pending");
+    assert.strictEqual(t1.invoiceNo, "01000000260", "Giữ liên kết để lập lại đúng phiếu cũ");
+    assert.strictEqual(t1.acceptedGrandOverride, undefined, "Mức Lập ở bị gán nhầm phải bị xóa");
+    assert.strictEqual(t1.blockedNote, "", "Ghi chú 'do website làm tròn VAT' sai phải bị xóa");
+    assert.match(t1.restockedNote, /lưu lại phiếu 01000000260 theo đúng số tiền sao kê/);
+    // Giao dịch khác (kể cả cùng ngày) không bị đụng; mức Lập ở hợp lệ của nó giữ nguyên.
+    const t2 = statement.find(item => item.id === "t2");
+    assert.strictEqual(t2.status, "done");
+    assert.strictEqual(t2.acceptedGrandOverride, 1699999);
+    assert.deepStrictEqual(box.committed.ledger.entries.map(e => e.transactionId).sort(), ["t2", "t3"]);
   }
 
   // --- Không có gì để hoàn thì báo lỗi, không ghi storage ------------------------
