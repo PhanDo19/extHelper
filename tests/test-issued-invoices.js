@@ -1,6 +1,7 @@
 const assert = require("assert");
 const path = require("path");
 const fs = require("fs");
+const vm = require("vm");
 const IssuedBook = require(path.join(__dirname, "..", "issued-invoices.js"));
 
 function entry(overrides) {
@@ -203,12 +204,29 @@ assert(bridgeSource.includes('postEInvoiceApi("phatHanhHoaDon?is_ajax=1"'), "Mis
 assert(bridgeSource.includes('detail.action === "issueEInvoice"'), "issueEInvoice not dispatched");
 assert(bridgeSource.includes('detail.action === "fetchEInvoiceList"'), "fetchEInvoiceList not dispatched");
 
-// Giao diện Hóa đơn điện tử 10/2026: phatHanhHoaDon(id, kyHieu). Website gửi
-// kyHieu rỗng khi form tắt ChonKyHieu; thiếu hẳn trường này là khác website.
-assert.match(bridgeSource,
-  /postEInvoiceApi\("phatHanhHoaDon\?is_ajax=1", \{ id, kyHieu: EINVOICE_DEFAULT_KY_HIEU \}\)/,
-  "phatHanhHoaDon phải gửi kèm kyHieu như website");
+// phatHanhHoaDon gửi đúng tham số website của cơ sở đang mở gửi: giao diện mới
+// (Nhơn 10/2026) phatHanhHoaDon(id, kyHieu) với kyHieu rỗng khi form tắt
+// ChonKyHieu; giao diện cũ (Linh Đàm, đọc 05/10/2026) phatHanhHoaDon(id).
+assert.match(bridgeSource, /postEInvoiceApi\("phatHanhHoaDon\?is_ajax=1", phatHanhHoaDonPayload\(id\)\)/,
+  "phatHanhHoaDon phải gửi tham số theo hàm service của chính trang");
 assert.match(bridgeSource, /const EINVOICE_DEFAULT_KY_HIEU = "";/);
+{
+  // Trang không nạp HoaDonDienTu_Service.
+  const payloadBox = { window: {} };
+  vm.createContext(payloadBox);
+  vm.runInContext(`const EINVOICE_DEFAULT_KY_HIEU = "";\n${(() => {
+    const text = bridgeSource.replace(/\r\n/g, "\n");
+    const start = text.indexOf("function phatHanhHoaDonPayload(");
+    return text.slice(start, text.indexOf("\n  }\n", start) + 4);
+  })()}\nthis.payload = phatHanhHoaDonPayload;`, payloadBox);
+  // Hàm service thật đọc trên hai trang (giữ nguyên tên tham số).
+  const nhon = { phatHanhHoaDon: new Function("id", "kyHieu", "onFinish", "WebServiceBase.CallWebMethod(this, arguments, onFinish, null);") };
+  const linhDam = { phatHanhHoaDon: new Function("id", "onFinish", "WebServiceBase.CallWebMethod(this, arguments, onFinish, null);") };
+  assert.deepStrictEqual({ ...payloadBox.payload("id-1", nhon) }, { id: "id-1", kyHieu: "" }, "Nhơn: gửi kèm kyHieu rỗng");
+  assert.deepStrictEqual({ ...payloadBox.payload("id-1", linhDam) }, { id: "id-1" }, "Linh Đàm: chỉ gửi id như website");
+  // Trang không nạp service: giữ cách của giao diện mới.
+  assert.deepStrictEqual({ ...payloadBox.payload("id-1", undefined) }, { id: "id-1", kyHieu: "" });
+}
 // LayDuLieu: đủ các ô lọc như source_ParameterMap của website. Loại mặc định Tất
 // cả (0) cho màn Phát hành vì Check/Đồng bộ sổ cần cả phiếu đã phát hành; tìm phiếu
 // để lập phương án truyền Chưa phát hành (2), dò hóa đơn đã xuất truyền 1.

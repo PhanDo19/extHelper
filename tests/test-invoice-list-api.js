@@ -195,7 +195,7 @@ const row = (id, invoiceNo, grandTotal, extra = {}) =>
     assert(!body.includes("fetchForRead"), `${name} là request ghi, không được thử lại`);
   }
   assert.match(source, /postEInvoiceApi\("kiemTraThongTin\?is_ajax=1", \{ id \}\)/, "kiemTraThongTin không truyền cờ đọc");
-  assert.match(source, /postEInvoiceApi\("phatHanhHoaDon\?is_ajax=1", \{ id, kyHieu: EINVOICE_DEFAULT_KY_HIEU \}\)/);
+  assert.match(source, /postEInvoiceApi\("phatHanhHoaDon\?is_ajax=1", phatHanhHoaDonPayload\(id\)\)/);
   assert.match(source, /\}, \{ read: true \}\);/, "LayDuLieu là request đọc");
 
   // --- Lưới dòng hàng chỉ lấy trong form phiếu đang mở ------------------------------

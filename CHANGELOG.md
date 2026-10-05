@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.29.21 (2026-10-05)
+
+- **Phát hành gửi đúng tham số website của từng cơ sở.** Giao diện được cấu hình riêng theo cơ sở: Paris Nhơn đã sang giao diện mới (`phatHanhHoaDon(id, kyHieu)`), Linh Đàm vẫn giao diện cũ (`phatHanhHoaDon(id)`, đọc trên trang thật 05/10/2026). Trước đây extension luôn gửi `{ id, kyHieu: "" }`; nay `phatHanhHoaDonPayload` đọc tên tham số từ chính hàm service của trang đang mở. Không đọc được hàm thì giữ cách của giao diện mới. Cơ sở nào được website chuyển sang giao diện mới sẽ tự theo, không cần sửa code.
+- Đã chạy chỉ đọc trên Linh Đàm (giao diện cũ): `LayDuLieu` `TRANGTHAI` 0/1/2 cùng nghĩa như Nhơn; tìm phiếu chưa xuất/đã xuất, mở phiếu theo ID, `scan()`, đọc mặt hàng qua `LayDuLieuChiTiet` và `readInvoiceSnapshot` đều đúng. Không phần nào khác cần tách theo cơ sở.
+
 ## 1.29.20 (2026-10-04)
 
 - **Sắp xếp lại màn Kho.** Chỉ đổi hiển thị.

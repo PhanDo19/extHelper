@@ -3954,6 +3954,18 @@
     };
   }
 
+  // Gui DUNG tham so ma website cua co so dang mo gui. Giao dien moi (Nhon,
+  // 10/2026): HoaDonDienTu_Service.phatHanhHoaDon(id, kyHieu, onFinish); giao
+  // dien cu (Linh Dam, doc ngay 05/10/2026): phatHanhHoaDon(id, onFinish).
+  // CallWebMethod gui body gom dung ten tham so cua ham service, nen doc ten
+  // tham so tu chinh ham do. Khong doc duoc ham thi giu cach cua giao dien moi.
+  function phatHanhHoaDonPayload(id, service = window.HoaDonDienTu_Service) {
+    const stub = typeof service?.phatHanhHoaDon === "function" ? String(service.phatHanhHoaDon) : "";
+    const params = (stub.match(/^\s*function\s*[\w$]*\s*\(([^)]*)\)/) || [])[1];
+    if (params === undefined) return { id, kyHieu: EINVOICE_DEFAULT_KY_HIEU };
+    return /\bkyHieu\b/.test(params) ? { id, kyHieu: EINVOICE_DEFAULT_KY_HIEU } : { id };
+  }
+
   async function issueEInvoice(detail) {
     const id = String(detail?.id || "").trim();
     if (!isGuid(id)) throw new Error(`ID hoa don dien tu khong hop le: ${id || "trong"}`);
@@ -3979,7 +3991,7 @@
     if (checkFailure) throw new Error(`Kiem tra thong tin that bai: ${checkFailure}`);
     const checkedMetadata = parseEInvoiceCheckTagHtml(check.body?.Tag ?? check.body?.data ?? "");
 
-    const issue = await postEInvoiceApi("phatHanhHoaDon?is_ajax=1", { id, kyHieu: EINVOICE_DEFAULT_KY_HIEU });
+    const issue = await postEInvoiceApi("phatHanhHoaDon?is_ajax=1", phatHanhHoaDonPayload(id));
     const issueFailure = eInvoiceFailureReason(issue.body, issue.responseText);
     if (issueFailure) throw new Error(issueFailure);
 
