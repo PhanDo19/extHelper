@@ -78,7 +78,7 @@ Sub-tab **Phát hành hóa đơn** nằm trong tab **Giao dịch ngân hàng**, 
 - Lô chạy tuần tự; hóa đơn lỗi được liệt kê riêng và không chặn các hóa đơn còn lại.
 - Mỗi hóa đơn thành công được ghi sổ ngay, nên dừng giữa chừng vẫn giữ đủ số liệu phần đã chạy.
 - Sổ phát hành khóa theo ID hóa đơn: chạy lại lô chỉ ghi đè, không cộng dồn số lượng.
-- Kim Giang và Linh Đàm dùng chung dải số: phát hành xong một cơ sở, extension tự chuyển sang màn Hóa đơn điện tử của cơ sở kế tiếp sau 8 giây (có nút **Ở lại trang này**), và sau khi đăng nhập lại thì mở sẵn bước Phát hành với **đúng ngày** cơ sở trước vừa làm. Lô có lỗi/cảnh báo thì không tự chuyển, chỉ có nút **Chuyển sang …**. Không bao giờ tự phát hành ở cơ sở đích. Xem `docs/SEQUENTIAL_ISSUE_FLOW.md`.
+- Kim Giang và Linh Đàm dùng chung dải số: phát hành xong một cơ sở, extension tự chuyển sang màn Hóa đơn điện tử của cơ sở kế tiếp sau 8 giây (có nút **Ở lại trang này**), và sau khi đăng nhập lại thì mở sẵn bước Phát hành với **đúng ngày** cơ sở trước vừa làm, tích sẵn các hóa đơn thuộc giao dịch sao kê. Lô có lỗi/cảnh báo thì không tự chuyển, chỉ có nút **Chuyển sang …**. Không bao giờ tự phát hành ở cơ sở đích. Xem `docs/SEQUENTIAL_ISSUE_FLOW.md`.
 
 ## File hạch toán (Excel)
 

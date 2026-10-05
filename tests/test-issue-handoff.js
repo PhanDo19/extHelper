@@ -90,10 +90,18 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
     openAccountingDashboardAction: () => {},
     syncTabsOffset: () => {},
     parseUiDateTime: () => null,
-    openEInvoiceAdmin: async day => {
-      opened.push(day);
-      box.setStatus("Đã tải 12 hóa đơn; 12 hóa đơn chưa phát hành.", "ok");
-    }
+    // Danh sách website trả về cho ngày được mở; chỉ A thuộc giao dịch sao kê,
+    // khớp giao dịch và chưa phát hành.
+    listRows: [
+      { id: "A", invoiceNo: "HD-A" },
+      { id: "A2", invoiceNo: "HD-A2" },
+      { id: "B", invoiceNo: "HD-B", issued: true },
+      { id: "C", invoiceNo: "HD-C-ngoai-giao-dich" },
+      { id: "D", invoiceNo: "HD-D", mismatch: true },
+      { id: "E", invoiceNo: "HD-E", cancelled: true }
+    ],
+    linkedNos: ["HD-A", "HD-A2", "HD-B", "HD-D", "HD-E"],
+    rendered: 0
   };
   vm.createContext(box);
   vm.runInContext([
@@ -106,6 +114,17 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
     "let issueHandoffPrompt = null; let issueHandoffTimer = null; let issueHandoffTicking = false;",
     "let batchAutoResumeStarted = false; let pendingNewInvoice = null; let issuingInProgress = false;",
     "let issueCoordination = this.coordination;",
+    "let eInvoiceRows = []; let eInvoiceSelection = new Set(['C']);",
+    "async function openEInvoiceAdmin(day) {",
+    "  opened.push(day); eInvoiceRows = listRows.map(row => ({ ...row }));",
+    "  setStatus('Đã tải 6 hóa đơn; 4 hóa đơn chưa phát hành.', 'ok');",
+    "}",
+    "function statementInvoiceNos() { return new Set(linkedNos); }",
+    "function isStatementInvoice(row, linked) { return linked.has(row.invoiceNo); }",
+    "function statementInvoiceMatch(row) { return { valid: !row.mismatch }; }",
+    "function renderEInvoiceRows() { rendered += 1; }",
+    fn("preselectStatementInvoices"),
+    "this.selectionJson = () => JSON.stringify([...eInvoiceSelection].sort());",
     fn("activeShopFromCookie"), fn("uiDateKey"), fn("setStatus"),
     fn("viDay"), fn("tenantPageUrl"), fn("isSamePageUrl"), fn("isLoginPage"), fn("issueHandoffTarget"),
     fn("handoffLoginProblem"), fn("submitHandoffLogin"),
@@ -116,6 +135,7 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
     "this.hasTimer = () => Boolean(issueHandoffTimer);"
   ].join("\n"), Object.assign(box, { coordination }));
   box.text = () => statusNode.children.map(node => node.textContent).join(" | ");
+  box.selection = () => JSON.parse(box.selectionJson());
   box.actions = () => statusNode.children.slice(1).map(node => node.dataset.action);
   box.runTimer = () => {
     const timer = timers.filter(item => !item.cleared && !item.ran).shift();
@@ -189,6 +209,8 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
   await sameTenant.follow();
   assert.deepStrictEqual(sameTenant.opened, ["2026-08-03"]);
   assert.deepStrictEqual(sameTenant.assigned, []);
+  assert.deepStrictEqual(sameTenant.selection(), ["A", "A2"], "Ngày kế ở cơ sở này cũng tích sẵn");
+  assert.match(sameTenant.text(), /Đã tải 6 hóa đơn; 4 hóa đơn chưa phát hành\. Đã tích sẵn 2 hóa đơn của giao dịch sao kê/);
 
   // 6. Ở Linh Đàm sau khi chuyển: mở Phát hành đúng ngày, xóa lệnh, không tự phát hành.
   const record = { fromTenant: "pariskimgiang", targetTenant: "parislinhdam", dateKey: "2026-08-02",
@@ -198,8 +220,20 @@ function makeBox({ tenant = "pariskimgiang", href = KG_URL, stored = null, coord
   assert.deepStrictEqual(arrived.opened, ["2026-08-02"], "Mở Phát hành với đúng ngày cơ sở trước vừa làm");
   assert.strictEqual(arrived.storage.handoff, null, "Lệnh chuyển chỉ dùng một lần");
   assert.strictEqual(arrived.panel.hidden, false);
-  assert.match(arrived.text(), /Tiếp tục sau Paris Kim Giang: đã mở Phát hành ngày 02\/08\/2026\. Đã tải 12 hóa đơn[\s\S]*extension không tự phát hành/);
+  assert.match(arrived.text(), /Tiếp tục sau Paris Kim Giang: đã mở Phát hành ngày 02\/08\/2026\. Đã tải 6 hóa đơn[\s\S]*Đã tích sẵn 2 hóa đơn của giao dịch sao kê[\s\S]*extension không tự phát hành/);
   assert.deepStrictEqual(arrived.assigned, []);
+  // Tích sẵn đúng tập "Chọn tất cả": thuộc giao dịch sao kê, khớp giao dịch, chưa
+  // phát hành/hủy. Lựa chọn cũ (C ngoài giao dịch) bị thay, không cộng dồn.
+  assert.deepStrictEqual(arrived.selection(), ["A", "A2"],
+    "Không tích phiếu đã phát hành (B), ngoài giao dịch (C), lệch sao kê (D), đã hủy (E)");
+  assert(arrived.rendered >= 1, "Vẽ lại bảng để thấy ô đã tích và nút Phát hành N hóa đơn");
+
+  // Ngày đó không còn gì của giao dịch sao kê để phát hành: không tích gì, nói rõ.
+  const nothingLeft = makeBox({ tenant: "parislinhdam", href: LD_URL, stored: { ...record }, cookie: "shop=parislinhdam" });
+  nothingLeft.listRows = nothingLeft.listRows.map(row => ({ ...row, issued: true }));
+  await nothingLeft.resume();
+  assert.deepStrictEqual(nothingLeft.selection(), []);
+  assert.match(nothingLeft.text(), /Không có hóa đơn nào của giao dịch sao kê chờ phát hành ngày này/);
 
   // 7. Trang đăng nhập: tài khoản đã điền sẵn, không cần mật khẩu → bấm hộ
   // "Đăng nhập" đúng một lần; không điền gì vào form.

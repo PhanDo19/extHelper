@@ -3821,6 +3821,13 @@
     if (!prompt.record) {
       issueHandoffPrompt = null;
       await openEInvoiceAdmin(prompt.handoff.dateKey);
+      const selected = preselectStatementInvoices();
+      const status = document.getElementById("it-status");
+      const kind = ["error", "warn", "ok"].find(name => status?.classList.contains(name)) || "ok";
+      if (selected) {
+        setStatus(`${status?.firstChild?.textContent || ""} Đã tích sẵn ${selected} hóa đơn của giao dịch sao kê — ` +
+          "kiểm tra rồi bấm Phát hành.", kind);
+      }
       return;
     }
     await InvoiceMappingStore.saveIssueHandoff({ ...prompt.record, createdAt: new Date().toISOString() });
@@ -3919,14 +3926,31 @@
     if (panel) panel.hidden = false;
     syncTabsOffset();
     await openEInvoiceAdmin(day);
+    const selected = preselectStatementInvoices();
     // Giữ nguyên kết quả tải danh sách (kể cả cảnh báo sổ lệch web), chỉ thêm ngữ cảnh.
     const status = document.getElementById("it-status");
     const kind = ["error", "warn", "ok"].find(name => status?.classList.contains(name)) || "ok";
     setStatus(
       `Tiếp tục sau ${fromLabel}: đã mở Phát hành ngày ${viDay(day)}. ${status?.firstChild?.textContent || ""} ` +
-      "Kiểm tra rồi bấm Phát hành — extension không tự phát hành.",
+      (selected
+        ? `Đã tích sẵn ${selected} hóa đơn của giao dịch sao kê — kiểm tra rồi bấm Phát hành; extension không tự phát hành.`
+        : "Không có hóa đơn nào của giao dịch sao kê chờ phát hành ngày này."),
       kind
     );
+  }
+
+  // Vừa chuyển sang để phát hành tiếp: tích sẵn mọi hóa đơn chưa phát hành thuộc
+  // giao dịch sao kê VÀ khớp giao dịch — đúng tập "Chọn tất cả" chọn được. Phiếu
+  // ngoài giao dịch hoặc không khớp sao kê không bao giờ được tích sẵn. Chỉ chọn,
+  // không phát hành.
+  function preselectStatementInvoices() {
+    const linked = statementInvoiceNos();
+    eInvoiceSelection = new Set(eInvoiceRows
+      .filter(row => !row.issued && !row.cancelled && isStatementInvoice(row, linked) &&
+        statementInvoiceMatch(row).valid)
+      .map(row => row.id));
+    renderEInvoiceRows();
+    return eInvoiceSelection.size;
   }
 
   // Ba tra cứu dưới đây trước kia quét tuyến tính toàn bộ sổ đối soát, sao kê và

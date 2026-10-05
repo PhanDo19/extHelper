@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.29.25 (2026-10-05)
+
+- **Vừa chuyển sang cơ sở kế tiếp (hoặc bấm "Tải ngày …") thì tự tích sẵn hóa đơn cần phát hành.** Tích mọi hóa đơn chưa phát hành, chưa hủy, thuộc giao dịch sao kê và khớp giao dịch — đúng tập "Chọn tất cả" chọn được; lựa chọn cũ bị thay. Phiếu ngoài giao dịch hoặc lệch sao kê không bao giờ được tích sẵn. Chỉ chọn: người dùng kiểm tra rồi bấm **Phát hành N hóa đơn · X đ**. Ngày đó không còn gì thì báo rõ.
+
 ## 1.29.24 (2026-10-05)
 
 - **Chuyển cơ sở để phát hành tiếp thì tự bấm "Đăng nhập".** Trang đăng nhập (`/<cơ sở>/Login?Url=…`, đọc 05/10/2026) là form POST thường, website điền sẵn tài khoản `Admin`, không cần mật khẩu, và tự quay về đúng URL trong `Url` sau khi đăng nhập. Khi có lệnh chuyển dành cho cơ sở này, extension bấm hộ nút Đăng nhập **một lần**; không bao giờ điền tài khoản hay mật khẩu. Không bấm (để người dùng tự đăng nhập, panel nêu lý do) khi form không phải của cơ sở này, website đang ở chế độ đăng nhập bằng mã số, đòi mã xác thực, ô Tài khoản trống, đang báo lỗi, hoặc lần bấm trước vẫn quay lại trang đăng nhập.

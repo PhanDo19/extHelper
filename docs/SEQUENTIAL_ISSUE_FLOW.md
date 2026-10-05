@@ -122,7 +122,11 @@ cơ sở kia rồi chọn lại ngày. Nay:
    - Đăng nhập xong mà website đưa về trang khác: mở lại màn Hóa đơn điện tử
      **một lần** (phát hành phải chạy ở đúng màn đó để gửi đúng tham số).
    - Ở đúng màn: xóa lệnh, mở panel → Phát hành với **ngày mang sang** và tải danh
-     sách (chỉ đọc). **Không tự phát hành** — người dùng vẫn chọn và bấm Phát hành.
+     sách (chỉ đọc), rồi **tích sẵn** mọi hóa đơn chưa phát hành thuộc giao dịch
+     sao kê và khớp giao dịch (đúng tập "Chọn tất cả" chọn được; từ 1.29.25). Phiếu
+     ngoài giao dịch hoặc lệch sao kê không bao giờ được tích sẵn. **Không tự phát
+     hành** — người dùng kiểm tra rồi bấm Phát hành. Nút **Tải ngày …** (cùng cơ sở,
+     ngày kế) cũng tích sẵn như vậy.
    - Bỏ qua lệnh quá hạn, lệnh cho ngày cơ sở này đã chốt xong, hoặc khi lô Batch
      đang tự chạy tiếp sau tải lại / tab phụ tạo phiếu.
 
