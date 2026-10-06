@@ -87,11 +87,12 @@ Hàng **File hạch toán** ở màn Phát hành (chọn Từ ngày – Đến n
 
 **Sheet `TheoPhieu`** (mở ra là thấy) — để kế toán kiểm soát từng phiếu:
 
-| Phiếu | Ngày | Số HĐ | Mã hàng web | Tên hàng web | ĐVT | Số lượng | Đơn giá | Thành tiền | Mã hàng kho | Tên hàng kho |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Phiếu | Ngày | Số HĐ | Mã hàng web | Tên hàng web | ĐVT | Số lượng | Đơn giá | Thành tiền | Mã hàng kho | Tên hàng kho | Ghi chú |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
 - Mỗi phiếu là một dòng nhóm in đậm, tô nền (số phiếu, ngày, số HĐ, số mặt hàng, tổng số lượng, tổng tiền hàng); các dòng hàng nằm ngay dưới, **thu gọn/mở được bằng nút +/−** của Excel, và chỉ gồm thông tin hàng web cùng ánh xạ của nó dưới kho.
 - Mã web chưa có ánh xạ kho ghi `⚠ chưa ánh xạ kho`; phiếu chưa đọc được mặt hàng vẫn có dòng phiếu kèm cảnh báo. Cuối sheet có dòng **TỔNG CỘNG**.
+- Hóa đơn có tổng khác số tiền sao kê của giao dịch đã gắn: dòng phiếu **tô vàng**, cột Ghi chú nêu rõ, ví dụ `⚠ Hóa đơn lập ở 1.699.999đ, lệch -1đ so với sao kê 1.700.000đ do website làm tròn VAT.` Lệch quá 100đ (chỉ có ở hóa đơn đồng bộ từ web) thì ghi "kiểm tra lại với sao kê".
 
 **Sheet `ChiTiet`** — bảng phẳng để lọc/pivot, mỗi dòng hàng một dòng:
 

@@ -62,7 +62,7 @@
   }
 
   // Định dạng ô (chỉ có khi sheet dùng tới, xem STYLES_XML): chỉ số trong cellXfs.
-  const STYLE = Object.freeze({ none: 0, money: 1, header: 2, group: 3, groupMoney: 4 });
+  const STYLE = Object.freeze({ none: 0, money: 1, header: 2, group: 3, groupMoney: 4, warn: 5, warnMoney: 6 });
 
   // Sheet cũ (mảng giá trị thuần) xuất y như trước; sheet có cột tiền (`money`)
   // hoặc dòng dạng { cells, level, style } mới cần styles.xml.
@@ -93,6 +93,8 @@
     if (!styled) return STYLE.none;
     if (rowStyle === "header") return STYLE.header;
     if (rowStyle === "group") return column?.money ? STYLE.groupMoney : STYLE.group;
+    // Dòng nhóm cần kế toán để ý (ví dụ hóa đơn lệch sao kê): in đậm, nền vàng.
+    if (rowStyle === "warn") return column?.money ? STYLE.warnMoney : STYLE.warn;
     return column?.money ? STYLE.money : STYLE.none;
   }
 
@@ -126,9 +128,10 @@
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${sheetPr}<dimension ref="${dimension}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>${formatPr}${colsXml}<sheetData>${body}</sheetData>${autoFilter}</worksheet>`;
   }
 
-  // Số tiền có dấu phân cách hàng nghìn; tiêu đề in đậm; dòng nhóm in đậm, nền xanh nhạt.
+  // Số tiền có dấu phân cách hàng nghìn; tiêu đề in đậm; dòng nhóm in đậm, nền xanh
+  // nhạt; dòng nhóm cảnh báo in đậm, nền vàng.
   const STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3ECF8"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="1" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE3ECF8"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFEB9C"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="1" fillId="2" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="1" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
 
   function zipEntry(name, text) {
     const data = utf8(text);
@@ -207,7 +210,7 @@
   // sheets: [{ name, columns: [{ header, width, money? }], rows: [[value, …] | { cells, level?, style? }],
   //            autoFilter? }]
   //   level: 1 = dòng con thu gọn được dưới dòng ngay trên có level 0.
-  //   style: "group" = dòng nhóm (in đậm, tô nền).
+  //   style: "group" = dòng nhóm (in đậm, tô nền xanh); "warn" = dòng nhóm cần chú ý (nền vàng).
   function build(sheets) {
     const list = (sheets || []).filter(sheet => sheet && sheet.name);
     if (!list.length) throw new Error("Không có sheet nào để xuất.");

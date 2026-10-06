@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.29.28 (2026-10-06)
+
+- **File hạch toán ghi chú hóa đơn lệch sao kê, tô vàng.** Sheet `TheoPhieu` thêm cột **Ghi chú**. Hóa đơn có tổng khác số tiền sao kê của giao dịch đã gắn được tô vàng cả dòng phiếu, kèm ghi chú, ví dụ `⚠ Hóa đơn lập ở 1.699.999đ, lệch -1đ so với sao kê 1.700.000đ do website làm tròn VAT.` (lệch trong ngưỡng "Lập ở" 100đ). Lệch xa hơn — chỉ có ở hóa đơn đồng bộ từ web — ghi "kiểm tra lại với sao kê". Phiếu gắn nhiều giao dịch so với giao dịch cùng ngày sát tổng nhất. Dòng TỔNG CỘNG đếm số phiếu có ghi chú; thông báo sau khi xuất cũng nêu số này.
+
 ## 1.29.27 (2026-10-06)
 
 - **File hạch toán có sheet `TheoPhieu` cho kế toán kiểm soát.** Mỗi phiếu là một dòng nhóm in đậm, tô nền (phiếu, ngày, số HĐ, số mặt hàng, tổng số lượng, tổng tiền hàng); dưới là các dòng hàng thu gọn/mở được bằng nút +/− của Excel, chỉ gồm hàng web (mã, tên, ĐVT, số lượng, đơn giá, thành tiền) và ánh xạ kho (mã kho, tên kho — tách hai cột). Mã chưa ánh xạ ghi `⚠ chưa ánh xạ kho`, phiếu chưa đọc được mặt hàng vẫn hiện kèm cảnh báo, cuối sheet có dòng TỔNG CỘNG. Sheet `ChiTiet` (bảng phẳng để lọc) giữ nguyên, thêm định dạng tiền.

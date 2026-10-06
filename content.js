@@ -5423,6 +5423,30 @@
     return lines;
   }
 
+  // Ghi chú cho kế toán: hóa đơn có tổng khác số tiền sao kê của giao dịch đã gắn.
+  // Lệch trong ngưỡng "Lập ở" (GRAND_OVERRIDE_MAX_DIFF) là do website làm tròn VAT
+  // (mọi ca thật đều -1đ); lệch xa hơn (chỉ có ở hóa đơn đồng bộ từ web) thì nhắc
+  // kiểm tra lại.
+  function issuedInvoiceNotes(entries) {
+    const notes = new Map();
+    for (const entry of entries || []) {
+      const grand = Math.round(Number(entry.grandTotal) || 0);
+      const candidates = statementTransactionsForInvoiceNo(entry.invoiceNo);
+      if (!grand || !candidates.length) continue;
+      const sameDay = candidates.filter(item => uiDateKey(item.transactionDate) === uiDateKey(entry.dateKey));
+      const transaction = (sameDay.length ? sameDay : candidates).reduce((best, item) =>
+        Math.abs(Math.round(Number(item.credit) || 0) - grand) < Math.abs(Math.round(Number(best.credit) || 0) - grand)
+          ? item : best);
+      const credit = Math.round(Number(transaction.credit) || 0);
+      const diff = grand - credit;
+      if (!diff) continue;
+      notes.set(entry.invoiceNo,
+        `⚠ Hóa đơn lập ở ${formatMoney(grand)}đ, lệch ${diff > 0 ? "+" : ""}${formatMoney(diff)}đ so với sao kê ${formatMoney(credit)}đ` +
+        (Math.abs(diff) <= GRAND_OVERRIDE_MAX_DIFF ? " do website làm tròn VAT." : " — kiểm tra lại với sao kê."));
+    }
+    return notes;
+  }
+
   // Khoảng ngày của file hạch toán. Trước đây lấy theo ngày đang phát hành, mà lô
   // phát hành khóa đúng MỘT ngày nên file chỉ ra một ngày. Nay: ô Từ/Đến ngày ở
   // màn Phát hành; chưa có thì cả tháng của ngày đang phát hành.
@@ -5462,7 +5486,8 @@
         fromDate,
         toDate,
         stockNameByWebCode: stockNameByWebCode(),
-        stockMappingByWebCode: stockMappingByWebCode()
+        stockMappingByWebCode: stockMappingByWebCode(),
+        noteByInvoiceNo: issuedInvoiceNotes(scoped)
       });
       const bytes = InvoiceXlsxWriter.build(sheets);
       const exportedAt = new Date().toISOString();
@@ -5475,12 +5500,14 @@
       const totalQty = detail.reduce((sum, row) => sum + Number(row[6] || 0), 0);
       const mapping = stockMappingByWebCode();
       const unmapped = new Set(detail.map(row => String(row[3])).filter(code => !mapping.has(code)));
+      const noted = issuedInvoiceNotes(scoped).size;
       setStatus(
         `Đã xuất Excel ${viDay(fromDate)} – ${viDay(toDate)}: ${scoped.length - withoutItems.length} hóa đơn · ` +
         `${detail.length} dòng hàng · ${formatMoney(totalQty)} đơn vị (sheet TheoPhieu: nhóm theo phiếu; ChiTiet: để lọc).` +
         (unmapped.size
           ? ` ${unmapped.size} mã web chưa có ánh xạ kho, đã ghi "⚠ chưa ánh xạ kho" trong file.`
           : "") +
+        (noted ? ` ${noted} hóa đơn lệch sao kê có ghi chú (tô vàng).` : "") +
         (withoutItems.length
           ? ` Cảnh báo: ${withoutItems.length} hóa đơn chưa có mặt hàng nên không nằm trong file.`
           : ""),

@@ -203,7 +203,8 @@
     { header: "Đơn giá", width: 12, money: true },
     { header: "Thành tiền", width: 14, money: true },
     { header: "Mã hàng kho", width: 16 },
-    { header: "Tên hàng kho", width: 40 }
+    { header: "Tên hàng kho", width: 40 },
+    { header: "Ghi chú", width: 70 }
   ];
 
   // stockNameByWebCode: Map<webCode, "MAKHO - Tên kho; MAKHO2 - Tên kho 2">.
@@ -240,9 +241,13 @@
   // nhận ánh xạ tới mã web đó. Nhiều dòng kho thì ghép mã và tên theo cùng thứ tự,
   // giữ nguyên số lượng (như sheet ChiTiet). Chưa có ánh xạ thì ghi rõ để kế toán
   // thấy ngay dòng nào chưa trừ kho được.
+  // noteByInvoiceNo: Map<invoiceNo, ghi chú> — phiếu có ghi chú (ví dụ tổng lệch sao
+  // kê do website làm tròn VAT) được tô vàng cả dòng phiếu.
   function groupedRows(book, options) {
     const mapping = options?.stockMappingByWebCode || new Map();
+    const notes = options?.noteByInvoiceNo || new Map();
     const rows = [];
+    let notedCount = 0;
     let invoiceCount = 0;
     let lineCount = 0;
     let totalQty = 0;
@@ -254,12 +259,14 @@
       lineCount += entry.items.length;
       totalQty += qty;
       totalAmount += amount;
+      const note = String(notes.get(entry.invoiceNo) || "");
+      if (note) notedCount += 1;
       rows.push({
-        style: "group",
+        style: note ? "warn" : "group",
         cells: [
           entry.invoiceNo, viDate(entry.dateKey), entry.soHoaDon, "",
           entry.items.length ? `${entry.items.length} mặt hàng` : "⚠ chưa đọc được mặt hàng — kiểm tra trước khi hạch toán",
-          "", qty, "", amount, "", ""
+          "", qty, "", amount, "", "", note
         ]
       });
       for (const item of entry.items) {
@@ -269,7 +276,8 @@
           cells: [
             "", "", "", item.code, item.name, item.unit, item.qty, item.price, item.amount,
             stock.map(line => line.code).join("; "),
-            stock.length ? stock.map(line => line.name).join("; ") : "⚠ chưa ánh xạ kho"
+            stock.length ? stock.map(line => line.name).join("; ") : "⚠ chưa ánh xạ kho",
+            ""
           ]
         });
       }
@@ -277,7 +285,8 @@
     if (invoiceCount) {
       rows.push({
         style: "group",
-        cells: ["TỔNG CỘNG", "", "", "", `${invoiceCount} phiếu · ${lineCount} dòng hàng`, "", totalQty, "", totalAmount, "", ""]
+        cells: ["TỔNG CỘNG", "", "", "", `${invoiceCount} phiếu · ${lineCount} dòng hàng`, "", totalQty, "", totalAmount, "", "",
+          notedCount ? `${notedCount} phiếu có ghi chú (tô vàng)` : ""]
       });
     }
     return rows;
