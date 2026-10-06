@@ -185,8 +185,25 @@
     { header: "Tên hàng", width: 34 },
     { header: "Tên hàng kho", width: 38 },
     { header: "Số lượng", width: 10 },
-    { header: "Giá tiền", width: 14 },
-    { header: "Thành tiền", width: 15 }
+    { header: "Giá tiền", width: 14, money: true },
+    { header: "Thành tiền", width: 15, money: true }
+  ];
+
+  // Sheet "TheoPhieu" cho kế toán kiểm soát: mỗi phiếu một dòng nhóm (in đậm,
+  // thu gọn/mở được bằng nút +/- của Excel), dưới là các dòng hàng CHỈ gồm thông
+  // tin hàng web và ánh xạ của nó dưới kho.
+  const GROUPED_COLUMNS = [
+    { header: "Phiếu", width: 16 },
+    { header: "Ngày", width: 11 },
+    { header: "Số HĐ", width: 9 },
+    { header: "Mã hàng web", width: 13 },
+    { header: "Tên hàng web", width: 34 },
+    { header: "ĐVT", width: 7 },
+    { header: "Số lượng", width: 9 },
+    { header: "Đơn giá", width: 12, money: true },
+    { header: "Thành tiền", width: 14, money: true },
+    { header: "Mã hàng kho", width: 16 },
+    { header: "Tên hàng kho", width: 40 }
   ];
 
   // stockNameByWebCode: Map<webCode, "MAKHO - Tên kho; MAKHO2 - Tên kho 2">.
@@ -214,16 +231,73 @@
     return rows;
   }
 
+  function viDate(dateKey) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateKey || ""));
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : String(dateKey || "");
+  }
+
+  // stockMappingByWebCode: Map<webCode, [{ code, name }]> — các dòng kho đã xác
+  // nhận ánh xạ tới mã web đó. Nhiều dòng kho thì ghép mã và tên theo cùng thứ tự,
+  // giữ nguyên số lượng (như sheet ChiTiet). Chưa có ánh xạ thì ghi rõ để kế toán
+  // thấy ngay dòng nào chưa trừ kho được.
+  function groupedRows(book, options) {
+    const mapping = options?.stockMappingByWebCode || new Map();
+    const rows = [];
+    let invoiceCount = 0;
+    let lineCount = 0;
+    let totalQty = 0;
+    let totalAmount = 0;
+    for (const entry of filterEntries(book, options)) {
+      const qty = entry.items.reduce((sum, item) => sum + item.qty, 0);
+      const amount = entry.items.reduce((sum, item) => sum + item.amount, 0);
+      invoiceCount += 1;
+      lineCount += entry.items.length;
+      totalQty += qty;
+      totalAmount += amount;
+      rows.push({
+        style: "group",
+        cells: [
+          entry.invoiceNo, viDate(entry.dateKey), entry.soHoaDon, "",
+          entry.items.length ? `${entry.items.length} mặt hàng` : "⚠ chưa đọc được mặt hàng — kiểm tra trước khi hạch toán",
+          "", qty, "", amount, "", ""
+        ]
+      });
+      for (const item of entry.items) {
+        const stock = mapping.get(String(item.code)) || [];
+        rows.push({
+          level: 1,
+          cells: [
+            "", "", "", item.code, item.name, item.unit, item.qty, item.price, item.amount,
+            stock.map(line => line.code).join("; "),
+            stock.length ? stock.map(line => line.name).join("; ") : "⚠ chưa ánh xạ kho"
+          ]
+        });
+      }
+    }
+    if (invoiceCount) {
+      rows.push({
+        style: "group",
+        cells: ["TỔNG CỘNG", "", "", "", `${invoiceCount} phiếu · ${lineCount} dòng hàng`, "", totalQty, "", totalAmount, "", ""]
+      });
+    }
+    return rows;
+  }
+
   function buildWorkbook(options) {
     const rows = detailRows(options?.book, options);
     if (!rows.length) throw new Error("Không có dòng hàng nào để xuất.");
-    return [{ name: "ChiTiet", columns: SHEET_COLUMNS, rows }];
+    return [
+      // Sheet đầu (mở ra là thấy): theo phiếu. Tắt AutoFilter vì lọc sẽ tách dòng
+      // hàng khỏi dòng phiếu của nó; cần lọc/pivot thì dùng sheet ChiTiet.
+      { name: "TheoPhieu", columns: GROUPED_COLUMNS, rows: groupedRows(options?.book, options), autoFilter: false },
+      { name: "ChiTiet", columns: SHEET_COLUMNS, rows }
+    ];
   }
 
   return {
-    KIND, SCHEMA_VERSION, SHEET_COLUMNS,
+    KIND, SCHEMA_VERSION, SHEET_COLUMNS, GROUPED_COLUMNS,
     record, normalizeEntry, mergeItems, findByInvoiceId,
     filterEntries, summarizeItems, build, clone,
-    detailRows, buildWorkbook
+    detailRows, groupedRows, buildWorkbook
   };
 });

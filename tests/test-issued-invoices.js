@@ -130,7 +130,13 @@ const stockAdminIndex = contentSource.indexOf('id="it-stock-admin"');
 assert(contentSource.indexOf('id="it-export-issued"', stockAdminIndex) > stockAdminIndex,
   "Nút xuất hạch toán phải nằm trong tab Kho");
 assert.match(contentSource, /async function issueSelectedEInvoices\(options = \{\}\)/);
-assert.match(contentSource, /function exportIssuedInvoices\(\)/);
+assert.match(contentSource, /async function exportIssuedInvoices\(range\)/);
+// Khoảng ngày xuất: ô Từ/Đến ngày ở màn Phát hành, không còn bám ngày phát hành (khóa một ngày).
+assert.match(contentSource, /const \{ fromDate, toDate \} = range\?\.fromDate && range\?\.toDate \? range : issuedExportRange\(\);/);
+assert(contentSource.includes('id="it-issued-export-from"') && contentSource.includes('id="it-issued-export-to"'));
+assert.match(contentSource, /stockMappingByWebCode: stockMappingByWebCode\(\)/);
+assert(contentSource.includes('root.querySelector("#it-export-issued").addEventListener("click", () => exportIssuedInvoices());'),
+  "Nút tab Kho không được truyền Event làm khoảng ngày");
 assert.match(contentSource, /function renderEInvoiceRows\(\)/);
 // Ghi sổ ngay sau từng hóa đơn để lô dừng giữa chừng vẫn có số liệu.
 assert.match(contentSource, /saveIssuedInvoices\(issuedInvoiceBook\)/);

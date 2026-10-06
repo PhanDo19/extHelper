@@ -83,12 +83,22 @@ Sub-tab **Phát hành hóa đơn** nằm trong tab **Giao dịch ngân hàng**, 
 
 ## File hạch toán (Excel)
 
-Nút **Xuất kho đã phát hành (Excel)** ở tab Kho tạo file `.xlsx`, mỗi dòng hàng một dòng:
+Hàng **File hạch toán** ở màn Phát hành (chọn Từ ngày – Đến ngày, mặc định cả tháng; tự động phát hành xong thì mặc định đúng khoảng vừa chạy) hoặc nút **Xuất kho đã phát hành (Excel)** ở tab Kho tạo file `.xlsx` gồm hai sheet. File chỉ gồm hóa đơn phát hành ở cơ sở đang mở.
+
+**Sheet `TheoPhieu`** (mở ra là thấy) — để kế toán kiểm soát từng phiếu:
+
+| Phiếu | Ngày | Số HĐ | Mã hàng web | Tên hàng web | ĐVT | Số lượng | Đơn giá | Thành tiền | Mã hàng kho | Tên hàng kho |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+- Mỗi phiếu là một dòng nhóm in đậm, tô nền (số phiếu, ngày, số HĐ, số mặt hàng, tổng số lượng, tổng tiền hàng); các dòng hàng nằm ngay dưới, **thu gọn/mở được bằng nút +/−** của Excel, và chỉ gồm thông tin hàng web cùng ánh xạ của nó dưới kho.
+- Mã web chưa có ánh xạ kho ghi `⚠ chưa ánh xạ kho`; phiếu chưa đọc được mặt hàng vẫn có dòng phiếu kèm cảnh báo. Cuối sheet có dòng **TỔNG CỘNG**.
+
+**Sheet `ChiTiet`** — bảng phẳng để lọc/pivot, mỗi dòng hàng một dòng:
 
 | Mã phiếu | Ngày | Số hóa đơn | Mã hàng | Tên hàng | Tên hàng kho | Số lượng | Giá tiền | Thành tiền |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-- `Số lượng`, `Giá tiền`, `Thành tiền` là ô số nên Excel tự tính tổng; dòng tiêu đề được cố định và có sẵn AutoFilter.
+- `Số lượng`, `Giá tiền`, `Thành tiền` là ô số (tiền có phân cách hàng nghìn) nên Excel tự tính tổng; dòng tiêu đề được cố định và có sẵn AutoFilter.
 - `Tên hàng kho` lấy từ ánh xạ kho ↔ web đã xác nhận. Mã web nhận tồn từ nhiều dòng kho sẽ ghép tất cả tên kho vào một ô và **giữ nguyên số lượng** — extension không biết hóa đơn thực tế trừ từ dòng kho nào, nên tổng luôn khớp hóa đơn và kế toán tự quyết định trừ ở đâu.
 - Hóa đơn chưa có mặt hàng không xuất ra dòng nào nhưng được cảnh báo sau khi xuất.
 - File chỉ chứa số liệu hạch toán: không có sao kê, ánh xạ hay danh mục web.

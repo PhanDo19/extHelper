@@ -2261,7 +2261,7 @@
     root.querySelector("#it-state-file").addEventListener("change", previewStockStateFile);
     root.querySelector("#it-export-state").addEventListener("click", exportStockState);
     root.querySelector("#it-restock-range")?.addEventListener("click", restockVerifiedRange);
-    root.querySelector("#it-export-issued").addEventListener("click", exportIssuedInvoices);
+    root.querySelector("#it-export-issued").addEventListener("click", () => exportIssuedInvoices());
     root.querySelector("#it-manage-stock").addEventListener("click", toggleStockAdmin);
     root.querySelector("#it-stock-search").addEventListener("input", renderStockRows);
     root.querySelector("#it-stock-filter").addEventListener("change", renderStockRows);
@@ -4276,6 +4276,10 @@
     const done = await updateAutoIssueJob({ status: "done", current: null }) || job;
     const issued = (done.steps || []).reduce((sum, step) => sum + (Number(step.issued) || 0), 0);
     await InvoiceMappingStore.saveIssueHandoff(null).catch(() => {});
+    const exportFrom = document.getElementById("it-issued-export-from");
+    const exportTo = document.getElementById("it-issued-export-to");
+    if (exportFrom) exportFrom.value = done.fromDate;
+    if (exportTo) exportTo.value = done.toDate;
     setStatus(
       `Tự động phát hành xong ${viDay(done.fromDate)} – ${viDay(done.toDate)}: đã phát hành ${issued} hóa đơn. ` +
       "Bước cuối: xuất file hạch toán.",
@@ -4460,6 +4464,12 @@
       <button id="it-auto-issue-stop" type="button" class="danger" hidden>Dừng tự động</button>
       <small id="it-auto-issue-progress" class="it-muted"></small>
     </div>
+    <div class="it-controls-row it-issued-export-row" title="File Excel cho kế toán: sheet TheoPhieu nhóm từng phiếu (dòng hàng web + ánh xạ kho, thu gọn/mở bằng +/-), sheet ChiTiet để lọc. Chỉ gồm hóa đơn phát hành ở cơ sở này.">
+      <b>File hạch toán</b>
+      <label>Từ ngày<input id="it-issued-export-from" type="date" value="${escapeHtml(monthStartDateKey(fromDate))}"></label>
+      <label>Đến ngày<input id="it-issued-export-to" type="date" value="${escapeHtml(monthEndDateKey(fromDate))}"></label>
+      <button id="it-issued-export-button" type="button">Xuất Excel cho kế toán</button>
+    </div>
     <details class="it-tool-section" id="it-buyer-fix-section">
       <summary><b>Sửa người mua / TM-CK</b><small id="it-buyer-fix-progress"></small></summary>
       <div class="it-tool-body">
@@ -4486,6 +4496,9 @@
     node.querySelector("#it-auto-issue-stop")?.addEventListener("click", () => {
       requestAutoIssueStop().catch(error => setStatus(error.message, "error"));
     });
+    node.querySelector("#it-issued-export-button")?.addEventListener("click", () => {
+      exportIssuedInvoices().catch(error => setStatus(error.message, "error"));
+    });
     // Lượt đang có (chạy/dừng) thì hiện đúng khoảng ngày và tiến độ của nó.
     InvoiceMappingStore.loadAutoIssueJob().then(job => {
       if (!autoIssueAppliesHere(job)) return;
@@ -4493,6 +4506,10 @@
       const to = node.querySelector("#it-auto-issue-to");
       if (from && job.fromDate) from.value = job.fromDate;
       if (to && job.toDate) to.value = job.toDate;
+      const exportFrom = node.querySelector("#it-issued-export-from");
+      const exportTo = node.querySelector("#it-issued-export-to");
+      if (exportFrom && job.fromDate) exportFrom.value = job.fromDate;
+      if (exportTo && job.toDate) exportTo.value = job.toDate;
       renderAutoIssueControls(job);
     }).catch(() => {});
     node.querySelector("#it-buyer-fix-start")?.addEventListener("click", () => {
@@ -5389,14 +5406,42 @@
     return names;
   }
 
-  async function exportIssuedInvoices() {
+  // Cùng nguồn với stockNameByWebCode nhưng tách mã kho / tên kho thành hai cột
+  // (sheet TheoPhieu). Một dòng kho chỉ nêu một lần dù ánh xạ bị lặp.
+  function stockMappingByWebCode() {
+    const lines = new Map();
+    for (const row of mappingDataset.mappings || []) {
+      const webCode = String(row.webCode || "").trim();
+      const stockCode = String(row.stockCode || "").trim();
+      if (!webCode || !stockCode || row.status !== "confirmed") continue;
+      const current = lines.get(webCode) || [];
+      if (!current.some(line => line.code === stockCode)) {
+        current.push({ code: stockCode, name: String(row.stockName || "").trim() });
+      }
+      lines.set(webCode, current);
+    }
+    return lines;
+  }
+
+  // Khoảng ngày của file hạch toán. Trước đây lấy theo ngày đang phát hành, mà lô
+  // phát hành khóa đúng MỘT ngày nên file chỉ ra một ngày. Nay: ô Từ/Đến ngày ở
+  // màn Phát hành; chưa có thì cả tháng của ngày đang phát hành.
+  function issuedExportRange() {
+    const from = uiDateKey(document.getElementById("it-issued-export-from")?.value);
+    const to = uiDateKey(document.getElementById("it-issued-export-to")?.value);
+    if (from && to) return from <= to ? { fromDate: from, toDate: to } : { fromDate: to, toDate: from };
+    const day = uiSession?.eInvoiceFromDate || todayDateKey();
+    return { fromDate: monthStartDateKey(day), toDate: monthEndDateKey(day) };
+  }
+
+  // range: { fromDate, toDate } (tùy chọn). Bấm từ nút thì nhận Event — bỏ qua.
+  async function exportIssuedInvoices(range) {
     try {
       const entries = issuedInvoiceBook.entries || [];
       if (!entries.length) {
         return setStatus("Chưa có hóa đơn nào được phát hành qua extension để xuất.", "error");
       }
-      const fromDate = uiSession?.eInvoiceFromDate || "";
-      const toDate = uiSession?.eInvoiceToDate || "";
+      const { fromDate, toDate } = range?.fromDate && range?.toDate ? range : issuedExportRange();
       const scoped = InvoiceIssuedBook.filterEntries(issuedInvoiceBook, { fromDate, toDate });
       if (!scoped.length) {
         return setStatus(
@@ -5416,7 +5461,8 @@
         book: issuedInvoiceBook,
         fromDate,
         toDate,
-        stockNameByWebCode: stockNameByWebCode()
+        stockNameByWebCode: stockNameByWebCode(),
+        stockMappingByWebCode: stockMappingByWebCode()
       });
       const bytes = InvoiceXlsxWriter.build(sheets);
       const exportedAt = new Date().toISOString();
@@ -5425,15 +5471,20 @@
         `XuatKho_${pageTenantFileLabel}_PhatHanh_${localTimestamp(exportedAt)}.xlsx`,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
-      const lineCount = sheets[0].rows.length;
-      const totalQty = sheets[0].rows.reduce((sum, row) => sum + Number(row[6] || 0), 0);
+      const detail = sheets.find(sheet => sheet.name === "ChiTiet")?.rows || [];
+      const totalQty = detail.reduce((sum, row) => sum + Number(row[6] || 0), 0);
+      const mapping = stockMappingByWebCode();
+      const unmapped = new Set(detail.map(row => String(row[3])).filter(code => !mapping.has(code)));
       setStatus(
-        `Đã xuất Excel: ${scoped.length - withoutItems.length} hóa đơn · ${lineCount} dòng hàng · ` +
-        `${formatMoney(totalQty)} đơn vị.` +
+        `Đã xuất Excel ${viDay(fromDate)} – ${viDay(toDate)}: ${scoped.length - withoutItems.length} hóa đơn · ` +
+        `${detail.length} dòng hàng · ${formatMoney(totalQty)} đơn vị (sheet TheoPhieu: nhóm theo phiếu; ChiTiet: để lọc).` +
+        (unmapped.size
+          ? ` ${unmapped.size} mã web chưa có ánh xạ kho, đã ghi "⚠ chưa ánh xạ kho" trong file.`
+          : "") +
         (withoutItems.length
           ? ` Cảnh báo: ${withoutItems.length} hóa đơn chưa có mặt hàng nên không nằm trong file.`
           : ""),
-        withoutItems.length ? "warn" : "ok"
+        withoutItems.length || unmapped.size ? "warn" : "ok"
       );
     } catch (error) {
       setStatus(`Không xuất được file hạch toán: ${error.message}`, "error");

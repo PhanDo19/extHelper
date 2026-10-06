@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.29.27 (2026-10-06)
+
+- **File hạch toán có sheet `TheoPhieu` cho kế toán kiểm soát.** Mỗi phiếu là một dòng nhóm in đậm, tô nền (phiếu, ngày, số HĐ, số mặt hàng, tổng số lượng, tổng tiền hàng); dưới là các dòng hàng thu gọn/mở được bằng nút +/− của Excel, chỉ gồm hàng web (mã, tên, ĐVT, số lượng, đơn giá, thành tiền) và ánh xạ kho (mã kho, tên kho — tách hai cột). Mã chưa ánh xạ ghi `⚠ chưa ánh xạ kho`, phiếu chưa đọc được mặt hàng vẫn hiện kèm cảnh báo, cuối sheet có dòng TỔNG CỘNG. Sheet `ChiTiet` (bảng phẳng để lọc) giữ nguyên, thêm định dạng tiền.
+- **Chọn được khoảng ngày xuất.** Hàng **File hạch toán** ở màn Phát hành (Từ ngày – Đến ngày, mặc định cả tháng; tự động phát hành xong thì đúng khoảng vừa chạy). Trước đây file lấy theo ngày đang phát hành — mà lô phát hành khóa đúng một ngày — nên chỉ ra được một ngày. Nút ở tab Kho dùng cùng khoảng này.
+- Bộ ghi Excel hỗ trợ định dạng (in đậm, tô nền, `#,##0`) và nhóm dòng; chỉ thêm `styles.xml` khi sheet dùng tới nên các file xuất khác không đổi.
+
 ## 1.29.26 (2026-10-05)
 
 - **Tự động phát hành theo khoảng ngày; phát hành tay giữ nguyên.** Màn Phát hành có hàng **Tự động phát hành** (Từ ngày – Đến ngày). Bấm và xác nhận một lần, extension tự đi từng ngày: Kim Giang/Linh Đàm luân phiên theo thứ tự phát hành (xong mọi cơ sở trong ngày mới sang ngày kế, bỏ qua cơ sở/ngày không có việc hoặc đã chốt xong), tự chuyển cơ sở và tự bấm Đăng nhập; Paris Nhơn đi lần lượt các ngày có giao dịch trong sao kê của Nhơn. Mỗi lần phát hành hoặc chuyển cơ sở đều đếm ngược 5 giây kèm nút **Dừng tự động phát hành**.
