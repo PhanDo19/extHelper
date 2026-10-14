@@ -111,6 +111,7 @@ function makeBox({
       : (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
     clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
     InvoiceIssueCoordination: Coordination,
+    InvoiceStatementAudit: require("../invoice-audit.js"),
     InvoiceMappingStore: {
       loadIssueHandoff: async () => shared.handoff,
       saveIssueHandoff: async value => { shared.handoff = value; return value; },
@@ -141,6 +142,8 @@ function makeBox({
     constant("ISSUE_HANDOFF_REDIRECT_SECONDS"), constant("ISSUE_HANDOFF_TTL_MS"),
     constant("E_INVOICE_FORM_ID"), constant("E_INVOICE_PAGE_QUERY"),
     constant("AUTO_ISSUE_COUNTDOWN_SECONDS"), constant("AUTO_ISSUE_TTL_MS"), constant("AUTO_ISSUE_FINISHED_STATUSES"),
+    constant("AUTO_ISSUE_AUDIT_BLOCKING_KINDS"), constant("E_INVOICE_AMOUNT_TOLERANCE"), constant("GRAND_OVERRIDE_MAX_DIFF"),
+    fn("grandOverrideFor"), fn("statementAuditFor"),
     "let issueHandoffPrompt = null; let issueHandoffTimer = null; let issueHandoffTicking = false;",
     "let batchAutoResumeStarted = false; let pendingNewInvoice = null; let issuingInProgress = false;",
     "let autoIssueStopRequested = false; let autoIssueTimer = null;",

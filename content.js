@@ -89,6 +89,7 @@
   let issuingInProgress = false;
   let statementSubtab = "statement";
   let showEInvoicesOutsideStatement = false;
+  let lastInvoiceAudit = null;
   // Bước kế tiếp sau lô phát hành vừa xong ({ handoff, message, kind, extra }),
   // để nút "Ở lại"/"Chuyển sang …" trên dòng trạng thái biết phải làm gì.
   let issueHandoffPrompt = null;
@@ -117,6 +118,9 @@
   const AUTO_ISSUE_TTL_MS = 12 * 60 * 60 * 1000;
   // Giao dịch sao kê ở các trạng thái này đã xong phần lập phiếu.
   const AUTO_ISSUE_FINISHED_STATUSES = new Set(["done", "skipped", "ignored"]);
+  // Vấn đề rà soát làm tự động phát hành dừng (ngoài giao dịch chưa xong và phiếu
+  // lệch, đã có kiểm tra riêng).
+  const AUTO_ISSUE_AUDIT_BLOCKING_KINDS = new Set(["missing_on_web", "cancelled", "duplicate_link", "done_no_invoice"]);
 
   // Lô phải chạy được cả tháng: Nhơn từng có 435 dòng số tiền, có tháng tới ~600
   // giao dịch (14/10/2026), nên trần 1000. Trần chỉ đếm giao dịch Chờ xử lý (xem
@@ -4201,6 +4205,15 @@
       problems.push(`${mismatched.length} phiếu lệch giao dịch sao kê (` +
         mismatched.slice(0, 3).map(row => row.invoiceNo).join(", ") + `${mismatched.length > 3 ? "…" : ""})`);
     }
+    // Giao dịch "Đã xử lý" mà phiếu không còn trên website / bị hủy / gắn trùng /
+    // không gắn số phiếu: kiểm tra trên chỉ nhìn phiếu ĐANG có trong danh sách
+    // nên không thấy được (ca thiếu phiếu trên sao kê).
+    const missing = statementAuditFor(day, day, eInvoiceRows).problems
+      .filter(problem => AUTO_ISSUE_AUDIT_BLOCKING_KINDS.has(problem.kind));
+    if (missing.length) {
+      problems.push(`${missing.length} giao dịch thiếu phiếu hợp lệ (` +
+        missing.slice(0, 3).map(problem => problem.detail).join(" ") + `${missing.length > 3 ? " …" : ""})`);
+    }
     return problems;
   }
 
@@ -4475,6 +4488,18 @@
       <label>Đến ngày<input id="it-issued-export-to" type="date" value="${escapeHtml(monthEndDateKey(fromDate))}"></label>
       <button id="it-issued-export-button" type="button">Xuất Excel cho kế toán</button>
     </div>
+    <details class="it-tool-section" id="it-audit-section">
+      <summary><b>Rà soát hóa đơn</b><small id="it-audit-summary">Đối chiếu sao kê với phiếu trên website</small></summary>
+      <div class="it-tool-body">
+        <small>Mỗi giao dịch doanh thu phải có đúng một phiếu trên website, đúng ngày, đúng tổng (hoặc đúng mức "Lập ở"), chưa bị hủy. Phiếu trên web không thuộc giao dịch nào cũng được liệt kê. Chỉ đọc, không sửa gì.</small>
+        <div class="it-controls-row">
+          <label>Từ ngày<input id="it-audit-from" type="date" value="${escapeHtml(lastInvoiceAudit?.fromDate || monthStartDateKey(fromDate))}"></label>
+          <label>Đến ngày<input id="it-audit-to" type="date" value="${escapeHtml(lastInvoiceAudit?.toDate || monthEndDateKey(fromDate))}"></label>
+          <button id="it-audit-run" type="button">Rà soát</button>
+        </div>
+        <div id="it-audit-result"></div>
+      </div>
+    </details>
     <details class="it-tool-section" id="it-buyer-fix-section">
       <summary><b>Sửa người mua / TM-CK</b><small id="it-buyer-fix-progress"></small></summary>
       <div class="it-tool-body">
@@ -4517,6 +4542,10 @@
       if (exportTo && job.toDate) exportTo.value = job.toDate;
       renderAutoIssueControls(job);
     }).catch(() => {});
+    node.querySelector("#it-audit-run")?.addEventListener("click", () => {
+      runInvoiceAudit().catch(error => setStatus(`Không rà soát được: ${error.message}`, "error"));
+    });
+    renderInvoiceAuditResult();
     node.querySelector("#it-buyer-fix-start")?.addEventListener("click", () => {
       startBuyerFixJob().catch(error => setStatus(`Không bắt đầu được sửa người mua/TM-CK: ${error.message}`, "error"));
     });
@@ -4896,8 +4925,17 @@
     }
     renderEInvoiceRows();
     const pending = eInvoiceRows.filter(row => !row.issued && !row.cancelled).length;
-    const loadedMessage = `Đã tải ${eInvoiceRows.length} hóa đơn; ${pending} hóa đơn chưa phát hành.`;
-    setStatus(loadedMessage, pending ? "ok" : "warn");
+    // Rà soát riêng ngày này (đã có đủ danh sách): giao dịch thiếu phiếu thì báo
+    // ngay, trước khi người dùng phát hành ngày đó.
+    const dayAudit = statementAuditFor(fromDate, toDate, eInvoiceRows);
+    const loadedMessage = `Đã tải ${eInvoiceRows.length} hóa đơn; ${pending} hóa đơn chưa phát hành.` +
+      (dayAudit.errorCount
+        ? ` ⚠ Rà soát ngày ${viDay(fromDate)}: ${dayAudit.errorCount} giao dịch thiếu/lệch phiếu (` +
+          dayAudit.problems.filter(problem => problem.severity === "error").slice(0, 2)
+            .map(problem => problem.detail).join(" ") +
+          `${dayAudit.errorCount > 2 ? " …" : ""}) — xem Rà soát hóa đơn.`
+        : "");
+    setStatus(loadedMessage, dayAudit.errorCount ? "warn" : pending ? "ok" : "warn");
     // Tự kiểm tra sổ đối soát với website cho các phiếu sắp phát hành, để thấy
     // ngay phiếu nào bị sửa ngoài extension. Chỉ đọc; lỗi không chặn danh sách.
     const toCheck = eInvoiceRows.filter(row => !row.issued && !row.cancelled && ledgerItemsForInvoiceNo(row.invoiceNo));
@@ -4910,8 +4948,88 @@
         ? `${loadedMessage} ⚠ ${stale.length} phiếu có mặt hàng trên web khác sổ đối soát (${stale.slice(0, 6).map(row => row.invoiceNo).join(", ")}${stale.length > 6 ? "…" : ""}). ` +
           "Khi phát hành extension sẽ đọc lại mặt hàng từ web và cập nhật sổ, tồn kho; hoặc bấm Đối soát lại mặt hàng từ website để cập nhật ngay."
         : `${loadedMessage} Mặt hàng trong sổ khớp website.`,
-      stale.length ? "warn" : (pending ? "ok" : "warn")
+      stale.length || dayAudit.errorCount ? "warn" : (pending ? "ok" : "warn")
     );
+  }
+
+  // ---- Rà soát hóa đơn: sao kê ↔ phiếu trên website (chỉ đọc) --------------
+
+  // Cùng quy tắc với phát hành: phiếu phải khớp mức "Lập ở" hợp lệ (nếu có) hoặc
+  // tổng sao kê, trong dung sai E_INVOICE_AMOUNT_TOLERANCE.
+  function statementAuditFor(fromDate, toDate, webRows) {
+    return InvoiceStatementAudit.audit({
+      transactions: statementDataset.transactions || [],
+      webRows,
+      fromDate,
+      toDate,
+      tolerance: E_INVOICE_AMOUNT_TOLERANCE,
+      expectedGrand: transaction => grandOverrideFor(transaction) || Math.round(Number(transaction.credit) || 0)
+    });
+  }
+
+  function auditRange() {
+    const from = uiDateKey(document.getElementById("it-audit-from")?.value);
+    const to = uiDateKey(document.getElementById("it-audit-to")?.value);
+    if (!from || !to) throw new Error("Chọn đủ Từ ngày và Đến ngày để rà soát.");
+    return from <= to ? { fromDate: from, toDate: to } : { fromDate: to, toDate: from };
+  }
+
+  async function runInvoiceAudit() {
+    const { fromDate, toDate } = auditRange();
+    const button = document.getElementById("it-audit-run");
+    if (button) button.disabled = true;
+    try {
+      setStatus(`Đang rà soát hóa đơn ${viDay(fromDate)} – ${viDay(toDate)} (đọc danh sách phiếu trên website)…`, "warn");
+      const result = await request("fetchEInvoiceList", { fromDate, toDate });
+      lastInvoiceAudit = statementAuditFor(fromDate, toDate, result.rows || []);
+      renderInvoiceAuditResult();
+      const section = document.getElementById("it-audit-section");
+      if (section) section.open = true;
+      setStatus(
+        lastInvoiceAudit.errorCount
+          ? `Rà soát ${viDay(fromDate)} – ${viDay(toDate)}: ${lastInvoiceAudit.errorCount} giao dịch thiếu/lệch phiếu cần xử lý trước khi phát hành — xem bảng Rà soát hóa đơn.`
+          : `Rà soát ${viDay(fromDate)} – ${viDay(toDate)}: cả ${lastInvoiceAudit.revenueCount} giao dịch doanh thu đều có đúng một phiếu khớp trên website.` +
+            (lastInvoiceAudit.infoCount ? ` ${lastInvoiceAudit.infoCount} phiếu trên web không thuộc sao kê (xem bảng).` : ""),
+        lastInvoiceAudit.errorCount ? "error" : lastInvoiceAudit.infoCount ? "warn" : "ok"
+      );
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function renderInvoiceAuditResult() {
+    const node = document.getElementById("it-audit-result");
+    const summary = document.getElementById("it-audit-summary");
+    const result = lastInvoiceAudit;
+    if (!node || !result) return;
+    if (summary) {
+      summary.textContent = result.errorCount
+        ? `${viDay(result.fromDate)} – ${viDay(result.toDate)}: ${result.errorCount} vấn đề cần xử lý`
+        : `${viDay(result.fromDate)} – ${viDay(result.toDate)}: không thiếu phiếu`;
+    }
+    const kpis = `<div class="it-audit-kpis">
+      <span><b>${result.revenueCount}</b> giao dịch doanh thu</span>
+      <span><b>${result.matchedCount}</b> có phiếu khớp</span>
+      <span class="${result.errorCount ? "bad" : "good"}"><b>${result.errorCount}</b> cần xử lý</span>
+      <span><b>${result.infoCount}</b> phiếu web ngoài sao kê</span>
+      <span><b>${result.webInvoiceCount}</b> phiếu trên website</span>
+    </div>`;
+    if (!result.problems.length) {
+      node.innerHTML = `${kpis}<p class="it-audit-clean">✓ Mọi giao dịch doanh thu đều có đúng một phiếu khớp trên website, không có phiếu thừa.</p>`;
+      return;
+    }
+    // Ngày lệch số giao dịch / số phiếu: thấy ngay ngày nào thiếu hoặc thừa phiếu.
+    const badDays = result.days.filter(day => day.errors || day.transactions !== day.webInvoices);
+    const daysTable = badDays.length
+      ? `<div class="it-table-wrap"><table class="it-batch-table it-audit-days"><thead><tr><th>Ngày</th><th>Giao dịch</th><th>Có phiếu khớp</th><th>Phiếu trên web</th><th>Đã phát hành</th><th>Cần xử lý</th></tr></thead><tbody>${
+        badDays.map(day => `<tr class="${day.errors ? "it-audit-error" : "it-audit-info"}"><td>${escapeHtml(viDay(day.dateKey))}</td><td>${day.transactions}</td><td>${day.matched}</td><td>${day.webInvoices}</td><td>${day.issued}</td><td>${day.errors}</td></tr>`).join("")
+      }</tbody></table></div>`
+      : "";
+    const shown = result.problems.slice(0, 400);
+    const problemsTable = `<div class="it-table-wrap"><table class="it-batch-table it-audit-table"><thead><tr><th>Ngày</th><th>Số tiền</th><th>Phiếu</th><th>Vấn đề</th><th>Cách xử lý</th></tr></thead><tbody>${
+      shown.map(problem => `<tr class="${problem.severity === "error" ? "it-audit-error" : "it-audit-info"}"><td>${escapeHtml(viDay(problem.dateKey))}</td><td class="it-money">${formatMoney(problem.amount)}</td><td>${escapeHtml(problem.invoiceNo || "—")}</td><td>${problem.severity === "error" ? "⚠ " : ""}${escapeHtml(problem.detail)}</td><td><small>${escapeHtml(problem.hint)}</small></td></tr>`).join("")
+    }</tbody></table></div>${result.problems.length > shown.length ? `<small>… và ${result.problems.length - shown.length} dòng nữa.</small>` : ""}`;
+    node.innerHTML = kpis + daysTable + problemsTable;
   }
 
   // Số phiếu đã gắn với một giao dịch trong sao kê. Chỉ những phiếu này mới phát

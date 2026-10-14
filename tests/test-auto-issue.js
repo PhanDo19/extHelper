@@ -18,10 +18,10 @@ const ROWS = {
 };
 const TX = {
   parislinhdam: [
-    { transactionDate: "2026-08-01", credit: 100000, status: "done" },
-    { transactionDate: "2026-08-02", credit: 200000, status: "done" }
+    { id: "t-l1", transactionDate: "2026-08-01", credit: 100000, status: "done", invoiceNo: "HD-L1" },
+    { id: "t-l2", transactionDate: "2026-08-02", credit: 200000, status: "done", invoiceNo: "HD-L2" }
   ],
-  pariskimgiang: [{ transactionDate: "2026-08-01", credit: 300000, status: "done" }]
+  pariskimgiang: [{ id: "t-k1", transactionDate: "2026-08-01", credit: 300000, status: "done", invoiceNo: "HD-K1" }]
 };
 
 function sharedStore() {
@@ -130,6 +130,10 @@ const issuedTotal = job => job.steps.reduce((sum, step) => sum + step.issued, 0)
   // Phiếu lệch giao dịch sao kê.
   await stopsAt({ rows: { "2026-08-01": [...ROWS.parislinhdam["2026-08-01"],
     { id: "X", invoiceNo: "HD-X", dateKey: "2026-08-01", mismatch: true }] } }, /1 phiếu lệch giao dịch sao kê \(HD-X\)/);
+  // Giao dịch "Đã xử lý" mà phiếu không còn trên website (ca thiếu phiếu trên sao kê).
+  await stopsAt({ transactions: [...TX.parislinhdam,
+    { id: "t-lost", transactionDate: "2026-08-01", credit: 777000, status: "done", invoiceNo: "HD-LOST" }] },
+    /1 giao dịch thiếu phiếu hợp lệ \(Phiếu HD-LOST không còn trên website/);
   // Lô cần người đọc (cảnh báo chéo cơ sở / phiếu ngoài giao dịch): không mở hộp thoại, dừng.
   await stopsAt({ issue: () => ({ blocked: "cần người kiểm tra trước khi phát hành: Chưa import sao kê Kim Giang" }) },
     /cần người kiểm tra trước khi phát hành: Chưa import sao kê Kim Giang/, { issued: 1 });
@@ -207,8 +211,8 @@ const issuedTotal = job => job.steps.reduce((sum, step) => sum + step.issued, 0)
     const nhon = page(store, "parisnhon", {
       rows: nhonRows, from: "2026-08-01", to: "2026-08-04",
       transactions: [
-        { transactionDate: "2026-08-01", credit: 401500, status: "done" },
-        { transactionDate: "2026-08-03", credit: 600000, status: "done" },
+        { id: "n1", transactionDate: "2026-08-01", credit: 401500, status: "done", invoiceNo: "N-1" },
+        { id: "n3", transactionDate: "2026-08-03", credit: 600000, status: "done", invoiceNo: "N-3" },
         { transactionDate: "2026-08-05", credit: 999000, status: "pending" }
       ]
     });

@@ -603,6 +603,14 @@
 #it-panel .it-auto-issue-row button[hidden] { display: none !important; }
 #it-panel .it-auto-issue-row button.danger { background: #fff1f0; border-color: #e5a29b; color: #b42318; }
 .it-auto-issue-row #it-auto-issue-progress { flex-basis: 100%; }
+/* Rà soát hóa đơn: sao kê ↔ phiếu trên website. */
+.it-audit-kpis { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0; font-size: 12px; color: #43536a; }
+.it-audit-kpis .bad b { color: #b42318; }
+.it-audit-kpis .good b { color: #1a7f37; }
+.it-audit-clean { color: #1a7f37; font-weight: 600; }
+#it-panel tr.it-audit-error td { background: #fff1f0; }
+#it-panel tr.it-audit-info td { background: #fffbe6; }
+.it-audit-days { margin-bottom: 8px; }
 .it-tool-section { margin: 0 0 10px; border: 1px solid #dce4ef; border-radius: 8px; background: #fbfcfe; }
 .it-tool-section > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 12px; color: #44566f; cursor: pointer; font-size: 12px; }
 .it-tool-section > summary small { color: #66758a; font-weight: 600; }

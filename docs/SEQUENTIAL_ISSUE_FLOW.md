@@ -154,6 +154,9 @@ X đ**) giữ nguyên.
     sở nào (luồng tay sẽ hỏi xác nhận; luồng tự động không bao giờ tự bấm qua);
   - lô vừa chạy không sạch: có hóa đơn lỗi, cảnh báo, thiếu mặt hàng, số không liên
     tục, hoặc còn phiếu chưa phát hành;
+  - giao dịch "Đã xử lý" mà phiếu không còn trên website, bị hủy, gắn trùng cho
+    giao dịch khác hoặc không gắn số phiếu (rà soát `InvoiceStatementAudit` của
+    ngày đó, từ 1.29.31);
   - cookie `shop` đang là cơ sở khác; không mở được màn Hóa đơn điện tử; mọi lỗi khác.
 - **Ngày không còn gì để phát hành** (mọi phiếu của giao dịch đã phát hành): ghi chốt
   `done` cho ngày đó rồi đi tiếp, để lần chạy lại không quay lại.

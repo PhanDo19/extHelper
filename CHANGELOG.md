@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.29.31 (2026-10-14)
+
+- **Bước Rà soát hóa đơn: đối chiếu sao kê với phiếu trên website** (đã có ca giao dịch bị thiếu phiếu). Khối mới ở màn Phát hành, chỉ đọc: chọn khoảng ngày (mặc định cả tháng), bấm **Rà soát**, extension đọc mọi phiếu của khoảng đó trên website rồi kiểm từng giao dịch doanh thu (trừ Bỏ qua) — phải có đúng một phiếu, đúng ngày, đúng tổng (hoặc mức "Lập ở" hợp lệ, dung sai 1đ), chưa bị hủy.
+  - Vấn đề cần xử lý (tô đỏ, kèm cách xử lý): giao dịch chưa xử lý xong; đã xử lý nhưng phiếu không còn trên website (bị xóa hoặc đổi ngày); phiếu bị hủy; một phiếu gắn cho nhiều giao dịch; đã xử lý mà không gắn số phiếu; phiếu lệch ngày; phiếu lệch tổng.
+  - Để biết (tô vàng): phiếu trên web không thuộc giao dịch sao kê nào — phiếu nhân viên tự lập, hoặc phiếu tạo dở có thể làm trùng doanh thu.
+  - Bảng theo ngày nêu số giao dịch / số có phiếu khớp / số phiếu trên web / đã phát hành, chỉ những ngày lệch.
+- Tải danh sách phát hành của một ngày tự rà ngày đó và cảnh báo ngay trên dòng trạng thái nếu có giao dịch thiếu/lệch phiếu.
+- Tự động phát hành dừng thêm khi ngày đó có giao dịch "Đã xử lý" mà phiếu không còn trên website, bị hủy, gắn trùng hoặc không gắn số phiếu — trước đây các ca này lọt qua vì chỉ kiểm những phiếu đang có trong danh sách.
+- Module mới `invoice-audit.js` (`InvoiceStatementAudit`), nạp trước `content.js`.
+
 ## 1.29.30 (2026-10-14)
 
 - **Batch Review chạy được tháng ~600 giao dịch.** Trần mỗi lượt nâng từ 500 lên 1000, và giới hạn nay chỉ đếm giao dịch **Chờ xử lý** (ô đổi tên thành "Số giao dịch chờ tối đa"). Trước đây giao dịch đã xử lý / đã Accept / chờ đối soát trong khoảng ngày cũng chiếm chỗ, nên chạy lại cùng khoảng ngày luôn ra đúng 500 giao dịch đầu và phần sau không bao giờ tới lượt. Các giao dịch đó vẫn đi kèm (hiện trên bảng, giữ chỗ tồn kho, xoay vòng mặt hàng) như cũ.
