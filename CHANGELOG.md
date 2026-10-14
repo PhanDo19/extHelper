@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.29.30 (2026-10-14)
+
+- **Batch Review chạy được tháng ~600 giao dịch.** Trần mỗi lượt nâng từ 500 lên 1000, và giới hạn nay chỉ đếm giao dịch **Chờ xử lý** (ô đổi tên thành "Số giao dịch chờ tối đa"). Trước đây giao dịch đã xử lý / đã Accept / chờ đối soát trong khoảng ngày cũng chiếm chỗ, nên chạy lại cùng khoảng ngày luôn ra đúng 500 giao dịch đầu và phần sau không bao giờ tới lượt. Các giao dịch đó vẫn đi kèm (hiện trên bảng, giữ chỗ tồn kho, xoay vòng mặt hàng) như cũ.
+
 ## 1.29.29 (2026-10-14)
 
 - **Paris Nhơn: phiếu mới trên 1 triệu có Tiền giờ ≈ 1/3 phần trước VAT, phiếu từ 3 triệu vào phòng đơn giá cao** (kế toán chốt 14/10/2026). Ca thật 01/09/2026 (Danh sách số tiền CK dòng 28): sao kê 4.300.000đ ra phòng 400k 51′, Tiền giờ 339.091đ, hàng 3.570.000đ / 11 mã — vì phiếu 1–5 triệu chỉ có sàn 50 phút, còn sàn 1.500.000đ chỉ áp từ 5 triệu.

@@ -2008,6 +2008,33 @@ const limited = sandbox.selectBatchReviewTransactions([
 if (limited.map(item => item.id).join(",") !== "early,mid") {
   throw new Error(`Limit phải cắt sau khi sắp: ${limited.map(item => item.id).join(",")}`);
 }
+// Limit chỉ đếm giao dịch Chờ xử lý: giao dịch đã xử lý/đã Accept/chờ đối soát
+// đi kèm mà không chiếm chỗ, nên chạy lại cùng khoảng ngày sẽ tới phần còn lại
+// (tháng ~600 giao dịch, 14/10/2026).
+const pendingOnlyLimit = sandbox.selectBatchReviewTransactions([
+  { id: "d1", status: "done", transactionDate: "2026-07-01", rowNumber: 1 },
+  { id: "p1", status: "pending", transactionDate: "2026-07-01", rowNumber: 2 },
+  { id: "b1", status: "batch_ready", transactionDate: "2026-07-02", rowNumber: 3 },
+  { id: "pl1", status: "planned", transactionDate: "2026-07-02", rowNumber: 4 },
+  { id: "p2", status: "pending", transactionDate: "2026-07-03", rowNumber: 5 },
+  { id: "p3", status: "pending", transactionDate: "2026-07-04", rowNumber: 6 },
+  { id: "d2", status: "done", transactionDate: "2026-07-05", rowNumber: 7 }
+], { limit: 2 });
+if (pendingOnlyLimit.map(item => item.id).join(",") !== "d1,p1,b1,pl1,p2") {
+  throw new Error(`Limit chỉ đếm giao dịch Chờ xử lý, cắt tại giao dịch chờ thứ ${2 + 1}: ${pendingOnlyLimit.map(item => item.id).join(",")}`);
+}
+// 600 giao dịch chờ trong một tháng chạy được trong một lượt.
+const monthOf600 = Array.from({ length: 650 }, (_, index) => ({
+  id: `m${index}`, status: index < 50 ? "done" : "pending",
+  transactionDate: `2026-08-${String(1 + (index % 28)).padStart(2, "0")}`, rowNumber: index
+}));
+const selected600 = sandbox.selectBatchReviewTransactions(monthOf600, { limit: 1000 });
+if (selected600.length !== 650 || selected600.filter(item => item.status === "pending").length !== 600) {
+  throw new Error(`Tháng 600 giao dịch chờ (+50 đã xử lý) phải lấy đủ trong một lượt, nhận ${selected600.length}`);
+}
+if (sandbox.selectBatchReviewTransactions(monthOf600, { limit: 5000 }).length !== 650) {
+  throw new Error("Limit vượt trần phải kẹp về MAX_BATCH_TRANSACTIONS");
+}
 
 // --- Kho thật (buildInventory) ghi constraintGroupMax = null -----------------
 //

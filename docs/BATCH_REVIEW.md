@@ -2,7 +2,7 @@
 
 Batch Review lập trước nhiều phương án từ các giao dịch chưa hoàn tất (sao kê ngân hàng hoặc danh sách số tiền CK/TM), rồi lưu và đối soát tuần tự bằng API chính thức của website.
 
-- Giao dịch được sắp theo ngày → giờ giao dịch → thứ tự dòng trong file, tối đa 500 giao dịch mỗi lượt. Giao dịch ở trạng thái `review` (Credit không rõ là chuyển khoản, hoặc từ 20 triệu trở lên) không được lập phương án cho tới khi người dùng bấm **Là doanh thu**.
+- Giao dịch được sắp theo ngày → giờ giao dịch → thứ tự dòng trong file, tối đa **1000 giao dịch Chờ xử lý** mỗi lượt (ô "Số giao dịch chờ tối đa"). Giao dịch đã xử lý, đã Accept hoặc chờ đối soát trong khoảng ngày luôn đi kèm mà không chiếm chỗ, nên chạy lại cùng khoảng ngày sẽ tiếp tới phần còn lại. Từ 1.29.30; trước đó trần 500 và tính cả giao dịch đã xong, nên tháng ~600 giao dịch không bao giờ chạy hết. Giao dịch ở trạng thái `review` (Credit không rõ là chuyển khoản, hoặc từ 20 triệu trở lên) không được lập phương án cho tới khi người dùng bấm **Là doanh thu**.
 - Tồn kho được giữ chỗ cộng dồn theo thứ tự giao dịch, kể cả các phương án đã Accept nằm ngoài khoảng ngày đang xem.
 - `Accept` chỉ ghi phương án đã duyệt vào hàng đợi `batch_ready`; chưa sửa và chưa lưu hóa đơn.
 - Các phương án đã Accept được giữ nguyên khi mở lại Batch Review. Khi mốc công thức (`CALCULATION_VERSION`) đổi, phương án cũ tự bị hủy và giao dịch quay về **Chờ xử lý**.

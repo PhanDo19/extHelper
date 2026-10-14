@@ -118,10 +118,11 @@
   // Giao dịch sao kê ở các trạng thái này đã xong phần lập phiếu.
   const AUTO_ISSUE_FINISHED_STATUSES = new Set(["done", "skipped", "ignored"]);
 
-  // Một tháng ở Nhơn có tới 435 dòng số tiền, nên lô phải chạy được cả tháng.
-  // Lô dài không làm website quá tải nhờ tự tải lại trang sau mỗi 15 phiếu
-  // (xem scheduleAutoReloadResume).
-  const MAX_BATCH_TRANSACTIONS = 500;
+  // Lô phải chạy được cả tháng: Nhơn từng có 435 dòng số tiền, có tháng tới ~600
+  // giao dịch (14/10/2026), nên trần 1000. Trần chỉ đếm giao dịch Chờ xử lý (xem
+  // selectBatchReviewTransactions). Lô dài không làm website quá tải nhờ tự tải
+  // lại trang sau mỗi 15 phiếu (xem scheduleAutoReloadResume).
+  const MAX_BATCH_TRANSACTIONS = 1000;
 
   const RUNTIME_REFRESH_MESSAGE =
     "Extension vừa được cập nhật. Hãy nhấn F5 tải lại trang website, sau đó mở lại nút Σ.";
@@ -3622,7 +3623,7 @@
       <div><b>Batch Review</b><br><small>${openCount} giao dịch chưa hoàn tất · ${doneCount} đã xử lý. Hệ thống chỉ lập kế hoạch, chưa sửa hoặc lưu hóa đơn.</small></div>
       <label>Từ ngày<input id="it-batch-from-date" type="date" value="${escapeHtml(batchFromDate)}"></label>
       <label>Đến ngày<input id="it-batch-to-date" type="date" value="${escapeHtml(batchToDate)}"></label>
-      <label>Số giao dịch tối đa<input id="it-batch-limit" type="number" min="1" max="${MAX_BATCH_TRANSACTIONS}" value="${batchLimit}"></label>
+      <label title="Chỉ đếm giao dịch Chờ xử lý (tối đa ${MAX_BATCH_TRANSACTIONS}). Giao dịch đã xử lý, đã Accept hoặc chờ đối soát trong khoảng ngày luôn đi kèm mà không chiếm chỗ.">Số giao dịch chờ tối đa<input id="it-batch-limit" type="number" min="1" max="${MAX_BATCH_TRANSACTIONS}" value="${batchLimit}"></label>
       <button id="it-build-batch" type="button" class="primary">Tạo Batch Review</button>
     </div>
     <div class="it-api-capture-bar">
@@ -8832,7 +8833,7 @@
     // Người dùng duyệt bằng nút "Là doanh thu" — nút đó đưa giao dịch về
     // "pending" và từ đó mới vào đây.
     const allowedStatuses = new Set(["pending", "planned", "batch_ready", "done"]);
-    return (transactions || []).filter(item => {
+    const ordered = (transactions || []).filter(item => {
       if (!allowedStatuses.has(item.status)) return false;
       const transactionDate = String(item.transactionDate || "");
       if (fromDate && transactionDate < fromDate) return false;
@@ -8850,8 +8851,23 @@
         String(left.transactionDate || "").localeCompare(String(right.transactionDate || "")) ||
         String(left.requestedAt || "").localeCompare(String(right.requestedAt || "")) ||
         (Number(left.rowNumber) || 0) - (Number(right.rowNumber) || 0)
-      )
-      .slice(0, limit);
+      );
+    // Limit chỉ đếm giao dịch PHẢI TÍNH phương án (Chờ xử lý). Giao dịch đã có
+    // phương án hoặc đã xử lý trong khoảng ngày vẫn đi kèm (hiện trên bảng, giữ
+    // chỗ tồn kho, xoay vòng mặt hàng) mà không chiếm chỗ. Trước đây chúng chiếm
+    // chỗ, nên chạy lại cùng khoảng ngày luôn ra đúng N giao dịch đầu và phần sau
+    // không bao giờ tới lượt. Cắt tại giao dịch Chờ xử lý vượt limit, theo đúng
+    // thứ tự ngày → giờ.
+    const selected = [];
+    let pendingCount = 0;
+    for (const item of ordered) {
+      if (item.status === "pending") {
+        if (pendingCount >= limit) break;
+        pendingCount += 1;
+      }
+      selected.push(item);
+    }
+    return selected;
   }
 
   async function buildBatchReview(options) {
