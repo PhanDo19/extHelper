@@ -80,6 +80,9 @@ const batchPlanDeps = [
   extractConst("LARGE_STATEMENT_THRESHOLD"),
   extractFunction("minimumSingingMinutes"),
   extractFunction("smallInvoiceGrandLimit"),
+  extractConst("PARIS_NHON_NEW_INVOICE_HOUR_SHARE"),
+  extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR"),
+  extractFunction("parisNhonNewInvoiceMinimumHour"),
   extractFunction("hourPlanningBounds"),
   extractFunction("maximumGoodsForHourRange"),
   extractFunction("preferredLineCount"),
@@ -188,6 +191,8 @@ vm.runInContext(
   `${extractConst("DEFAULT_MIN_SINGING_MINUTES")}; ` +
   `${extractConst("LARGE_STATEMENT_MIN_SINGING_MINUTES")}; ${extractConst("LARGE_STATEMENT_THRESHOLD")}; ` +
   `${extractFunction("minimumSingingMinutes")}; ` +
+  `${extractConst("PARIS_NHON_NEW_INVOICE_HOUR_SHARE")}; ${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
+  `${extractFunction("parisNhonNewInvoiceMinimumHour")}; ` +
   `const formatMoney = value => String(value); ` +
   `${extractConst("GRAND_OVERRIDE_MAX_DIFF")} ${extractFunction("grandOverrideFor")}; ` +
   `${extractFunction("newInvoicePlanValidationError")}; ` +
@@ -267,20 +272,22 @@ if (!sandbox.newInvoicePlanValidationError(
   throw new Error("Phiếu nhỏ có 2 đơn vị phải bị chặn theo luật mới.");
 }
 
-// Chỉ phiếu MỚI của Paris Nhơn từ 5 triệu mới dùng sàn Tiền giờ 1,5 triệu;
-// phiếu cũ và các mức thấp hơn vẫn giữ mốc 30/50 phút thông thường.
+// Phiếu MỚI của Paris Nhơn trên 1 triệu: Tiền giờ neo ~1/3 phần trước VAT, tối
+// đa 1,5 triệu (kế toán chốt 14/10/2026; trước đó chỉ từ 5 triệu mới có sàn 1,5
+// triệu, phiếu 1–5 triệu chỉ 50 phút). Phiếu cũ vẫn giữ mốc 30/50 phút.
 const nhonHourSandbox = { pageTenantSlug: "parisnhon" };
 vm.createContext(nhonHourSandbox);
 vm.runInContext(
   `${extractConst("MAX_HOUR_BASE_ADJUSTMENT_RATIO")}; ` +
   `${extractConst("MAX_HOUR_PRETAX_RATIO")}; ` +
-  `${extractConst("PARIS_NHON_LARGE_INVOICE_THRESHOLD")}; ` +
+  `${extractConst("PARIS_NHON_NEW_INVOICE_HOUR_SHARE")}; ` +
   `${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
   `${extractConst("SMALL_INVOICE_ITEM_MAX_PRICE")} ` +
   `${extractConst("PARIS_NHON_TENANT_SLUG")}; ${extractConst("PARIS_NHON_MIN_SINGING_MINUTES")}; ` +
   `${extractConst("DEFAULT_MIN_SINGING_MINUTES")}; ` +
   `${extractConst("LARGE_STATEMENT_MIN_SINGING_MINUTES")}; ${extractConst("LARGE_STATEMENT_THRESHOLD")}; ` +
-  `${extractFunction("minimumSingingMinutes")}; ${extractFunction("hourPlanningBounds")}; ` +
+  `${extractFunction("minimumSingingMinutes")}; ${extractFunction("parisNhonNewInvoiceMinimumHour")}; ` +
+  `${extractFunction("hourPlanningBounds")}; ` +
   "this.hourPlanningBounds = hourPlanningBounds; this.minimumSingingMinutes = minimumSingingMinutes;",
   nhonHourSandbox
 );
@@ -299,8 +306,44 @@ const nhonBelowThreshold = nhonHourSandbox.hourPlanningBounds(
   4999999,
   4545454
 );
-if (nhonBelowThreshold.baseHour !== 500000) {
-  throw new Error("Phiếu mới Paris Nhơn dưới 5 triệu phải giữ sàn Tiền giờ 500.000đ.");
+if (nhonBelowThreshold.baseHour !== 1500000) {
+  throw new Error("Ngay dưới 5 triệu, 1/3 phần trước VAT đã chạm 1.500.000đ: không còn bậc nhảy ở 5 triệu.");
+}
+// Ca thật 01/09/2026: sao kê 4.300.000đ (trước VAT 3.909.091đ) từng chỉ có 51 phút.
+const nhonCase = nhonHourSandbox.hourPlanningBounds(
+  { newInvoicePlanning: true }, { hourlyRate: 800000, hourStep: 8000 }, 4300000, 3909091);
+if (nhonCase.baseHour !== 1303030 || nhonCase.minHourAmount !== 1303030) {
+  throw new Error(`Phiếu 4.300.000đ phải neo Tiền giờ 1/3 = 1.303.030đ, nhận ${nhonCase.baseHour}/${nhonCase.minHourAmount}`);
+}
+// 1/3 thấp hơn sàn 50 phút của phòng thì sàn phút thắng.
+const nhonSmallLarge = nhonHourSandbox.hourPlanningBounds(
+  { newInvoicePlanning: true }, { hourlyRate: 600000, hourStep: 6000 }, 1500000, 1363636);
+if (nhonSmallLarge.baseHour !== 500000) {
+  throw new Error(`Phiếu 1.500.000đ ở phòng 600k: 1/3 = 454.545đ dưới 50 phút nên giữ 500.000đ, nhận ${nhonSmallLarge.baseHour}`);
+}
+// Đúng 1 triệu trở xuống: không áp 1/3, giữ sàn 30 phút.
+const nhonOneMillion = nhonHourSandbox.hourPlanningBounds(
+  { newInvoicePlanning: true }, { hourlyRate: 600000, hourStep: 6000 }, 1000000, 909091);
+if (nhonOneMillion.baseHour !== 300000) {
+  throw new Error(`Phiếu 1.000.000đ giữ sàn 30 phút (300.000đ), nhận ${nhonOneMillion.baseHour}`);
+}
+// Cơ sở khác không áp luật Nhơn.
+const kgHourSandbox = { pageTenantSlug: "pariskimgiang" };
+vm.createContext(kgHourSandbox);
+vm.runInContext(
+  `${extractConst("MAX_HOUR_BASE_ADJUSTMENT_RATIO")}; ${extractConst("MAX_HOUR_PRETAX_RATIO")}; ` +
+  `${extractConst("PARIS_NHON_NEW_INVOICE_HOUR_SHARE")}; ${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
+  `${extractConst("SMALL_INVOICE_ITEM_MAX_PRICE")} ` +
+  `${extractConst("PARIS_NHON_TENANT_SLUG")}; ${extractConst("PARIS_NHON_MIN_SINGING_MINUTES")}; ` +
+  `${extractConst("DEFAULT_MIN_SINGING_MINUTES")}; ` +
+  `${extractConst("LARGE_STATEMENT_MIN_SINGING_MINUTES")}; ${extractConst("LARGE_STATEMENT_THRESHOLD")}; ` +
+  `${extractFunction("minimumSingingMinutes")}; ${extractFunction("parisNhonNewInvoiceMinimumHour")}; ` +
+  `${extractFunction("hourPlanningBounds")}; this.hourPlanningBounds = hourPlanningBounds;`,
+  kgHourSandbox
+);
+if (kgHourSandbox.hourPlanningBounds({ newInvoicePlanning: true }, { hourlyRate: 600000, hourStep: 6000 }, 4300000, 3909091)
+  .baseHour !== 500000) {
+  throw new Error("Kim Giang/Linh Đàm giữ sàn 50 phút cho phiếu mới.");
 }
 const nhonExistingBounds = nhonHourSandbox.hourPlanningBounds(
   { newInvoicePlanning: false, currentHour: 0 },
@@ -1987,8 +2030,7 @@ const realStockBox = {
 };
 vm.createContext(realStockBox);
 vm.runInContext(
-  `${batchPlanDeps}; ${extractConst("PARIS_NHON_LARGE_INVOICE_THRESHOLD")}; ` +
-  `${extractConst("PARIS_NHON_LARGE_INVOICE_MIN_HOUR")}; ` +
+  `${batchPlanDeps}; ${extractConst("PARIS_NHON_PREMIUM_ROOM_THRESHOLD")}; ` +
   `${extractFunction("candidateFromStock")}; ${extractFunction("buildBatchCandidates")}; ` +
   // Giờ ra phải dùng hàm THẬT: stub trả chuỗi cố định làm mọi phép kiểm tra
   // thời lượng trong sandbox này trở nên vô nghĩa.
@@ -2002,6 +2044,7 @@ vm.runInContext(
   `${extractFunction("closestReachableHourSlot")}; ${extractFunction("formatUiDateTime")}; ` +
   "this.newInvoicePlanValidationError = newInvoicePlanValidationError; " +
   "this.chooseNewInvoiceRoomPlan = chooseNewInvoiceRoomPlan; " +
+  "this.CALCULATION_VERSION_FOR_TEST = CALCULATION_VERSION; " +
   "this.tenantHourlyRates = tenantHourlyRates; this.hourPricingForRate = hourPricingForRate;",
   realStockBox
 );
@@ -2628,8 +2671,10 @@ if (!(tinyBounds.minHourAmount > 0) || tinyBounds.minHourAmount >= 130000) {
 const normalBounds = realStockBox.hourPlanningBounds(
   { newInvoicePlanning: true, currentHour: 0 }, { hourlyRate: 600000, hourStep: 6000 }, 3000000, 2727273
 );
-if (normalBounds.floorClampedToCap || normalBounds.minHourAmount !== 500000) {
-  throw new Error(`Phiếu đủ lớn phải giữ sàn 50 phút: ${JSON.stringify(normalBounds)}`);
+// Từ 14/10/2026 phiếu mới Nhơn trên 1 triệu neo 1/3 phần trước VAT (vẫn trên sàn
+// 50 phút): 3.000.000đ → 2.727.273 / 3 = 909.091đ.
+if (normalBounds.floorClampedToCap || normalBounds.minHourAmount !== 909091 || normalBounds.minuteFloorHour !== 500000) {
+  throw new Error(`Phiếu 3 triệu phải neo Tiền giờ 1/3 = 909.091đ: ${JSON.stringify(normalBounds)}`);
 }
 
 const floorSweep = [541200, 500000, 523800, 600000, 655100, 700000, 777700, 850000, 933800, 999900, 1000000, 1004000, 1200000, 1477000];
@@ -2698,6 +2743,62 @@ for (const credit of rateSweep) {
   // Phương án phải qua được kiểm tra lúc mở form với đúng bước giá của phòng.
   const validation = realStockBox.newInvoicePlanValidationError(plan, transaction);
   if (validation) throw new Error(`${credit}đ (phòng ${plan.hourlyRate}đ/giờ) bị chặn lúc mở form: ${validation}`);
+}
+
+// Ca thật Nhơn 01/09/2026 (Danh sách số tiền CK dòng 28): sao kê 4.300.000đ từng
+// ra phòng 400k 51′, Tiền giờ 339.091đ, hàng 3.570.000đ / 11 mã. Luật 14/10/2026:
+// Tiền giờ ≈ 1/3 phần trước VAT và phiếu từ 3 triệu vào phòng đơn giá cao nhất.
+{
+  // In bảng phương án theo số tiền (PRINT_NHON_PLANS=1), trước khi kiểm để so luật cũ/mới.
+  if (process.env.PRINT_NHON_PLANS) {
+    for (const credit of [1200000, 1500000, 2000000, 2500000, 3000000, 4300000, 5000000, 7457000]) {
+      const item = realStockBox.chooseNewInvoiceRoomPlan({ id: `p${credit}`, transactionDate: "2026-09-01", credit }, nhonFruitInventory, new Map(), 0);
+      console.log(item.status !== "ready"
+        ? `${credit}\t${item.status}: ${item.reason}`
+        : `${credit}\tphòng ${item.hourlyRate}\t${item.durationMinutes}′\tgiờ ${item.hour}\thàng ${item.goods}\t${item.items.length} mã`);
+    }
+  }
+  const transaction = { id: "nhon-0109-28", transactionDate: "2026-09-01", credit: 4300000 };
+  const plan = realStockBox.chooseNewInvoiceRoomPlan(transaction, nhonFruitInventory, new Map(), 0);
+  if (plan.status !== "ready") throw new Error(`4.300.000đ phải lập được phương án: ${plan.reason}`);
+  if (plan.hourlyRate !== 800000) throw new Error(`Phiếu 4,3 triệu phải vào phòng 800k, nhận ${plan.hourlyRate}`);
+  if (plan.hour < 1303030 || plan.hour > 1303030 * 1.25) {
+    throw new Error(`Tiền giờ phải quanh 1/3 phần trước VAT (1.303.030đ), nhận ${plan.hour}`);
+  }
+  if (plan.durationMinutes < 90 || plan.durationMinutes > 125) {
+    throw new Error(`Thời lượng phải hợp lý (~1h40 ở phòng 800k), nhận ${plan.durationMinutes}′`);
+  }
+  if (plan.goods > 2700000) throw new Error(`Tiền hàng không được dồn quá 2/3, nhận ${plan.goods}`);
+  if (plan.goods + plan.hour + plan.tax !== 4300000) throw new Error("Phải khớp tuyệt đối sao kê");
+  const validation = realStockBox.newInvoicePlanValidationError(plan, transaction);
+  if (validation) throw new Error(`Phương án mới bị chặn: ${validation}`);
+  // Cả dải 1–5 triệu: Tiền giờ ≈ 1/3 phần trước VAT (không còn 50 phút cố định,
+  // cũng không còn phiếu 1,5 triệu vào phòng 800k với Tiền giờ 52%); từ 3 triệu
+  // vào phòng đơn giá cao nhất.
+  for (const credit of [1500000, 2000000, 2500000, 3000000, 4300000]) {
+    const item = realStockBox.chooseNewInvoiceRoomPlan(
+      { id: `share-${credit}`, transactionDate: "2026-09-01", credit }, nhonFruitInventory, new Map(), 0);
+    if (item.status !== "ready") throw new Error(`${credit}đ phải lập được phương án: ${item.reason}`);
+    const share = item.hour / (item.goods + item.hour);
+    if (share < 0.30 || share > 0.40) {
+      throw new Error(`${credit}đ: Tiền giờ phải ≈ 1/3 phần trước VAT, nhận ${(share * 100).toFixed(1)}% (phòng ${item.hourlyRate}, ${item.durationMinutes}′)`);
+    }
+    if (credit >= 3000000 && item.hourlyRate !== 800000) {
+      throw new Error(`${credit}đ phải vào phòng 800k, nhận ${item.hourlyRate}`);
+    }
+  }
+}
+// Phiếu cũ lập theo luật trước (4,3 triệu chỉ 51′, Tiền giờ 339.091đ) không qua
+// kiểm tra nữa: Batch Review tính lại thay vì để Lưu API tạo phiếu đó.
+{
+  const oldPlan = {
+    requiresNewInvoice: true, calculationVersion: realStockBox.CALCULATION_VERSION_FOR_TEST,
+    items: [{ code: "x", qty: 1 }], goods: 3570000, hour: 339091, hourFromTime: 340000, tax: 390909, hourlyRate: 400000
+  };
+  const reason = realStockBox.newInvoicePlanValidationError(oldPlan, { credit: 4300000 });
+  if (!/Tiền giờ thấp hơn mức tối thiểu 1\.303\.030đ/.test(reason)) {
+    throw new Error(`Phương án cũ 51′ phải bị loại vì dưới mức tối thiểu mới, nhận: ${reason}`);
+  }
 }
 
 // --- Không được ra "Sẵn sàng" khi thiếu món bắt buộc --------------------------

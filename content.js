@@ -264,6 +264,13 @@
       if (entry.status === "ready" && entry?.plan?.calculationVersion !== CALCULATION_VERSION) {
         return null;
       }
+      // Cùng mốc công thức nhưng phiếu mới không còn qua luật hiện hành (ví dụ
+      // Tiền giờ Nhơn theo 1/3 từ 14/10/2026): bỏ để Tạo Batch Review tính lại,
+      // thay vì để người dùng Accept rồi Lưu API mới bị chặn.
+      if (entry.status === "ready" && entry?.plan?.requiresNewInvoice &&
+          newInvoicePlanValidationError(entry.plan, transaction)) {
+        return null;
+      }
       return {
         ...entry,
         status: reconcileBatchPlanStatus(entry.status, transaction.status),
@@ -735,15 +742,12 @@
     // 541.200đ ở phòng 400k bị chặn với "Tiền giờ thấp hơn mức tối thiểu".
     const nominalMinimumMinutes = minimumSingingMinutes(grand);
     const nominalMinimumHour = Math.round(planHourlyRate * nominalMinimumMinutes / 60);
-    // Paris Nhơn groups large new invoices into a longer room session so the
-    // item portion does not need an unnecessarily large number of low-priced
-    // lines. Existing invoices and the other tenants keep the normal 30/50
-    // minute floor.
-    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
-    const tenantMinimumHour = currentTenantSlug === "parisnhon" &&
-      plan.requiresNewInvoice && grand >= PARIS_NHON_LARGE_INVOICE_THRESHOLD
-      ? PARIS_NHON_LARGE_INVOICE_MIN_HOUR
-      : nominalMinimumHour;
+    // Paris Nhơn: phiếu mới trên 1 triệu có Tiền giờ ≈ 1/3 phần trước VAT (tối đa
+    // 1.500.000đ) — cùng hàm với hourPlanningBounds để phương án vừa lập không bị
+    // chính chỗ này loại. Phiếu cũ lập theo luật trước (chỉ 50 phút) bị loại ở đây
+    // và được tính lại.
+    const tenantMinimumHour = Math.max(nominalMinimumHour,
+      parisNhonNewInvoiceMinimumHour(grand, preTaxForCap));
     // Giống hourPlanningBounds: mốc phút bị kẹp xuống bằng trần tỷ lệ thì bỏ hẳn
     // sàn, vì sàn = trần chỉ cho đúng một giá trị Tiền giờ hợp lệ.
     const minimumHour = plan.specialRule === "under-500k-two-beers" || (hourCap > 0 && tenantMinimumHour >= hourCap)
@@ -7347,13 +7351,33 @@
     const preTax = floorHour + Math.max(0, Math.round(Number(itemPrice) || 0));
     return Math.round(preTax * 1.1);
   }
-  // Nhơn has many mapped web items in the 25.000–90.000đ range. For a new
-  // invoice from 5 million onward, a 1.500.000đ singing floor keeps the plan
-  // from spreading into an excessive number of low-priced lines. This is
-  // intentionally tenant- and new-invoice-specific; existing forms and the
-  // other branches keep the normal 30/50-minute floor.
-  const PARIS_NHON_LARGE_INVOICE_THRESHOLD = 5000000;
+  // Paris Nhơn, phiếu MỚI sao kê trên 1 triệu: Tiền giờ neo khoảng 1/3 phần
+  // trước VAT, tối đa 1.500.000đ (kế toán chốt 14/10/2026). Nhơn có rất nhiều mã
+  // hàng 25.000–90.000đ, nên nếu chỉ giữ sàn 50 phút thì phần còn lại dồn hết
+  // sang hàng và bung ra hàng chục dòng. Ca thật 01/09/2026: sao kê 4.300.000đ ra
+  // 51′ phòng 400k (Tiền giờ 339.091đ), hàng 3.570.000đ / 11 mã.
+  //
+  // Trước đây chỉ phiếu từ 5 triệu mới có sàn 1.500.000đ, phiếu 1–5 triệu chỉ
+  // 50 phút rồi nhảy bậc ở 5 triệu. 1/3 nối liền với mức đó: 5 triệu có phần
+  // trước VAT 4.545.455đ, 1/3 = 1.515.152đ ≥ 1.500.000đ, nên từ ~4,95 triệu trở
+  // lên vẫn đúng 1.500.000đ như cũ. Phiếu đã có sẵn và các cơ sở khác giữ sàn
+  // 30/50 phút.
+  const PARIS_NHON_NEW_INVOICE_HOUR_SHARE = 1 / 3;
   const PARIS_NHON_LARGE_INVOICE_MIN_HOUR = 1500000;
+  // Phiếu mới tiền lớn ở Nhơn lập vào phòng đơn giá CAO nhất còn đạt sàn phút
+  // (kế toán chốt 14/10/2026). Từ 3 triệu, phần 1/3 vẫn cho ≥ 68 phút ở phòng
+  // 800k; thấp hơn thì phòng đắt chỉ còn quanh sàn 50 phút.
+  const PARIS_NHON_PREMIUM_ROOM_THRESHOLD = 3000000;
+
+  // Sàn Tiền giờ riêng của phiếu mới Paris Nhơn (0 = không áp). preTax là phần
+  // trước VAT của phương án; thiếu thì suy từ tổng sao kê.
+  function parisNhonNewInvoiceMinimumHour(bankGrand, preTax) {
+    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
+    const grand = Math.max(0, Math.round(Number(bankGrand) || 0));
+    if (currentTenantSlug !== PARIS_NHON_TENANT_SLUG || grand <= LARGE_STATEMENT_THRESHOLD) return 0;
+    const base = Math.max(0, Math.round(Number(preTax) || 0)) || Math.round(grand / 1.1);
+    return Math.min(PARIS_NHON_LARGE_INVOICE_MIN_HOUR, Math.floor(base * PARIS_NHON_NEW_INVOICE_HOUR_SHARE));
+  }
 
   // ---------------------------------------------------------------------------
   // Đơn giá giờ hát theo PHÒNG.
@@ -7483,11 +7507,7 @@
     // Nếu dùng thẳng số 0 làm nền, goodsTarget sẽ bằng toàn bộ tiền trước VAT;
     // solver ghép tiền hàng ăn hết phần này rồi chốt cuối mới báo "không có Tiền giờ".
     // Với trường hợp đó, dùng mốc 30/50 phút giống phiếu mới ngay từ lúc lập kế hoạch.
-    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
-    const tenantMinimumHour = isNewInvoice && currentTenantSlug === "parisnhon" &&
-      bankGrand >= PARIS_NHON_LARGE_INVOICE_THRESHOLD
-      ? PARIS_NHON_LARGE_INVOICE_MIN_HOUR
-      : 0;
+    const tenantMinimumHour = isNewInvoice ? parisNhonNewInvoiceMinimumHour(bankGrand, preTax) : 0;
     // Phiếu đã có sẵn lấy Tiền giờ đang trên form làm NỀN, nhưng nền đó không
     // được thấp hơn sàn thời lượng: nó là số của hóa đơn cũ, không phải luật.
     //
@@ -8701,8 +8721,22 @@
   // theo phần bù (bằng 0 ở mọi mức) thì hòa ngay từ tiêu chí 1 rồi tiêu chí 2
   // kéo về phòng ĐẮT — sao kê 143.000đ từng chọn phòng 800k và ra 8 phút, trong
   // khi phòng 400k cho đúng 16 phút, đạt sàn 15.
+  //
+  // Paris Nhơn, phiếu mới trên 1 triệu (kế toán chốt 14/10/2026), ngay sau tiêu
+  // chí 0:
+  //   - từ PARIS_NHON_PREMIUM_ROOM_THRESHOLD: ưu tiên đơn giá CAO hơn (phiếu tiền
+  //     lớn vào phòng giá trị cao);
+  //   - rồi Tiền giờ gần 1/3 phần trước VAT nhất (lệch trong 5% coi như ngang).
+  //     Không có tiêu chí này thì phiếu 1,5 triệu chọn phòng 800k chỉ vì phần bù
+  //     nhỏ hơn, Tiền giờ chiếm tới 52% (sàn 50 phút ở phòng đắt), trong khi
+  //     phòng 400k cho đúng 1/3.
   function chooseNewInvoiceRoomPlan(transaction, inventoryState, productUsage, slotIndex, overrideGrand) {
     const rates = tenantHourlyRates();
+    const currentTenantSlug = typeof pageTenantSlug === "string" ? pageTenantSlug : "";
+    const ruleGrand = Math.round(Number(overrideGrand) || Number(transaction?.credit) || 0);
+    const preferPremiumRoom = currentTenantSlug === PARIS_NHON_TENANT_SLUG &&
+      ruleGrand >= PARIS_NHON_PREMIUM_ROOM_THRESHOLD;
+    const hourShareTarget = parisNhonNewInvoiceMinimumHour(ruleGrand, 0);
     let best = null;
     let firstError = null;
     for (const rate of rates) {
@@ -8722,6 +8756,10 @@
       // 143.000đ ra 16 phút ở phòng 400k thay vì 8 phút ở phòng 800k.
       const score = [
         meetsFloor ? 0 : 1,
+        preferPremiumRoom && meetsFloor ? -rate : 0,
+        hourShareTarget > 0 && meetsFloor
+          ? Math.round(Math.abs(Math.round(Number(plan.hour) || 0) - hourShareTarget) / (hourShareTarget * 0.05))
+          : 0,
         meetsFloor ? Math.abs(Math.round(Number(plan.hourAdjustment) || 0)) : -planMinutes,
         meetsFloor ? Math.abs(planMinutes - 90) : Math.abs(Math.round(Number(plan.hourAdjustment) || 0)),
         rate

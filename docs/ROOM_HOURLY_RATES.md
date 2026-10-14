@@ -62,9 +62,38 @@ vì thế quyết định ba thứ:
 Phương án và phòng không còn độc lập, nên `chooseNewInvoiceRoomPlan` thử lần
 lượt cả ba mức đơn giá rồi chọn mức cho phương án đẹp nhất, theo thứ tự:
 
-1. Phần bù vào Tiền giờ nhỏ nhất (phương án tự nhiên nhất).
-2. Thời lượng gần 90 phút nhất (một ca hát thực tế).
-3. Đơn giá thấp hơn (phòng rẻ thường dễ còn trống hơn).
+0. Đạt sàn thời lượng (30 phút; 50 phút với sao kê trên 1 triệu).
+1. Chỉ Paris Nhơn, phiếu mới (kế toán chốt 14/10/2026):
+   - từ **3.000.000đ**: đơn giá **cao hơn** trước (phiếu tiền lớn vào phòng giá trị cao);
+   - trên **1.000.000đ**: Tiền giờ gần **1/3 phần trước VAT** nhất (lệch trong 5% coi như ngang).
+2. Phần bù vào Tiền giờ nhỏ nhất (phương án tự nhiên nhất).
+3. Thời lượng gần 90 phút nhất (một ca hát thực tế).
+4. Đơn giá thấp hơn (phòng rẻ thường dễ còn trống hơn).
+
+### Tiền giờ phiếu mới ở Paris Nhơn
+
+Phiếu mới sao kê trên 1.000.000đ có Tiền giờ neo khoảng **1/3 phần trước VAT**,
+tối đa **1.500.000đ** (`parisNhonNewInvoiceMinimumHour`, dùng chung cho lập phương
+án và kiểm tra phương án). 1/3 thấp hơn sàn 50 phút của phòng thì sàn phút thắng.
+Trước đây phiếu 1–5 triệu chỉ có sàn 50 phút nên phần còn lại dồn hết sang hàng;
+ca thật 01/09/2026 sao kê 4.300.000đ ra phòng 400k 51′ (Tiền giờ 339.091đ), hàng
+3.570.000đ / 11 mã. Từ ~4,95 triệu, 1/3 đã chạm 1.500.000đ — đúng mức sàn cũ của
+phiếu từ 5 triệu, nên không còn bậc nhảy. Phiếu đã có sẵn và các cơ sở khác giữ
+sàn 30/50 phút.
+
+Kết quả với tồn kho thật của Nhơn (`tests/test-batch-review.js`, `PRINT_NHON_PLANS=1`):
+
+| Sao kê | Trước (luật cũ) | Nay |
+| --- | --- | --- |
+| 1.500.000đ | 800k · 53′ · giờ 703.636 (52%) | 400k · 69′ · giờ 463.636 |
+| 2.000.000đ | 800k · 53′ · giờ 703.182 | 400k · 93′ · giờ 623.182 |
+| 2.500.000đ | 600k · 53′ · giờ 527.727 | 600k · 77′ · giờ 767.727 |
+| 3.000.000đ | 600k · 53′ · giờ 527.273, hàng 2,2tr | 800k · 69′ · giờ 927.273, hàng 1,8tr |
+| 4.300.000đ | 400k · 51′ · giờ 339.091, hàng 3,57tr / 11 mã | 800k · 99′ · giờ 1.319.091, hàng 2,59tr / 9 mã |
+
+Phương án "Sẵn sàng"/đã Accept lập theo luật cũ không còn qua kiểm tra ("Tiền giờ
+thấp hơn mức tối thiểu") nên được bỏ và tính lại ở lần **Tạo Batch Review** kế
+tiếp; không cần đổi `CALCULATION_VERSION` nên phương án ở các cơ sở khác giữ nguyên.
 
 Phương án ghi lại `hourlyRate` đã dùng. Khi mở form, extension **chỉ chọn phòng
 có đúng đơn giá đó** — mở phòng khác hạng sẽ cho Tiền giờ khác và phiếu lệch

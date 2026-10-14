@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.29.29 (2026-10-14)
+
+- **Paris Nhơn: phiếu mới trên 1 triệu có Tiền giờ ≈ 1/3 phần trước VAT, phiếu từ 3 triệu vào phòng đơn giá cao** (kế toán chốt 14/10/2026). Ca thật 01/09/2026 (Danh sách số tiền CK dòng 28): sao kê 4.300.000đ ra phòng 400k 51′, Tiền giờ 339.091đ, hàng 3.570.000đ / 11 mã — vì phiếu 1–5 triệu chỉ có sàn 50 phút, còn sàn 1.500.000đ chỉ áp từ 5 triệu.
+  - Tiền giờ neo 1/3 phần trước VAT, tối đa 1.500.000đ (`parisNhonNewInvoiceMinimumHour`, chung cho lập và kiểm tra phương án). Từ ~4,95 triệu đúng 1.500.000đ như trước nên không còn bậc nhảy ở 5 triệu.
+  - Chọn phòng: từ 3 triệu ưu tiên đơn giá cao nhất còn đạt sàn; trên 1 triệu ưu tiên phòng cho Tiền giờ gần 1/3 nhất (trước đây phiếu 1,5 triệu vào phòng 800k với Tiền giờ 52%).
+  - Kết quả với tồn kho thật: 4.300.000đ → phòng 800k, 99′, Tiền giờ 1.319.091đ, hàng 2.590.000đ / 9 mã. Bảng đầy đủ ở `docs/ROOM_HOURLY_RATES.md`.
+  - Phương án phiếu mới Nhơn lập theo luật cũ (Sẵn sàng hoặc đã Accept) bị loại và tính lại ở lần Tạo Batch Review kế tiếp. Không đổi `CALCULATION_VERSION`, nên phương án ở Kim Giang/Linh Đàm và phiếu có sẵn giữ nguyên.
+
 ## 1.29.28 (2026-10-06)
 
 - **File hạch toán ghi chú hóa đơn lệch sao kê, tô vàng.** Sheet `TheoPhieu` thêm cột **Ghi chú**. Hóa đơn có tổng khác số tiền sao kê của giao dịch đã gắn được tô vàng cả dòng phiếu, kèm ghi chú, ví dụ `⚠ Hóa đơn lập ở 1.699.999đ, lệch -1đ so với sao kê 1.700.000đ do website làm tròn VAT.` (lệch trong ngưỡng "Lập ở" 100đ). Lệch xa hơn — chỉ có ở hóa đơn đồng bộ từ web — ghi "kiểm tra lại với sao kê". Phiếu gắn nhiều giao dịch so với giao dịch cùng ngày sát tổng nhất. Dòng TỔNG CỘNG đếm số phiếu có ghi chú; thông báo sau khi xuất cũng nêu số này.
